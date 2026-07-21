@@ -1,3 +1,6 @@
+# cleanroom source dir
+cleanroom-src
+
 # Logs
 logs
 *.log
