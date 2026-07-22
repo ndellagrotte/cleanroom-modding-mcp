@@ -73,6 +73,7 @@ Four base tools are always available; mappings and mod-examples tool groups regi
 | `list_targets` | Orientation: the loader/version matrix, indexed versions, installed databases |
 | `resolve_symbol` | Crash-log workhorse: resolve any symbol (SRG `func_/field_/p_`, obfuscated notch tokens, readable names) to all mapping layers (requires `mappings.db`) |
 | `search_mappings`, `get_class_details`, `get_method_signature`, `list_mapping_versions`, `browse_package` | Minecraft class/method/field mappings — 1.12.2 MCP/SRG (default) + modern Parchment/Mojang backport reference (requires `mappings.db`) |
+| `search_cleanroom_api`, `get_api_class` | Cleanroom/Forge framework API surface (`com.cleanroommc.*`, `zone.rong.mixinbooter.*`, `net.minecraftforge.*`): classes, events catalog, annotations catalog, signatures + Javadoc from the pinned Cleanroom sources (requires `cleanroom-api.db`) |
 | `search_mod_examples`, `get_mod_example`, `list_canonical_mods`, `list_mod_categories`, `get_mod_patterns` | Curated mod examples (requires `examples.db`) |
 
 ## Environment Variables

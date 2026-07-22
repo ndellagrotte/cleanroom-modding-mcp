@@ -112,6 +112,35 @@ jobs:
           MAPPINGS_VERSION=$(node -p "require('./data/mappings-manifest.json').version")
           echo "Generated Mappings Manifest Version: $MAPPINGS_VERSION"
 
+      - name: Index and prepare Cleanroom API database
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🧬 Indexing Cleanroom API from the latest tagged sources jar..."
+          pnpm run index-cleanroom-api:force
+
+          # Carry the previous manifest forward so --bump patch climbs from the
+          # last published version (same rationale as the mappings step above).
+          PREV_TAG=$(gh api "repos/$GITHUB_REPOSITORY/releases" | \
+            jq -r --arg cur "$RELEASE_TAG" \
+            '[.[] | select(.tag_name != $cur) | select(.assets | any(.name == "cleanroom-api-manifest.json"))] | .[0].tag_name // empty' \
+            2>/dev/null || echo "")
+          if [ -n "$PREV_TAG" ]; then
+            echo "📥 Carrying cleanroom-api-manifest.json forward from $PREV_TAG"
+            gh release download "$PREV_TAG" --pattern "cleanroom-api-manifest.json" --output ./data/cleanroom-api-manifest.json --clobber || true
+          fi
+
+          echo "📋 Generating Cleanroom API manifest..."
+          pnpm run manifest -- --db cleanroom-api --bump patch --changelog "Release $RELEASE_TAG" --release-tag "$RELEASE_TAG" --db-path ./data/cleanroom-api.db
+
+          DB_HASH=$(sha256sum ./data/cleanroom-api.db | cut -d' ' -f1)
+          MANIFEST_HASH=$(node -p "require('./data/cleanroom-api-manifest.json').hash")
+          if [ "$DB_HASH" != "$MANIFEST_HASH" ]; then
+            echo "ERROR: manifest hash does not match DB: $DB_HASH != $MANIFEST_HASH"
+            exit 1
+          fi
+          echo "✅ Hash verified for cleanroom-api.db: $DB_HASH"
+
       - name: Prepare database release artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -119,9 +148,12 @@ jobs:
         run: |
           mkdir -p release-artifacts
 
-          # Mappings are always available from the indexing step above.
+          # Mappings and the Cleanroom API DB are always available from the
+          # indexing steps above.
           cp data/mappings.db release-artifacts/
           cp data/mappings-manifest.json release-artifacts/
+          cp data/cleanroom-api.db release-artifacts/
+          cp data/cleanroom-api-manifest.json release-artifacts/
 
           # Docs and examples are carried forward from the previous release:
           # fresh docs come from the weekly job, fresh examples from
@@ -204,6 +236,8 @@ jobs:
             release-artifacts/docs-manifest.json
             release-artifacts/mappings.db
             release-artifacts/mappings-manifest.json
+            release-artifacts/cleanroom-api.db
+            release-artifacts/cleanroom-api-manifest.json
             release-artifacts/examples.db
             release-artifacts/examples-manifest.json
           append_body: true
@@ -219,6 +253,8 @@ jobs:
             | `docs-manifest.json` | Docs version manifest with SHA256 hash verification |
             | `mappings.db` | Minecraft class/method/field mappings database |
             | `mappings-manifest.json` | Mappings version manifest with SHA256 hash verification |
+            | `cleanroom-api.db` | Cleanroom/Forge framework API symbol index: classes, events catalog, annotations catalog (optional) |
+            | `cleanroom-api-manifest.json` | Cleanroom API version manifest with SHA256 hash verification (optional) |
             | `examples.db` | Curated mod examples database (optional) |
             | `examples-manifest.json` | Examples version manifest (optional) |
 
@@ -232,6 +268,7 @@ jobs:
           VERSION=$(node -p "require('./package.json').version")
           DB_VERSION=$(node -p "try{require('./data/docs-manifest.json').version}catch(e){'N/A'}")
           MAPPINGS_VERSION=$(node -p "try{require('./data/mappings-manifest.json').version}catch(e){'N/A'}")
+          CLEANROOM_API_VERSION=$(node -p "try{require('./data/cleanroom-api-manifest.json').version}catch(e){'N/A'}")
           echo "## 🎉 Release Published Successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
@@ -239,6 +276,7 @@ jobs:
           echo "| Package Version | \`v$VERSION\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Docs DB Version | \`v$DB_VERSION\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Mappings Version | \`v$MAPPINGS_VERSION\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cleanroom API Version | \`v$CLEANROOM_API_VERSION\` |" >> $GITHUB_STEP_SUMMARY
           echo "| npm | ✅ Published |" >> $GITHUB_STEP_SUMMARY
           echo "| GitHub Release | ✅ Created |" >> $GITHUB_STEP_SUMMARY
 

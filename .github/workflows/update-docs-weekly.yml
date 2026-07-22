@@ -131,6 +131,60 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ═══════════════════════════════════════════════════════════════════════════
+      # CLEANROOM API DATABASE
+      # ═══════════════════════════════════════════════════════════════════════════
+
+      - name: Re-index Cleanroom API (on new Cleanroom tag)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.get_release.outputs.tag }}
+        run: |
+          # Canary: is the Cleanroom maven reachable? Unlike the mappings, there
+          # is no fallback host — on outage we keep the previous DB untouched.
+          META_URL="https://repo.cleanroommc.com/releases/com/cleanroommc/cleanroom/maven-metadata.xml"
+          if ! curl -sfI --max-time 30 "$META_URL" > /dev/null; then
+            echo "::warning::Cleanroom maven unreachable — keeping the previous cleanroom-api.db"
+            echo "⚠️ Cleanroom maven unreachable — cleanroom-api.db not refreshed" >> $GITHUB_STEP_SUMMARY
+            echo "CLEANROOM_API_CHANGED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # Seed with the previously released DB so the indexer's up-to-date
+          # check (metadata cleanroom_version + schema_version vs maven latest)
+          # can skip no-op rebuilds — a re-upload would bump the manifest and
+          # force every client to redownload an identical database.
+          gh release download "$TAG" --pattern "cleanroom-api.db" --output data/cleanroom-api.db --clobber || true
+          BEFORE=$(sha256sum data/cleanroom-api.db 2>/dev/null | cut -d' ' -f1 || echo none)
+
+          pnpm run index-cleanroom-api
+
+          AFTER=$(sha256sum data/cleanroom-api.db | cut -d' ' -f1)
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "CLEANROOM_API_CHANGED=false" >> "$GITHUB_ENV"
+            echo "Cleanroom API DB unchanged (same Cleanroom tag and schema) — skipping re-upload"
+          else
+            echo "CLEANROOM_API_CHANGED=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Generate Cleanroom API Database Manifest
+        if: env.CLEANROOM_API_CHANGED == 'true'
+        env:
+          LATEST_TAG: ${{ steps.get_release.outputs.tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "$LATEST_TAG" --pattern "cleanroom-api-manifest.json" --output ./data/cleanroom-api-manifest.json --clobber || true
+
+          pnpm run manifest -- --db cleanroom-api --bump patch --changelog "Cleanroom API update for $LATEST_TAG" --release-tag "$LATEST_TAG" --db-path ./data/cleanroom-api.db
+
+          DB_HASH=$(sha256sum ./data/cleanroom-api.db | cut -d' ' -f1)
+          MANIFEST_HASH=$(node -p "require('./data/cleanroom-api-manifest.json').hash")
+          if [ "$DB_HASH" != "$MANIFEST_HASH" ]; then
+            echo "ERROR: manifest hash does not match indexed DB: $DB_HASH != $MANIFEST_HASH"
+            exit 1
+          fi
+          echo "Hash verified: $DB_HASH"
+
+      # ═══════════════════════════════════════════════════════════════════════════
       # UPLOAD
       # ═══════════════════════════════════════════════════════════════════════════
 
@@ -154,6 +208,12 @@ jobs:
           else
             echo "::warning::mappings.db or its manifest missing — skipping mappings upload"
           fi
+          if [ "$CLEANROOM_API_CHANGED" = "true" ] && [ -f data/cleanroom-api.db ] && [ -f data/cleanroom-api-manifest.json ]; then
+            echo "Uploading Cleanroom API assets to release $TAG..."
+            gh release upload "$TAG" data/cleanroom-api.db data/cleanroom-api-manifest.json --clobber
+          else
+            echo "Cleanroom API assets unchanged or missing — skipping upload"
+          fi
 
       - name: Log summary
         if: always()
@@ -165,6 +225,13 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Mappings Database" >> $GITHUB_STEP_SUMMARY
           echo "✅ Full mappings re-index completed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Cleanroom API Database" >> $GITHUB_STEP_SUMMARY
+          if [ "$CLEANROOM_API_CHANGED" = "true" ]; then
+            echo "✅ Re-indexed for a new Cleanroom tag" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⏭️ Unchanged (same Cleanroom tag) — not re-uploaded" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Release" >> $GITHUB_STEP_SUMMARY
           echo "✅ Database assets updated in release ${{ steps.get_release.outputs.tag }}" >> $GITHUB_STEP_SUMMARY

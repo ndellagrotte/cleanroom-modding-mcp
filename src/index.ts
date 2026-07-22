@@ -35,6 +35,13 @@ import {
   handleListMappingVersions,
   handleBrowsePackage,
 } from './tools/mappings.js';
+import { CleanroomApiService } from './services/cleanroom-api-service.js';
+import {
+  CLEANROOM_API_TOOLS,
+  handleSearchCleanroomApi,
+  handleGetApiClass,
+  type SearchCleanroomApiParams,
+} from './tools/cleanroomApi.js';
 
 // Check for CLI commands
 if (process.argv.includes('manage')) {
@@ -217,6 +224,12 @@ server.setRequestHandler(ListToolsRequestSchema, () => {
     console.error('[MCP] Mappings database available - additional tools registered');
   }
 
+  // Add Cleanroom API tools if database is available
+  if (CleanroomApiService.isAvailable()) {
+    tools.push(...CLEANROOM_API_TOOLS);
+    console.error('[MCP] Cleanroom API database available - additional tools registered');
+  }
+
   return { tools };
 });
 
@@ -341,6 +354,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return handleBrowsePackage({
         package_name: (args?.package_name as string) || '',
         minecraft_version: args?.minecraft_version as string | undefined,
+      });
+    }
+
+    // Cleanroom API tools (only work if database is available)
+    case 'search_cleanroom_api': {
+      return handleSearchCleanroomApi({
+        query: (args?.query as string) || '',
+        package_filter: args?.package_filter as string | undefined,
+        kind: args?.kind as SearchCleanroomApiParams['kind'],
+        limit: args?.limit as number | undefined,
+      });
+    }
+
+    case 'get_api_class': {
+      return handleGetApiClass({
+        name: (args?.name as string) || '',
+        include_members: args?.include_members as boolean | undefined,
       });
     }
 

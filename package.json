@@ -67,7 +67,9 @@
     "manage": "npx tsx src/index.ts manage",
     "manifest": "npx tsx scripts/generate-manifest.ts",
     "index-mappings": "npx tsx scripts/index-mappings.ts",
-    "index-mappings:force": "npx tsx scripts/index-mappings.ts --force"
+    "index-mappings:force": "npx tsx scripts/index-mappings.ts --force",
+    "index-cleanroom-api": "npx tsx scripts/index-java-api.ts",
+    "index-cleanroom-api:force": "npx tsx scripts/index-java-api.ts --force"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -98,10 +100,12 @@
     "lint-staged": "^15.2.11",
     "prettier": "^3.8.3",
     "rimraf": "^6.1.3",
+    "tree-sitter-java": "0.23.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.59.3",
-    "vitest": "^4.1.6"
+    "vitest": "^4.1.6",
+    "web-tree-sitter": "^0.26.11"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -124,6 +128,9 @@
       "esbuild",
       "protobufjs",
       "sharp"
+    ],
+    "ignoredBuiltDependencies": [
+      "tree-sitter-java"
     ]
   }
 }
