@@ -116,8 +116,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🧬 Indexing Cleanroom API from the latest tagged sources jar..."
-          pnpm run index-cleanroom-api:force
+          # Canary, mirroring the weekly job: a Cleanroom maven outage must not
+          # sink the release (npm is already published by this point) — carry
+          # the previous release's cleanroom-api assets forward unchanged.
+          META_URL="https://repo.cleanroommc.com/releases/com/cleanroommc/cleanroom/maven-metadata.xml"
+          INDEXED=0
+          if curl -sfI --max-time 30 "$META_URL" > /dev/null; then
+            echo "🧬 Indexing Cleanroom API from the latest tagged sources jar..."
+            pnpm run index-cleanroom-api:force
+            INDEXED=1
+          else
+            echo "::warning::Cleanroom maven unreachable — carrying previous cleanroom-api assets forward"
+          fi
 
           # Carry the previous manifest forward so --bump patch climbs from the
           # last published version (same rationale as the mappings step above).
@@ -128,10 +138,26 @@ jobs:
           if [ -n "$PREV_TAG" ]; then
             echo "📥 Carrying cleanroom-api-manifest.json forward from $PREV_TAG"
             gh release download "$PREV_TAG" --pattern "cleanroom-api-manifest.json" --output ./data/cleanroom-api-manifest.json --clobber || true
+            if [ ! -f ./data/cleanroom-api-manifest.json ] && [ "$INDEXED" = "1" ]; then
+              echo "::warning::Previous cleanroom-api manifest download failed — version numbering restarts at 0.1.x"
+            fi
           fi
 
-          echo "📋 Generating Cleanroom API manifest..."
-          pnpm run manifest -- --db cleanroom-api --bump patch --changelog "Release $RELEASE_TAG" --release-tag "$RELEASE_TAG" --db-path ./data/cleanroom-api.db
+          if [ "$INDEXED" = "1" ]; then
+            echo "📋 Generating Cleanroom API manifest..."
+            pnpm run manifest -- --db cleanroom-api --bump patch --changelog "Release $RELEASE_TAG" --release-tag "$RELEASE_TAG" --db-path ./data/cleanroom-api.db
+          else
+            # Outage path: reuse the previous release's DB + manifest verbatim.
+            if [ -z "$PREV_TAG" ]; then
+              echo "ERROR: Cleanroom maven is down and no previous release carries cleanroom-api assets."
+              exit 1
+            fi
+            if [ ! -f ./data/cleanroom-api-manifest.json ]; then
+              echo "ERROR: could not carry the previous cleanroom-api manifest forward (download failed)."
+              exit 1
+            fi
+            gh release download "$PREV_TAG" --pattern "cleanroom-api.db" --output ./data/cleanroom-api.db --clobber
+          fi
 
           DB_HASH=$(sha256sum ./data/cleanroom-api.db | cut -d' ' -f1)
           MANIFEST_HASH=$(node -p "require('./data/cleanroom-api-manifest.json').hash")

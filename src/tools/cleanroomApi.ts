@@ -15,6 +15,20 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 // TOOL DEFINITIONS (for registration)
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/** Valid `kind` values; the inputSchema and the runtime guard share this list. */
+const KIND_VALUES = [
+  'class',
+  'interface',
+  'enum',
+  'annotation',
+  'record',
+  'event',
+  'method',
+  'field',
+  'constructor',
+  'all',
+] as const;
+
 export const CLEANROOM_API_TOOLS = [
   {
     name: 'search_cleanroom_api',
@@ -35,18 +49,7 @@ export const CLEANROOM_API_TOOLS = [
         },
         kind: {
           type: 'string',
-          enum: [
-            'class',
-            'interface',
-            'enum',
-            'annotation',
-            'record',
-            'event',
-            'method',
-            'field',
-            'constructor',
-            'all',
-          ],
+          enum: [...KIND_VALUES],
           description:
             'Filter by symbol kind. "event" searches the events catalog; "annotation" the annotations catalog. Default: all',
           default: 'all',
@@ -65,7 +68,7 @@ export const CLEANROOM_API_TOOLS = [
   {
     name: 'get_api_class',
     description:
-      'Get full details for one Cleanroom/Forge framework type: declaration, Javadoc, deprecation, all members with signatures, nested types, superclass chain, and known subclasses. For events it shows cancelable/result status. Companion to search_cleanroom_api; for vanilla net.minecraft.* classes use get_class_details instead.',
+      'Get full details for one Cleanroom/Forge framework type: declaration, Javadoc, deprecation, members with signatures (long member lists are truncated with an overflow note), nested types, superclass chain, and known subclasses (capped, with the total). For events it shows cancelable/result status. Companion to search_cleanroom_api; for vanilla net.minecraft.* classes use get_class_details instead.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -142,6 +145,9 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+/** Runtime guard mirroring the inputSchema enum (the CallTool dispatch casts). */
+const VALID_KINDS: ReadonlySet<string> = new Set(KIND_VALUES);
+
 export interface SearchCleanroomApiParams {
   query: string;
   package_filter?: string;
@@ -155,8 +161,22 @@ export function handleSearchCleanroomApi(params: SearchCleanroomApiParams): Call
       return notAvailableResult();
     }
 
-    const query = (params.query || '').trim();
+    // LIKE-wildcard-only input ('%', '_') counts as an empty query (browse
+    // mode), matching the service's normalization — otherwise it would bypass
+    // the empty-query gate below.
+    const rawQuery = (params.query || '').trim();
+    const query = rawQuery.replace(/[%_]/g, '').trim() === '' ? '' : rawQuery;
     const kind = params.kind || 'all';
+    if (!VALID_KINDS.has(kind)) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: `Unknown kind "${String(kind)}". Valid kinds: ${[...VALID_KINDS].join(', ')}.`,
+          },
+        ],
+      };
+    }
     if (!query && !params.package_filter && kind === 'all') {
       return {
         content: [
@@ -178,7 +198,10 @@ export function handleSearchCleanroomApi(params: SearchCleanroomApiParams): Call
       });
 
       if (results.length === 0) {
-        let output = `No framework API symbols found for "${query}"`;
+        let output = 'No framework API symbols found';
+        if (query) {
+          output += ` for "${query}"`;
+        }
         if (params.package_filter) {
           output += ` in package ${params.package_filter}`;
         }
@@ -194,7 +217,7 @@ export function handleSearchCleanroomApi(params: SearchCleanroomApiParams): Call
       }
 
       let output = `Found ${results.length} framework API symbol${results.length > 1 ? 's' : ''}`;
-      output += query ? ` for "${query}":\n\n` : ` (browse):\n\n`;
+      output += query ? ` for "${query}":\n\n` : ' (browse):\n\n';
 
       for (const result of results) {
         if (result.resultKind === 'type') {
@@ -306,6 +329,9 @@ function formatDetails(details: ApiClassDetails, includeMembers: boolean): strin
   }
   if (details.knownSubclasses.length > 0) {
     output += `**Known subclasses:** ${details.knownSubclasses.map((s) => `\`${s}\``).join(', ')}\n`;
+    if (details.subclassCount > details.knownSubclasses.length) {
+      output += `_…and ${details.subclassCount - details.knownSubclasses.length} more — find them with \`search_cleanroom_api\`._\n`;
+    }
   }
 
   return output.trim();
@@ -319,7 +345,6 @@ export function handleGetApiClass(params: GetApiClassParams): CallToolResult {
     if (!params.name || !params.name.trim()) {
       return {
         content: [{ type: 'text', text: 'Provide a type name (FQN or simple name).' }],
-        isError: true,
       };
     }
 

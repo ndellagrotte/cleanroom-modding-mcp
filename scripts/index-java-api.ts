@@ -157,9 +157,20 @@ function parseArgs(argv: string[]): CliOptions {
 
 function parserInfo(): string {
   const require = createRequire(import.meta.url);
-  const wts = (require('web-tree-sitter/package.json') as { version: string }).version;
-  const tsj = (require('tree-sitter-java/package.json') as { version: string }).version;
-  return `web-tree-sitter@${wts} + tree-sitter-java@${tsj}`;
+  // web-tree-sitter's exports map hides ./package.json; resolve the entry
+  // point and walk up to the nearest package.json instead.
+  const readVersion = (pkg: string): string => {
+    let dir = path.dirname(require.resolve(pkg));
+    for (let i = 0; i < 5; i++) {
+      const candidate = path.join(dir, 'package.json');
+      if (fs.existsSync(candidate)) {
+        return (JSON.parse(fs.readFileSync(candidate, 'utf-8')) as { version: string }).version;
+      }
+      dir = path.dirname(dir);
+    }
+    return 'unknown';
+  };
+  return `web-tree-sitter@${readVersion('web-tree-sitter')} + tree-sitter-java@${readVersion('tree-sitter-java')}`;
 }
 
 async function main(): Promise<void> {

@@ -101,6 +101,8 @@ export interface ApiClassDetails {
   nestedTypes: string[];
   /** Direct known subclasses in the corpus (capped by the caller). */
   knownSubclasses: string[];
+  /** Total direct subclasses in the corpus (knownSubclasses is capped). */
+  subclassCount: number;
 }
 
 /** Result of a by-name lookup: a hit, or candidates when ambiguous. */
@@ -228,21 +230,34 @@ export class CleanroomApiService {
   search(options: ApiSearchOptions): ApiSearchResult[] {
     const kind = options.kind ?? 'all';
     const limit = Math.min(Math.max(options.limit ?? 15, 1), 50);
-    const query = options.query.trim();
+    // LIKE-wildcard-only input ('%', '_') behaves as an empty query (browse);
+    // otherwise the LIKE fallback would degenerate into a match-all.
+    const trimmed = options.query.trim();
+    const query = trimmed.replace(/[%_]/g, '').trim() === '' ? '' : trimmed;
 
     const wantTypes = kind === 'all' || kind === 'event' || TYPE_KINDS.has(kind);
     const wantMembers = kind === 'all' || MEMBER_KINDS.has(kind);
 
-    const results: ApiSearchResult[] = [];
-    if (wantTypes) {
-      results.push(...this.searchTypes(query, kind, options.packageFilter, limit));
-    }
-    if (wantMembers && query) {
-      results.push(...this.searchMembers(query, kind, options.packageFilter, limit));
+    const typeHits = wantTypes ? this.searchTypes(query, kind, options.packageFilter, limit) : [];
+    // Explicit member kinds browse with an empty query; kind 'all' browses
+    // types only (a whole-corpus member dump would be noise).
+    const memberHits =
+      wantMembers && (query || MEMBER_KINDS.has(kind))
+        ? this.searchMembers(query, kind, options.packageFilter, limit)
+        : [];
+
+    if (kind === 'all' && query) {
+      // Split the budget so type hits can't crowd member hits out of the
+      // limit entirely; unused budget flows to the other side.
+      const typeQuota = Math.ceil(limit / 2);
+      const memberQuota = limit - typeQuota;
+      const types = typeHits.slice(0, typeQuota + Math.max(0, memberQuota - memberHits.length));
+      const members = memberHits.slice(0, memberQuota + Math.max(0, typeQuota - typeHits.length));
+      return [...types, ...members];
     }
 
     // Types before members at equal rank; both lists arrive pre-ranked.
-    return results.slice(0, limit);
+    return [...typeHits, ...memberHits].slice(0, limit);
   }
 
   private typeFilterSql(
@@ -392,6 +407,29 @@ export class CleanroomApiService {
       since: row.since,
     });
 
+    // Browse mode: no query, list members by filter alone.
+    if (!query || query === '*') {
+      const rows = this.db
+        .prepare(
+          `SELECT m.kind, m.name, m.signature, m.javadoc_summary, m.is_deprecated, m.since, t.fqn
+           FROM members m
+           JOIN types t ON t.id = m.type_id
+           WHERE 1=1${kindSql}${packageSql}
+           ORDER BY t.fqn, m.kind, m.name
+           LIMIT ?`
+        )
+        .all(...kindParams, ...packageParams, limit) as Array<{
+        kind: string;
+        name: string;
+        fqn: string;
+        signature: string;
+        javadoc_summary: string | null;
+        is_deprecated: number;
+        since: string | null;
+      }>;
+      return rows.map(mapRow);
+    }
+
     const ftsQuery = this.buildFtsQuery(query);
     if (ftsQuery) {
       try {
@@ -476,18 +514,20 @@ export class CleanroomApiService {
     const bySimple = this.db
       .prepare(`SELECT * FROM types WHERE simple_name = ? COLLATE NOCASE LIMIT 10`)
       .all(clean) as TypeRow[];
-    if (bySimple.length === 1) {
-      return { match: this.buildDetails(bySimple[0], memberLimit), candidates: [] };
+    const onlySimple = bySimple[0];
+    if (bySimple.length === 1 && onlySimple) {
+      return { match: this.buildDetails(onlySimple, memberLimit), candidates: [] };
     }
     if (bySimple.length > 1) {
       return { match: null, candidates: bySimple.map((r) => r.fqn) };
     }
 
     const bySuffix = this.db
-      .prepare(`SELECT * FROM types WHERE fqn LIKE '%.' || ? LIMIT 10`)
-      .all(clean) as TypeRow[];
-    if (bySuffix.length === 1) {
-      return { match: this.buildDetails(bySuffix[0], memberLimit), candidates: [] };
+      .prepare(`SELECT * FROM types WHERE fqn LIKE '%.' || ? ESCAPE '\\' LIMIT 10`)
+      .all(clean.replace(/[\\%_]/g, (m) => `\\${m}`)) as TypeRow[];
+    const onlySuffix = bySuffix[0];
+    if (bySuffix.length === 1 && onlySuffix) {
+      return { match: this.buildDetails(onlySuffix, memberLimit), candidates: [] };
     }
     return { match: null, candidates: bySuffix.map((r) => r.fqn) };
   }
@@ -563,6 +603,11 @@ export class CleanroomApiService {
         .prepare(`SELECT fqn FROM types WHERE extends_fqn = ? ORDER BY fqn LIMIT 20`)
         .all(row.fqn) as Array<{ fqn: string }>
     ).map((r) => r.fqn);
+    const subclassCount = (
+      this.db.prepare(`SELECT COUNT(*) AS c FROM types WHERE extends_fqn = ?`).get(row.fqn) as {
+        c: number;
+      }
+    ).c;
 
     return {
       fqn: row.fqn,
@@ -593,6 +638,7 @@ export class CleanroomApiService {
       memberCount,
       nestedTypes,
       knownSubclasses,
+      subclassCount,
     };
   }
 

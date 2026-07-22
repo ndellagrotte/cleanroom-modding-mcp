@@ -84,6 +84,10 @@ export function buildSearchText(parts: Array<string | null | undefined>): string
 
 const INLINE_TAG_RE = /\{@(?:link|linkplain|code|literal|value)\s*([^}]*)\}/g;
 
+/** Known javadoc HTML tags (with optional attributes); used only for summaries. */
+const HTML_TAG_RE =
+  /<\/?(?:a|b|blockquote|br|code|dd|dl|dt|em|hr|i|li|ol|p|pre|strong|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s[^>]*)?\/?>/gi;
+
 /**
  * Parse a raw javadoc block comment into a cleaned body, first
  * sentence, and the @deprecated/@since tags. All other block tags are dropped.
@@ -105,7 +109,7 @@ export function parseJavadoc(raw: string): JavadocInfo | null {
   for (const line of lines) {
     const tagMatch = line.match(/^@(\w+)\s*(.*)$/);
     if (tagMatch) {
-      const [, tag, rest] = tagMatch;
+      const [, tag, rest = ''] = tagMatch;
       if (tag === 'deprecated') {
         currentTag = 'deprecated';
         deprecatedNote = rest;
@@ -128,8 +132,12 @@ export function parseJavadoc(raw: string): JavadocInfo | null {
   const clean = (s: string): string => normalizeSignature(s.replace(INLINE_TAG_RE, '$1'));
 
   const body = clean(bodyLines.join('\n'));
-  const sentenceMatch = body.match(/^(.*?[.!?])(?:\s|$)/);
-  const summary = sentenceMatch ? sentenceMatch[1] : body;
+  // The summary drops javadoc's HTML formatting tags (a known-tag list keeps
+  // generic-type text like 'List<T>' intact); the first sentence then ends at
+  // [.!?] followed by whitespace or end-of-text.
+  const summaryText = normalizeSignature(body.replace(HTML_TAG_RE, ' '));
+  const sentenceMatch = summaryText.match(/^(.*?[.!?])(?:\s|$)/);
+  const summary = sentenceMatch?.[1] ?? summaryText;
 
   return {
     body,
@@ -237,6 +245,19 @@ function readParams(parametersNode: TsNode | null): ExtractedParam[] {
         (c) => c !== declarator && c.type !== 'modifiers' && !c.type.endsWith('comment')
       );
       params.push({ type: normalizeSignature(`${typeNode?.text ?? '?'}...`), name });
+    } else if (child.type === 'ERROR' && child.text.includes('...')) {
+      // tree-sitter-java 0.23.5 cannot parse the legal `Type @Anno ... name`
+      // varargs form (type-use annotation before the ellipsis) and yields an
+      // ERROR node. Recover the parameter from the raw text so the declaration
+      // keeps its arity instead of silently losing the varargs parameter.
+      const recovery = child.text.match(/^(.*?)\.\.\.\s*([A-Za-z_$][\w$]*)$/s);
+      if (recovery) {
+        const withoutAnnotations = (recovery[1] ?? '')
+          .replace(/@(?:\w+\.)*\w+(?:\([^)]*\))?/g, ' ')
+          .replace(/^[\s,]+/, ''); // the ERROR node may swallow the preceding comma
+        const type = normalizeSignature(withoutAnnotations) || '?';
+        params.push({ type: `${type}...`, name: recovery[2] ?? '?' });
+      }
     }
     // receiver_parameter carries no name; irrelevant for an API index.
   }
@@ -320,12 +341,18 @@ function extractMembers(bodyNode: TsNode, declaringTypeName: string): ExtractedM
         const { modifiers, annotations } = readModifiers(childOfType(child, 'modifiers'));
         const javadoc = findJavadoc(child);
         const name = child.childForFieldName('name')?.text ?? '?';
+        const typeParams = child.childForFieldName('type_parameters')?.text;
         const params =
           child.type === 'constructor_declaration'
             ? readParams(child.childForFieldName('parameters'))
             : [];
         const throwsText = childOfType(child, 'throws')?.text;
-        const signature = [modifiers.join(' '), `${name}${formatParams(params)}`, throwsText]
+        const signature = [
+          modifiers.join(' '),
+          typeParams,
+          `${name}${formatParams(params)}`,
+          throwsText,
+        ]
           .filter(Boolean)
           .join(' ');
         members.push(
@@ -472,6 +499,16 @@ function extractType(
     }
   }
 
+  // Sealed types: `permits` field ('permits A, B') — part of the API contract.
+  const permitsRaw: string[] = [];
+  const permitsNode = node.childForFieldName('permits');
+  if (permitsNode) {
+    const typeList = childOfType(permitsNode, 'type_list');
+    for (const t of typeList?.namedChildren ?? []) {
+      permitsRaw.push(normalizeSignature(t.text));
+    }
+  }
+
   const recordParams =
     kind === 'record'
       ? normalizeSignature(node.childForFieldName('parameters')?.text ?? '()')
@@ -490,6 +527,9 @@ function extractType(
       `${kind === 'interface' ? 'extends' : 'implements'} ${implementsRaw.join(', ')}`
     );
   }
+  if (permitsRaw.length > 0) {
+    signatureParts.push(`permits ${permitsRaw.join(', ')}`);
+  }
   const signature = normalizeSignature(signatureParts.filter(Boolean).join(' '));
 
   const bodyNode = node.childForFieldName('body');
@@ -507,6 +547,7 @@ function extractType(
     ...packageSegments.slice(-2),
     extendsRaw ? stripTypeArgs(extendsRaw) : null,
     ...implementsRaw.map(stripTypeArgs),
+    ...permitsRaw.map(stripTypeArgs),
   ]);
 
   return {

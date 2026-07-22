@@ -173,6 +173,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release download "$LATEST_TAG" --pattern "cleanroom-api-manifest.json" --output ./data/cleanroom-api-manifest.json --clobber || true
+          if [ ! -f ./data/cleanroom-api-manifest.json ]; then
+            echo "::warning::Previous cleanroom-api manifest unavailable — version numbering restarts at 0.1.x (clients on a higher version will skip this update)"
+          fi
 
           pnpm run manifest -- --db cleanroom-api --bump patch --changelog "Cleanroom API update for $LATEST_TAG" --release-tag "$LATEST_TAG" --db-path ./data/cleanroom-api.db
 
@@ -229,8 +232,10 @@ jobs:
           echo "### Cleanroom API Database" >> $GITHUB_STEP_SUMMARY
           if [ "$CLEANROOM_API_CHANGED" = "true" ]; then
             echo "✅ Re-indexed for a new Cleanroom tag" >> $GITHUB_STEP_SUMMARY
-          else
+          elif [ "$CLEANROOM_API_CHANGED" = "false" ]; then
             echo "⏭️ Unchanged (same Cleanroom tag) — not re-uploaded" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Re-index step did not report a status (possible failure) — check the job log" >> $GITHUB_STEP_SUMMARY
           fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Release" >> $GITHUB_STEP_SUMMARY

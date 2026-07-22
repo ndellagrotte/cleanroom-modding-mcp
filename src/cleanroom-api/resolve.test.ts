@@ -283,6 +283,80 @@ describe('resolveAll', () => {
     expect(result.stats.unresolvedParents).toBe(1);
   });
 
+  it('resolves member types inherited by an enclosing type (JLS 6.3)', () => {
+    // SingleFlow.BuilderImpl implements Builder, where Builder is a member of
+    // the superinterface SystemExeFlowGraph — invisible to lexical resolution.
+    const result = resolveAll([
+      file({
+        packageName: 'com.example.graph',
+        types: [
+          type({
+            simpleName: 'SystemExeFlowGraph',
+            kind: 'interface',
+            children: [
+              type({
+                simpleName: 'Builder',
+                kind: 'interface',
+                nestedChain: ['SystemExeFlowGraph', 'Builder'],
+              }),
+            ],
+          }),
+          type({ simpleName: 'AbstractFlow', implementsRaw: ['SystemExeFlowGraph'] }),
+          type({
+            simpleName: 'SingleFlow',
+            extendsRaw: 'AbstractFlow',
+            children: [
+              type({
+                simpleName: 'BuilderImpl',
+                nestedChain: ['SingleFlow', 'BuilderImpl'],
+                implementsRaw: ['Builder<SingleFlow<Object>>'],
+              }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+    const impl = result.types.find((t) => t.simpleName === 'BuilderImpl');
+    expect(impl?.implementsFqns).toEqual(['com.example.graph.SystemExeFlowGraph.Builder']);
+  });
+
+  it("does not resolve clause names through a type's own hierarchy (javac rejects those)", () => {
+    // Foo's own implements clause may NOT see the member type Builder inherited
+    // via its own superclass — but a nested class's clause MAY, because the
+    // enclosing body is in scope there.
+    const result = resolveAll([
+      file({
+        packageName: 'com.example.graph',
+        types: [
+          type({
+            simpleName: 'Graph',
+            kind: 'interface',
+            children: [
+              type({ simpleName: 'Builder', kind: 'interface', nestedChain: ['Graph', 'Builder'] }),
+            ],
+          }),
+          type({ simpleName: 'Base', implementsRaw: ['Graph'] }),
+          type({
+            simpleName: 'Foo',
+            extendsRaw: 'Base',
+            implementsRaw: ['Builder'],
+            children: [
+              type({
+                simpleName: 'Inner',
+                nestedChain: ['Foo', 'Inner'],
+                implementsRaw: ['Builder'],
+              }),
+            ],
+          }),
+        ],
+      }),
+    ]);
+    const foo = result.types.find((t) => t.simpleName === 'Foo');
+    expect(foo?.implementsFqns).toEqual([]);
+    const inner = result.types.find((t) => t.simpleName === 'Inner');
+    expect(inner?.implementsFqns).toEqual(['com.example.graph.Graph.Builder']);
+  });
+
   it('counts usages of corpus-defined annotations only', () => {
     const result = resolveAll([
       file({

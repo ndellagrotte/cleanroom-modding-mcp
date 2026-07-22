@@ -8,6 +8,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { LOADERS, LOADER_IDS, TARGET_VERSION } from '../loaders.js';
 import { DBS, DB_IDS, isInstalled } from '../dbs.js';
+import { CleanroomApiService } from '../services/cleanroom-api-service.js';
 import { ExampleService } from '../services/example-service.js';
 import { MappingsService } from '../services/mappings-service.js';
 
@@ -48,6 +49,12 @@ export function handleListTargets(): CallToolResult {
     } catch {
       mappingsOutdated = false;
     }
+    let cleanroomApiOutdated = false;
+    try {
+      cleanroomApiOutdated = CleanroomApiService.isSchemaOutdated();
+    } catch {
+      cleanroomApiOutdated = false;
+    }
 
     output += '\n## Installed Databases\n\n';
     for (const id of DB_IDS) {
@@ -57,6 +64,9 @@ export function handleListTargets(): CallToolResult {
         // File exists but the schema gate disabled it — "installed" would lie.
         status =
           '⚠️ installed but schema-outdated (mappings tools disabled; updates on next startup, or run `npx cleanroom-modding-mcp manage`)';
+      } else if (id === 'cleanroom-api' && cleanroomApiOutdated) {
+        status =
+          '⚠️ installed but schema-outdated (Cleanroom API tools disabled; updates on next startup, or run `npx cleanroom-modding-mcp manage`)';
       } else if (isInstalled(id)) {
         status = '✅ installed';
       } else {

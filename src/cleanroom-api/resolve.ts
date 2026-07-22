@@ -98,7 +98,7 @@ export function resolveName(
     }
     // Qualified via a resolvable head: 'Mod.EventBusSubscriber', 'Event.HasResult'.
     const [head, ...rest] = clean.split('.');
-    const headFqn = resolveSimple(head);
+    const headFqn = resolveSimple(head ?? '');
     if (headFqn) {
       const candidate = `${headFqn}.${rest.join('.')}`;
       if (byFqn.has(candidate)) {
@@ -207,22 +207,92 @@ export function resolveAll(files: ExtractedFile[]): ResolveResult {
   const unique = [...byFqnMap.values()];
   const fqnSet = new Set(byFqnMap.keys());
 
-  // Resolve extends/implements now that the full corpus is known.
+  // Resolve extends/implements now that the full corpus is known. Extends
+  // edges first: the second-chance pass below walks them (and the implements
+  // edges), so both passes must complete before it runs.
+  for (const entry of unique) {
+    if (entry.resolved.extendsRaw) {
+      entry.resolved.extendsFqn = resolveName(entry.resolved.extendsRaw, entry.ctx, fqnSet);
+    }
+  }
+  for (const entry of unique) {
+    entry.resolved.implementsFqns = entry.resolved.implementsRaw
+      .map((raw) => resolveName(raw, entry.ctx, fqnSet))
+      .filter((f): f is string => f !== null);
+  }
+
+  // Second chance (JLS 6.3): member types INHERITED by an enclosing type are
+  // in scope throughout its body, so 'implements Builder' can refer to a
+  // superinterface's nested Builder that lexical resolution cannot see.
+  const ancestorCache = new Map<string, string[]>();
+  const ancestorsOf = (fqn: string): string[] => {
+    const cached = ancestorCache.get(fqn);
+    if (cached) {
+      return cached;
+    }
+    const closure: string[] = [];
+    ancestorCache.set(fqn, closure);
+    const seen = new Set([fqn]);
+    const queue = [fqn];
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current) {
+        break;
+      }
+      const entry = byFqnMap.get(current);
+      if (!entry) {
+        continue;
+      }
+      for (const parent of [entry.resolved.extendsFqn, ...entry.resolved.implementsFqns]) {
+        if (parent && !seen.has(parent)) {
+          seen.add(parent);
+          closure.push(parent);
+          queue.push(parent);
+        }
+      }
+    }
+    return closure;
+  };
+  const resolveInheritedMember = (raw: string, ctx: ResolutionContext): string | null => {
+    const clean = stripTypeArgs(raw);
+    if (!clean || clean.includes('.') || /[^A-Za-z0-9_$]/.test(clean)) {
+      return null;
+    }
+    // Skip the type itself (index 0): its own inherited member types are in
+    // scope inside its body, but NOT in its extends/implements clauses (javac
+    // rejects those) — only the enclosing types' hierarchies count.
+    for (const enclosing of ctx.enclosingFqns.slice(1)) {
+      for (const ancestor of ancestorsOf(enclosing)) {
+        const candidate = `${ancestor}.${clean}`;
+        if (fqnSet.has(candidate)) {
+          return candidate;
+        }
+      }
+    }
+    return null;
+  };
+  for (const entry of unique) {
+    const { resolved, ctx } = entry;
+    if (resolved.extendsRaw && !resolved.extendsFqn) {
+      resolved.extendsFqn = resolveInheritedMember(resolved.extendsRaw, ctx);
+    }
+    if (resolved.implementsRaw.length > resolved.implementsFqns.length) {
+      resolved.implementsFqns = resolved.implementsRaw
+        .map((raw) => resolveName(raw, ctx, fqnSet) ?? resolveInheritedMember(raw, ctx))
+        .filter((f): f is string => f !== null);
+    }
+  }
+
   let resolvedParents = 0;
   let unresolvedParents = 0;
   for (const entry of unique) {
-    const { resolved, ctx } = entry;
-    if (resolved.extendsRaw) {
-      resolved.extendsFqn = resolveName(resolved.extendsRaw, ctx, fqnSet);
-      if (resolved.extendsFqn) {
+    if (entry.resolved.extendsRaw) {
+      if (entry.resolved.extendsFqn) {
         resolvedParents++;
       } else {
         unresolvedParents++;
       }
     }
-    resolved.implementsFqns = resolved.implementsRaw
-      .map((raw) => resolveName(raw, ctx, fqnSet))
-      .filter((f): f is string => f !== null);
   }
 
   // Events catalog: BFS over reverse extends edges from the Event base class.

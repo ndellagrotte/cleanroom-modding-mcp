@@ -259,6 +259,75 @@ public class Widget {
     expect(ctor.signature).toBe('public Widget(int size)');
   });
 
+  it('keeps type parameters on generic constructors', () => {
+    const file = extract(
+      `package com.example;
+public class State {
+  public <M extends Comparable<M>, S> State(M first, S second) {}
+}
+`
+    );
+    const ctor = file.types[0].members[0];
+    expect(ctor.kind).toBe('constructor');
+    expect(ctor.signature).toBe('public <M extends Comparable<M>, S> State(M first, S second)');
+  });
+
+  it('recovers varargs parameters of the `Type @Anno ... name` form', () => {
+    // tree-sitter-java 0.23.5 cannot parse a type-use annotation before the
+    // ellipsis and yields an ERROR node; the extractor recovers the parameter
+    // from the raw text so the declaration keeps its arity.
+    const file = extract(
+      `package com.example;
+public class Vao {
+  public Vao(String layout, Integer view, Float @Deprecated ... views) {}
+  public void update(Handle @Deprecated ... handles) {}
+}
+`
+    );
+    const ctor = file.types[0].members[0];
+    expect(ctor.params).toEqual([
+      { type: 'String', name: 'layout' },
+      { type: 'Integer', name: 'view' },
+      { type: 'Float...', name: 'views' },
+    ]);
+    expect(ctor.signature).toBe('public Vao(String layout, Integer view, Float... views)');
+    const method = file.types[0].members[1];
+    expect(method.params).toEqual([{ type: 'Handle...', name: 'handles' }]);
+    expect(method.signature).toBe('public void update(Handle... handles)');
+  });
+
+  it('extracts the permits clause of sealed types into the signature and search text', () => {
+    const file = extract(
+      `package com.example;
+public sealed interface WorldKind permits Graphics, Headless {}
+`
+    );
+    const type = file.types[0];
+    expect(type.signature).toBe('public sealed interface WorldKind permits Graphics, Headless');
+    expect(type.searchText).toContain('graphics');
+    expect(type.searchText).toContain('headless');
+  });
+
+  it('strips javadoc HTML tags from the summary but keeps the body intact', () => {
+    const file = extract(
+      `package com.example;
+public class Store {
+  /**
+   * A buffer storage consists of pages.
+   * <p>Every page should be huge in size.</p>
+   */
+  public void allocate() {}
+  /** <p>Prerequisite include:</p> <ul><li>registered</li></ul> */
+  public void register() {}
+}
+`
+    );
+    const [allocate, register] = file.types[0].members;
+    expect(allocate.javadoc?.summary).toBe('A buffer storage consists of pages.');
+    expect(allocate.javadoc?.body).toContain('<p>');
+    expect(register.javadoc?.summary).not.toContain('<');
+  });
+
   it('splits multi-variable field declarations into one member each', () => {
     const file = extract(
       `package com.example;
