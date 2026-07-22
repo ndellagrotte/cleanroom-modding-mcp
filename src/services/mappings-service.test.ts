@@ -4,9 +4,43 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import * as fs from 'fs';
+import Database from 'better-sqlite3';
 import { getDefaultDbPath } from '../data-dir.js';
 import { DBS } from '../dbs.js';
+import { readDbSchemaVersion } from '../mappings/schema.js';
+import { TARGET_VERSION } from '../loaders.js';
+
+// ============================================================================
+// Collect-time gates: integration blocks only run against a schema-matching DB,
+// and era-specific assertions only run when that era's data is present.
+// ============================================================================
+
+const INTEGRATION_DB_PATH = getDefaultDbPath(DBS.mappings.fileName);
+const DB_OK = readDbSchemaVersion(INTEGRATION_DB_PATH) === DBS.mappings.schemaVersion;
+
+function readIndexedVersions(): string[] {
+  if (!DB_OK) return [];
+  try {
+    const db = new Database(INTEGRATION_DB_PATH, { readonly: true });
+    try {
+      const rows = db.prepare('SELECT DISTINCT minecraft_version FROM classes').all() as Array<{
+        minecraft_version: string;
+      }>;
+      return rows.map((r) => r.minecraft_version);
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
+const INDEXED_VERSIONS = readIndexedVersions();
+const HAS_MCP_ERA = INDEXED_VERSIONS.includes(TARGET_VERSION);
+const MODERN_VERSION =
+  INDEXED_VERSIONS.filter((v) => v !== TARGET_VERSION)
+    .sort()
+    .pop() ?? null;
 
 // ============================================================================
 // Search Algorithm Unit Tests (Pure Functions)
@@ -336,24 +370,21 @@ describe('Search Algorithm Functions', () => {
 // ============================================================================
 
 describe('MappingsService Integration', () => {
-  const TEST_DB_PATH = getDefaultDbPath(DBS.mappings.fileName);
-  let hasDatabase = false;
-
-  beforeAll(() => {
-    hasDatabase = fs.existsSync(TEST_DB_PATH);
-  });
+  const TEST_DB_PATH = INTEGRATION_DB_PATH;
 
   describe('Database Availability', () => {
     it('should have test database available', () => {
       // This is informational - tests will skip if DB not available
-      if (!hasDatabase) {
-        console.log('Parchment mappings database not found - skipping integration tests');
+      if (!DB_OK) {
+        console.log(
+          'Mappings database not found (or schema outdated) - skipping integration tests'
+        );
       }
       expect(true).toBe(true);
     });
   });
 
-  describe.runIf(fs.existsSync(getDefaultDbPath(DBS.mappings.fileName)))('MappingsService', () => {
+  describe.runIf(DB_OK)('MappingsService', () => {
     let MappingsService: typeof import('./mappings-service.js').MappingsService;
     let service: InstanceType<typeof MappingsService>;
 
@@ -416,8 +447,12 @@ describe('MappingsService Integration', () => {
           expect(exactMatch?.score).toBe(100);
         });
 
-        it('should find exact class name match', () => {
-          const results = service.search({ query: 'BlockEntity', limit: 10 });
+        it.runIf(MODERN_VERSION)('should find exact class name match (modern era)', () => {
+          const results = service.search({
+            query: 'BlockEntity',
+            limit: 10,
+            minecraftVersion: MODERN_VERSION!,
+          });
 
           expect(results.length).toBeGreaterThan(0);
           const exactMatch = results.find((r) => r.name === 'BlockEntity');
@@ -572,8 +607,8 @@ describe('MappingsService Integration', () => {
     });
 
     describe('getClass', () => {
-      it('should return class by full name', () => {
-        const cls = service.getClass('net.minecraft.world.level.block.Block');
+      it.runIf(MODERN_VERSION)('should return class by full name (modern era)', () => {
+        const cls = service.getClass('net.minecraft.world.level.block.Block', MODERN_VERSION!);
 
         expect(cls).toBeDefined();
         expect(cls?.name).toBe('Block');
@@ -587,8 +622,8 @@ describe('MappingsService Integration', () => {
     });
 
     describe('getClassMethods', () => {
-      it('should return methods for a class', () => {
-        const cls = service.getClass('net.minecraft.world.level.block.Block');
+      it.runIf(MODERN_VERSION)('should return methods for a class (modern era)', () => {
+        const cls = service.getClass('net.minecraft.world.level.block.Block', MODERN_VERSION!);
         if (cls) {
           const methods = service.getClassMethods(cls.id);
           expect(Array.isArray(methods)).toBe(true);
@@ -597,8 +632,8 @@ describe('MappingsService Integration', () => {
     });
 
     describe('getClassFields', () => {
-      it('should return fields for a class', () => {
-        const cls = service.getClass('net.minecraft.world.level.block.Block');
+      it.runIf(MODERN_VERSION)('should return fields for a class (modern era)', () => {
+        const cls = service.getClass('net.minecraft.world.level.block.Block', MODERN_VERSION!);
         if (cls) {
           const fields = service.getClassFields(cls.id);
           expect(Array.isArray(fields)).toBe(true);
@@ -606,11 +641,90 @@ describe('MappingsService Integration', () => {
       });
     });
 
-    describe('lookupObfuscated', () => {
-      it('should return null for invalid obfuscated name', () => {
-        const result = service.lookupObfuscated('notarealclass');
+    describe('resolveSymbol', () => {
+      it('should report no resolution for an unknown readable name', () => {
+        const resolved = service.resolveSymbol('notARealSymbolAnywhere12345');
 
-        expect(result).toBeNull();
+        expect(resolved.kind).toBe('readable');
+        expect(resolved.resolution).toBe('none');
+        expect(resolved.result).toBeNull();
+      });
+
+      it('should answer honestly for modern intermediary names', () => {
+        const resolved = service.resolveSymbol('m_46859_');
+
+        expect(resolved.kind).toBe('modern-intermediary');
+        expect(resolved.resolution).toBe('none');
+        expect(resolved.message).toMatch(/not indexed/i);
+      });
+    });
+
+    describe.runIf(HAS_MCP_ERA)('1.12.2 MCP/SRG era', () => {
+      it('defaults to 1.12.2 when the MCP era is indexed', () => {
+        expect(service.getDefaultVersion()).toBe(TARGET_VERSION);
+        expect(service.getMappingSet(TARGET_VERSION)).toBe('mcp');
+      });
+
+      it('resolves a well-known SRG method name', () => {
+        // func_71410_x = Minecraft.getMinecraft in MCP stable_39
+        const resolved = service.resolveSymbol('func_71410_x');
+
+        expect(resolved.resolution).toBe('exact');
+        expect(resolved.result?.type).toBe('method');
+        expect(resolved.result?.srgName).toBe('func_71410_x');
+        expect(resolved.result?.minecraftVersion).toBe(TARGET_VERSION);
+        expect(resolved.result?.className).toBe('Minecraft');
+      });
+
+      it('resolves a well-known SRG field name', () => {
+        // field_70170_p = Entity.world in MCP stable_39
+        const resolved = service.resolveSymbol('field_70170_p');
+
+        expect(resolved.resolution).toBe('exact');
+        expect(resolved.result?.type).toBe('field');
+        expect(resolved.result?.srgName).toBe('field_70170_p');
+      });
+
+      it('resolves SRG parameter tokens (named, or via the parent method)', () => {
+        // p_70080_1_ = first param of Entity.setPositionAndRotation(DDDFF)
+        const resolved = service.resolveSymbol('p_70080_1_');
+
+        expect(['exact', 'parent-method']).toContain(resolved.resolution);
+        expect(resolved.result).not.toBeNull();
+      });
+
+      it('resolves 1.12.2 classes at 1.12.2-era packages', () => {
+        const cls = service.getClass('net.minecraft.block.Block', TARGET_VERSION);
+
+        expect(cls).toBeDefined();
+        expect(cls?.name).toBe('Block');
+        expect(cls?.mappingSet).toBe('mcp');
+      });
+
+      it('round-trips a notch class token from the database', () => {
+        const cls = service.getClass('net.minecraft.block.Block', TARGET_VERSION);
+        expect(cls?.notchName).toBeTruthy();
+
+        const resolved = service.resolveSymbol(cls!.notchName!, TARGET_VERSION);
+        expect(resolved.resolution).toBe('exact');
+        expect(resolved.result?.name).toBe('Block');
+      });
+
+      it('finds SRG names through search_mappings prefix search', () => {
+        const results = service.search({ query: 'func_71410', limit: 5 });
+
+        expect(results.length).toBeGreaterThan(0);
+        expect(results[0]?.srgName?.startsWith('func_71410')).toBe(true);
+        expect(results[0]?.score).toBe(100);
+      });
+
+      it('returns all overloads for an overloaded 1.12.2 method', () => {
+        // World.playSound has multiple overloads in 1.12.2
+        const methods = service.getMethods('World', 'playSound', TARGET_VERSION);
+
+        expect(methods.length).toBeGreaterThan(1);
+        const descriptors = new Set(methods.map((m) => m.descriptor));
+        expect(descriptors.size).toBe(methods.length);
       });
     });
 
@@ -650,8 +764,7 @@ describe('Scoring Algorithm', () => {
   describe('score consistency', () => {
     it('exact match should always score 100', () => {
       // We test this through the service if available
-      const TEST_DB_PATH = getDefaultDbPath(DBS.mappings.fileName);
-      if (!fs.existsSync(TEST_DB_PATH)) {
+      if (!DB_OK) {
         console.log('Skipping scoring tests - no database');
         return;
       }
@@ -696,9 +809,9 @@ describe('Scoring Algorithm', () => {
 // ============================================================================
 
 describe('Result Format', () => {
-  const TEST_DB_PATH = getDefaultDbPath(DBS.mappings.fileName);
+  const TEST_DB_PATH = INTEGRATION_DB_PATH;
 
-  describe.runIf(fs.existsSync(TEST_DB_PATH))('MappingSearchResult structure', () => {
+  describe.runIf(DB_OK)('MappingSearchResult structure', () => {
     let MappingsService: typeof import('./mappings-service.js').MappingsService;
     let service: InstanceType<typeof MappingsService>;
 
@@ -740,7 +853,7 @@ describe('Result Format', () => {
     });
 
     it('field results should have required fields', () => {
-      const results = service.search({ query: 'TICKS', type: 'field', limit: 5 });
+      const results = service.search({ query: 'damage', type: 'field', limit: 5 });
 
       expect(results.length).toBeGreaterThan(0);
       const result = results[0]!;

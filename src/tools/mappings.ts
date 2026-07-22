@@ -1,9 +1,10 @@
 /**
- * Mappings Tools - Query Minecraft class/method/field mappings from Parchment data
- * Provides AI assistants with deobfuscation information, parameter names, and Javadocs
+ * Mappings Tools - Query Minecraft class/method/field mappings.
+ * Two eras in one database: 1.12.2 MCP/SRG (the Cleanroom target, default) and
+ * modern Parchment/Mojang versions (backport reference).
  */
 
-import { MappingsService } from '../services/mappings-service.js';
+import { MappingsService, type MappingSearchResult } from '../services/mappings-service.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -14,14 +15,14 @@ export const MAPPINGS_TOOLS = [
   {
     name: 'search_mappings',
     description:
-      'Search Minecraft class, method, and field mappings from Parchment data. Returns deobfuscated names, parameter names, and Javadoc documentation. Use this when you need to understand Minecraft internals or find the correct class/method names for modding.',
+      'Search Minecraft class, method, and field mappings. Returns readable names, SRG names (1.12.2), obfuscated names, parameter names, and Javadoc. Defaults to Minecraft 1.12.2 (the Cleanroom/Forge target); modern versions are available as backport reference. SRG queries (func_/field_/p_ prefixes) are matched directly.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         query: {
           type: 'string',
           description:
-            'Search query - class name, method name, or field name (e.g., "Block", "getBlockState", "player", "ServerLevel")',
+            'Search query - class name, method name, field name, or SRG name (e.g., "Block", "getStateFromMeta", "func_71410", "player")',
         },
         type: {
           type: 'string',
@@ -32,12 +33,12 @@ export const MAPPINGS_TOOLS = [
         minecraft_version: {
           type: 'string',
           description:
-            'Target Minecraft version (e.g., "1.21.4", "1.20.1"). Uses latest if not specified.',
+            'Target Minecraft version. Defaults to 1.12.2 when indexed; modern versions (e.g., "1.21.4") remain queryable as backport reference.',
         },
         package_filter: {
           type: 'string',
           description:
-            'Filter by package name (e.g., "net.minecraft.world", "net.minecraft.server")',
+            'Filter by package name (e.g., "net.minecraft.block", "net.minecraft.world")',
         },
         include_javadoc: {
           type: 'boolean',
@@ -64,12 +65,11 @@ export const MAPPINGS_TOOLS = [
       properties: {
         class_name: {
           type: 'string',
-          description:
-            'Full class name (e.g., "net.minecraft.world.level.block.Block" or just "Block")',
+          description: 'Full class name (e.g., "net.minecraft.block.Block" or just "Block")',
         },
         minecraft_version: {
           type: 'string',
-          description: 'Target Minecraft version. Uses latest if not specified.',
+          description: 'Target Minecraft version. Defaults to 1.12.2 when indexed.',
         },
         include_methods: {
           type: 'boolean',
@@ -86,22 +86,24 @@ export const MAPPINGS_TOOLS = [
     },
   },
   {
-    name: 'lookup_obfuscated',
+    name: 'resolve_symbol',
     description:
-      'Look up the deobfuscated name for an obfuscated Minecraft class, method, or field name. Useful when encountering obfuscated names in crash logs or decompiled code.',
+      'Resolve any Minecraft symbol from crash logs, decompiled code, or mixin targets to all its mapping layers (readable ⇄ SRG ⇄ obfuscated). Auto-detects the name kind: SRG names ("func_71410_x", "field_78443_a"), SRG parameter tokens ("p_70080_1_", "p_i46742_2_"), obfuscated notch tokens ("aab", "bhy$a"), or readable names ("Block", "net.minecraft.block.Block", "Block#getStateFromMeta"). The crash-log workhorse for 1.12.2 Cleanroom/Forge development.',
     inputSchema: {
       type: 'object' as const,
       properties: {
-        obfuscated_name: {
+        symbol: {
           type: 'string',
-          description: 'The obfuscated name to look up (e.g., "m_46859_", "f_46443_", "C_12345_")',
+          description:
+            'The symbol to resolve (e.g., "func_71410_x", "field_70170_p", "p_180495_1_", "aab", "Block#getStateFromMeta")',
         },
         minecraft_version: {
           type: 'string',
-          description: 'Target Minecraft version. Uses latest if not specified.',
+          description:
+            'Target Minecraft version. SRG names imply 1.12.2; other kinds default to 1.12.2 then the newest modern version.',
         },
       },
-      required: ['obfuscated_name'],
+      required: ['symbol'],
     },
   },
   {
@@ -121,7 +123,7 @@ export const MAPPINGS_TOOLS = [
         },
         minecraft_version: {
           type: 'string',
-          description: 'Target Minecraft version. Uses latest if not specified.',
+          description: 'Target Minecraft version. Defaults to 1.12.2 when indexed.',
         },
       },
       required: ['class_name', 'method_name'],
@@ -129,7 +131,8 @@ export const MAPPINGS_TOOLS = [
   },
   {
     name: 'list_mapping_versions',
-    description: 'List all Minecraft versions available in the mappings database with statistics.',
+    description:
+      'List all Minecraft versions in the mappings database, labeled by mapping era: 1.12.2 MCP/SRG (the Cleanroom target and default) vs modern Parchment/Mojang (backport reference).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -151,11 +154,11 @@ export const MAPPINGS_TOOLS = [
         package_name: {
           type: 'string',
           description:
-            'Package name to browse (e.g., "net.minecraft.world.level.block", "net.minecraft.server.level")',
+            'Package name to browse (e.g., "net.minecraft.block", "net.minecraftforge.event")',
         },
         minecraft_version: {
           type: 'string',
-          description: 'Target Minecraft version. Uses latest if not specified.',
+          description: 'Target Minecraft version. Defaults to 1.12.2 when indexed.',
         },
       },
       required: ['package_name'],
@@ -167,10 +170,31 @@ export const MAPPINGS_TOOLS = [
 // TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const NOT_AVAILABLE_MESSAGE =
-  'Parchment mappings database is not available. This is an optional feature that provides Minecraft class/method/field mappings with parameter names and Javadocs.\n\n' +
-  'To install it, run: `npx cleanroom-modding-mcp manage`\n\n' +
-  'The standard documentation tools (search_fabric_docs, get_example) are still available for modding guidance.';
+const NOT_INSTALLED_MESSAGE =
+  'The mappings database is not installed. This optional database provides Minecraft class/method/field mappings — 1.12.2 MCP/SRG names (the Cleanroom target) plus modern Parchment/Mojang reference versions.\n\n' +
+  'To install it, run: `npx cleanroom-modding-mcp manage` (download prebuilt, or build the 1.12.2 data locally with `npx cleanroom-modding-mcp manage --build-mappings`).\n\n' +
+  'The standard documentation tools (search_docs, get_example) are still available for modding guidance.';
+
+const OUTDATED_SCHEMA_MESSAGE =
+  'The installed mappings database uses an outdated schema and has been disabled.\n\n' +
+  'It will be updated automatically on the next server startup, or update it now with: `npx cleanroom-modding-mcp manage`.';
+
+function notAvailableResult(): CallToolResult {
+  const text = MappingsService.isSchemaOutdated() ? OUTDATED_SCHEMA_MESSAGE : NOT_INSTALLED_MESSAGE;
+  return { content: [{ type: 'text', text }] };
+}
+
+/** Render the readable/SRG/notch layers shared by several outputs. */
+function formatNameLayers(result: MappingSearchResult): string {
+  let output = '';
+  if (result.srgName) {
+    output += `**SRG:** \`${result.srgName}\`\n`;
+  }
+  if (result.notchName) {
+    output += `**Obfuscated (notch):** \`${result.notchName}\`\n`;
+  }
+  return output;
+}
 
 export interface SearchMappingsParams {
   query: string;
@@ -184,9 +208,7 @@ export interface SearchMappingsParams {
 export function handleSearchMappings(params: SearchMappingsParams): CallToolResult {
   try {
     if (!MappingsService.isAvailable()) {
-      return {
-        content: [{ type: 'text', text: NOT_AVAILABLE_MESSAGE }],
-      };
+      return notAvailableResult();
     }
 
     const service = new MappingsService();
@@ -202,7 +224,7 @@ export function handleSearchMappings(params: SearchMappingsParams): CallToolResu
       });
 
       if (results.length === 0) {
-        const version = params.minecraft_version || service.getLatestVersion() || 'unknown';
+        const version = params.minecraft_version || service.getDefaultVersion() || 'unknown';
         let output = `No mappings found for "${params.query}" in Minecraft ${version}.\n\n`;
         output += '**Suggestions:**\n';
         output += '- Try a broader search term\n';
@@ -218,9 +240,7 @@ export function handleSearchMappings(params: SearchMappingsParams): CallToolResu
       for (const result of results) {
         output += `### ${result.type.charAt(0).toUpperCase() + result.type.slice(1)}: \`${result.fullName}\`\n`;
 
-        if (result.obfuscatedName) {
-          output += `**Obfuscated:** \`${result.obfuscatedName}\`\n`;
-        }
+        output += formatNameLayers(result);
 
         if (result.descriptor) {
           output += `**Descriptor:** \`${result.descriptor}\`\n`;
@@ -268,9 +288,7 @@ export interface GetClassDetailsParams {
 export function handleGetClassDetails(params: GetClassDetailsParams): CallToolResult {
   try {
     if (!MappingsService.isAvailable()) {
-      return {
-        content: [{ type: 'text', text: NOT_AVAILABLE_MESSAGE }],
-      };
+      return notAvailableResult();
     }
 
     const service = new MappingsService();
@@ -279,7 +297,7 @@ export function handleGetClassDetails(params: GetClassDetailsParams): CallToolRe
       const cls = service.getClass(params.class_name, params.minecraft_version);
 
       if (!cls) {
-        const version = params.minecraft_version || service.getLatestVersion() || 'unknown';
+        const version = params.minecraft_version || service.getDefaultVersion() || 'unknown';
         return {
           content: [
             {
@@ -292,11 +310,11 @@ export function handleGetClassDetails(params: GetClassDetailsParams): CallToolRe
 
       let output = `# Class: \`${cls.packageName}.${cls.name}\`\n\n`;
 
-      if (cls.obfuscatedName) {
-        output += `**Obfuscated:** \`${cls.obfuscatedName}\`\n`;
+      if (cls.notchName) {
+        output += `**Obfuscated (notch):** \`${cls.notchName}\`\n`;
       }
       output += `**Package:** \`${cls.packageName}\`\n`;
-      output += `**Version:** ${cls.minecraftVersion}\n`;
+      output += `**Version:** ${cls.minecraftVersion} (${cls.mappingSet === 'mcp' ? 'MCP/SRG' : 'Parchment/Mojang'})\n`;
 
       if (cls.javadoc) {
         output += `\n**Javadoc:**\n${cls.javadoc}\n`;
@@ -315,8 +333,11 @@ export function handleGetClassDetails(params: GetClassDetailsParams): CallToolRe
             output += `### \`${method.name}\`\n`;
             output += `**Descriptor:** \`${method.descriptor}\`\n`;
 
-            if (method.obfuscatedName) {
-              output += `**Obfuscated:** \`${method.obfuscatedName}\`\n`;
+            if (method.srgName) {
+              output += `**SRG:** \`${method.srgName}\`\n`;
+            }
+            if (method.notchName) {
+              output += `**Obfuscated (notch):** \`${method.notchName}\`\n`;
             }
 
             if (method.parameters.length > 0) {
@@ -352,9 +373,15 @@ export function handleGetClassDetails(params: GetClassDetailsParams): CallToolRe
           output += '_No fields with mappings found._\n';
         } else {
           for (const field of fields) {
-            output += `- **\`${field.name}\`** (\`${field.descriptor}\`)`;
-            if (field.obfuscatedName) {
-              output += ` — obf: \`${field.obfuscatedName}\``;
+            output += `- **\`${field.name}\`**`;
+            if (field.descriptor) {
+              output += ` (\`${field.descriptor}\`)`;
+            }
+            if (field.srgName) {
+              output += ` — SRG: \`${field.srgName}\``;
+            }
+            if (field.notchName) {
+              output += ` — notch: \`${field.notchName}\``;
             }
             if (field.javadoc) {
               output += `\n  ${field.javadoc}`;
@@ -377,50 +404,54 @@ export function handleGetClassDetails(params: GetClassDetailsParams): CallToolRe
   }
 }
 
-export interface LookupObfuscatedParams {
-  obfuscated_name: string;
+export interface ResolveSymbolParams {
+  symbol: string;
   minecraft_version?: string;
 }
 
-export function handleLookupObfuscated(params: LookupObfuscatedParams): CallToolResult {
+export function handleResolveSymbol(params: ResolveSymbolParams): CallToolResult {
   try {
     if (!MappingsService.isAvailable()) {
-      return {
-        content: [{ type: 'text', text: NOT_AVAILABLE_MESSAGE }],
-      };
+      return notAvailableResult();
     }
 
     const service = new MappingsService();
 
     try {
-      const result = service.lookupObfuscated(params.obfuscated_name, params.minecraft_version);
+      const resolved = service.resolveSymbol(params.symbol, params.minecraft_version);
 
-      if (!result) {
-        const version = params.minecraft_version || service.getLatestVersion() || 'unknown';
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Obfuscated name "${params.obfuscated_name}" not found in Minecraft ${version} mappings.\n\nNote: Parchment mappings are based on Mojang mappings. The obfuscated name format may differ between mapping systems.`,
-            },
-          ],
-        };
+      if (!resolved.result) {
+        let output = `# Symbol: \`${params.symbol}\`\n\n`;
+        output += `**Detected kind:** ${resolved.kind}\n\n`;
+        output += resolved.message ?? 'No match found.';
+        return { content: [{ type: 'text', text: output.trim() }] };
       }
 
-      let output = `# Deobfuscation Result\n\n`;
-      output += `**Obfuscated:** \`${result.obfuscatedName}\`\n`;
-      output += `**Deobfuscated:** \`${result.fullName}\`\n`;
+      const result = resolved.result;
+      const mappingSet = service.getMappingSet(result.minecraftVersion);
+      const eraLabel = mappingSet === 'mcp' ? 'MCP stable_39 / SRG' : 'Parchment/Mojang';
+
+      let output = `# Symbol: \`${params.symbol}\`\n\n`;
       output += `**Type:** ${result.type}\n`;
-      output += `**Version:** ${result.minecraftVersion}\n`;
+      output += `**Readable:** \`${result.fullName}\`\n`;
+      output += formatNameLayers(result);
+      output += `**Version:** ${result.minecraftVersion} (${eraLabel})\n`;
 
       if (result.descriptor) {
         output += `**Descriptor:** \`${result.descriptor}\`\n`;
       }
 
-      if (result.type === 'method' && result.parameters && result.parameters.length > 0) {
-        output += `\n**Parameters:**\n`;
+      if (resolved.message) {
+        output += `\n_${resolved.message}_\n`;
+      }
+
+      if (result.parameters && result.parameters.length > 0) {
+        output += `\n**Parameters${result.type === 'parameter' ? ' (of the owning method)' : ''}:**\n`;
         for (const param of result.parameters) {
           output += `  - \`${param.name}\``;
+          if (param.srgToken && param.srgToken !== param.name) {
+            output += ` (\`${param.srgToken}\`)`;
+          }
           if (param.javadoc) {
             output += ` — ${param.javadoc}`;
           }
@@ -439,7 +470,7 @@ export function handleLookupObfuscated(params: LookupObfuscatedParams): CallTool
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
-      content: [{ type: 'text', text: `Error looking up obfuscated name: ${message}` }],
+      content: [{ type: 'text', text: `Error resolving symbol: ${message}` }],
       isError: true,
     };
   }
@@ -454,22 +485,20 @@ export interface GetMethodSignatureParams {
 export function handleGetMethodSignature(params: GetMethodSignatureParams): CallToolResult {
   try {
     if (!MappingsService.isAvailable()) {
-      return {
-        content: [{ type: 'text', text: NOT_AVAILABLE_MESSAGE }],
-      };
+      return notAvailableResult();
     }
 
     const service = new MappingsService();
 
     try {
-      const method = service.getMethod(
+      const methods = service.getMethods(
         params.class_name,
         params.method_name,
         params.minecraft_version
       );
 
-      if (!method) {
-        const version = params.minecraft_version || service.getLatestVersion() || 'unknown';
+      if (methods.length === 0) {
+        const version = params.minecraft_version || service.getDefaultVersion() || 'unknown';
         return {
           content: [
             {
@@ -480,30 +509,61 @@ export function handleGetMethodSignature(params: GetMethodSignatureParams): Call
         };
       }
 
-      let output = `# Method: \`${method.className}.${method.name}\`\n\n`;
-      output += `**Descriptor:** \`${method.descriptor}\`\n`;
-
-      if (method.obfuscatedName) {
-        output += `**Obfuscated:** \`${method.obfuscatedName}\`\n`;
-      }
-
-      output += `**Version:** ${method.minecraftVersion}\n`;
-
-      if (method.parameters.length > 0) {
-        output += `\n## Parameters\n\n`;
-        for (const param of method.parameters) {
-          output += `- **\`${param.name}\`** (index ${param.index})`;
-          if (param.javadoc) {
-            output += `\n  ${param.javadoc}`;
-          }
-          output += '\n';
+      const first = methods[0]!;
+      // A simple class name can match same-named classes in different
+      // packages — label each entry with its class when that happens.
+      const classCount = new Set(methods.map((m) => `${m.className}#${m.classId}`)).size;
+      let output = `# Method: \`${first.className}.${first.name}\`\n\n`;
+      if (methods.length > 1) {
+        output += `_${methods.length} matching method${methods.length > 1 ? 's' : ''}`;
+        if (classCount > 1) {
+          output += ` across ${classCount} classes named "${params.class_name}"`;
         }
-      } else {
-        output += '\n_No parameter names available for this method._\n';
+        output += `${methods.length > 10 ? '; showing the first 10' : ''}._\n\n`;
       }
 
-      if (method.javadoc) {
-        output += `\n## Javadoc\n\n${method.javadoc}\n`;
+      for (const method of methods.slice(0, 10)) {
+        if (methods.length > 1) {
+          output +=
+            classCount > 1
+              ? `## \`${method.className}.${method.name}\` — \`${method.descriptor}\`\n\n`
+              : `## Overload \`${method.descriptor}\`\n\n`;
+        }
+        output += `**Descriptor:** \`${method.descriptor}\`\n`;
+
+        if (method.srgName) {
+          output += `**SRG:** \`${method.srgName}\`\n`;
+        }
+        if (method.notchName) {
+          output += `**Obfuscated (notch):** \`${method.notchName}\`\n`;
+        }
+
+        output += `**Version:** ${method.minecraftVersion}\n`;
+
+        if (method.parameters.length > 0) {
+          output += `\n**Parameters:**\n`;
+          for (const param of method.parameters) {
+            output += `- **\`${param.name}\`** (index ${param.index})`;
+            if (param.srgToken && param.srgToken !== param.name) {
+              output += ` — \`${param.srgToken}\``;
+            }
+            if (param.javadoc) {
+              output += `\n  ${param.javadoc}`;
+            }
+            output += '\n';
+          }
+        } else {
+          output += '\n_No parameter names available for this overload._\n';
+        }
+
+        if (method.javadoc) {
+          output += `\n**Javadoc:**\n${method.javadoc}\n`;
+        }
+        output += '\n';
+      }
+
+      if (methods.length > 10) {
+        output += `_...and ${methods.length - 10} more overloads._\n`;
       }
 
       return { content: [{ type: 'text', text: output.trim() }] };
@@ -526,17 +586,15 @@ export interface ListMappingVersionsParams {
 export function handleListMappingVersions(params: ListMappingVersionsParams): CallToolResult {
   try {
     if (!MappingsService.isAvailable()) {
-      return {
-        content: [{ type: 'text', text: NOT_AVAILABLE_MESSAGE }],
-      };
+      return notAvailableResult();
     }
 
     const service = new MappingsService();
 
     try {
-      const versions = service.getMinecraftVersions();
+      const versionInfo = service.getVersionInfo();
 
-      if (versions.length === 0) {
+      if (versionInfo.length === 0) {
         return {
           content: [
             { type: 'text', text: 'No Minecraft versions found in the mappings database.' },
@@ -544,13 +602,18 @@ export function handleListMappingVersions(params: ListMappingVersionsParams): Ca
         };
       }
 
+      const defaultVersion = service.getDefaultVersion();
       let output = `# Available Minecraft Versions\n\n`;
-      output += `Found ${versions.length} version${versions.length > 1 ? 's' : ''} with Parchment mappings:\n\n`;
+      output += `Found ${versionInfo.length} version${versionInfo.length > 1 ? 's' : ''}:\n\n`;
 
-      for (const version of versions) {
-        output += `- **${version}**`;
-        if (version === versions[0]) {
-          output += ' _(latest)_';
+      for (const info of versionInfo) {
+        const era =
+          info.mappingSet === 'mcp'
+            ? 'MCP/SRG — Cleanroom/Forge target'
+            : 'Parchment/Mojang — backport reference';
+        output += `- **${info.minecraftVersion}** — ${era} (${info.classCount.toLocaleString()} classes)`;
+        if (info.minecraftVersion === defaultVersion) {
+          output += ' _(default)_';
         }
         output += '\n';
       }
@@ -594,16 +657,14 @@ export interface BrowsePackageParams {
 export function handleBrowsePackage(params: BrowsePackageParams): CallToolResult {
   try {
     if (!MappingsService.isAvailable()) {
-      return {
-        content: [{ type: 'text', text: NOT_AVAILABLE_MESSAGE }],
-      };
+      return notAvailableResult();
     }
 
     const service = new MappingsService();
 
     try {
       const classes = service.getClassesInPackage(params.package_name, params.minecraft_version);
-      const version = params.minecraft_version || service.getLatestVersion() || 'unknown';
+      const version = params.minecraft_version || service.getDefaultVersion() || 'unknown';
 
       if (classes.length === 0) {
         return {

@@ -41,6 +41,10 @@ describe('Database Registry (src/dbs.ts)', () => {
     }
   });
 
+  it('should declare mappings schema v2 (notch/srg/mapping_set era)', () => {
+    expect(DBS.mappings.schemaVersion).toBe(2);
+  });
+
   it('should have valid file names for all databases', () => {
     for (const id of DB_IDS) {
       expect(DBS[id].fileName).toMatch(/\.db$/);

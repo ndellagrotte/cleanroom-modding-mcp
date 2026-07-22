@@ -88,8 +88,10 @@ jobs:
       - name: Index and prepare mappings
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same heap budget as the weekly job's mappings re-index
+          NODE_OPTIONS: --max-old-space-size=8192
         run: |
-          echo "📋 Indexing mappings..."
+          echo "📋 Indexing mappings (1.12.2 MCP era + modern Parchment/Mojang)..."
           pnpm run index-mappings:force
 
           # Carry the previous mappings manifest forward so --bump patch climbs

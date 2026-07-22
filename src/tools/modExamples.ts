@@ -159,7 +159,7 @@ export function handleSearchModExamples(params: SearchModExamplesParams): CallTo
         content: [
           {
             type: 'text',
-            text: 'Mod examples database is not available. This is an optional feature that provides examples from canonical open-source mods.\n\nThe standard documentation tools (search_fabric_docs, get_example) are still available.',
+            text: 'Mod examples database is not available. This is an optional feature that provides examples from canonical open-source mods.\n\nThe standard documentation tools (search_docs, get_example) are still available.',
           },
         ],
       };

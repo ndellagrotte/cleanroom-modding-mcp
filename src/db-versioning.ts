@@ -22,6 +22,10 @@ import {
   type GitHubRelease,
 } from './dbs.js';
 import { compareVersions } from './version-utils.js';
+import { readDbSchemaVersion } from './mappings/schema.js';
+
+/** Manifest `source` marking a DB built on-device via `manage` (never auto-updated). */
+export const LOCAL_BUILD_SOURCE = 'local-build';
 
 export interface DbVersionManifest {
   version: string;
@@ -31,6 +35,13 @@ export interface DbVersionManifest {
   size: number;
   downloadUrl: string;
   changelog: string;
+  /**
+   * Provenance: 'local-build' marks a DB built on-device via `manage`
+   * (auto-update leaves those alone — the release DB could carry less data,
+   * e.g. a mappings DB without the MCP era if licensing review fails);
+   * 'manual-install' marks a download that came without a manifest.
+   */
+  source?: string;
 }
 
 export class DbVersioning {
@@ -146,6 +157,14 @@ export class DbVersioning {
         console.error(`[DbVersioning:${this.spec.id}] No local manifest found, update available`);
       }
 
+      if (local?.source === LOCAL_BUILD_SOURCE) {
+        console.error(
+          `[DbVersioning:${this.spec.id}] Skipping auto-update: database was built locally ` +
+            `(switch to the prebuilt release DB explicitly via \`manage\`)`
+        );
+        return false;
+      }
+
       const remote = await this.getRemoteManifest();
       if (!remote) {
         console.error(`[DbVersioning:${this.spec.id}] Could not fetch remote manifest`);
@@ -163,6 +182,20 @@ export class DbVersioning {
 
       if (!local) {
         return true;
+      }
+
+      // Schema forcing function: an installed DB whose schema_version doesn't
+      // match this build is unusable regardless of manifest versions — replace
+      // it with the remote asset even when the version comparison says "equal".
+      if (fs.existsSync(this.dbPath)) {
+        const dbSchema = readDbSchemaVersion(this.dbPath);
+        if (dbSchema !== null && dbSchema !== this.spec.schemaVersion) {
+          console.error(
+            `[DbVersioning:${this.spec.id}] Installed DB has schema v${dbSchema} but this build ` +
+              `expects v${this.spec.schemaVersion} — forcing update`
+          );
+          return true;
+        }
       }
 
       const comparison = this.compareVersions(local.version, remote.version);

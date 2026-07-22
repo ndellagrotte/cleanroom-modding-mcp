@@ -58,7 +58,7 @@ export const DBS: Record<DbId, DbSpec> = {
     fileName: 'mappings.db',
     manifestName: 'mappings-manifest.json',
     required: false,
-    schemaVersion: 1,
+    schemaVersion: 2,
     description: 'Minecraft class/method/field mappings (1.12.2 MCP/SRG + modern Parchment/Mojang)',
     icon: '🗺️',
   },

@@ -787,6 +787,117 @@ async function promptSelection(options: ManagedDb[]): Promise<ManagedDb[]> {
   });
 }
 
+/** Streaming SHA-256 of a file (matches the manifest hash scheme). */
+async function sha256File(filePath: string): Promise<string> {
+  const { createHash } = await import('crypto');
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+}
+
+/**
+ * Build the 1.12.2 MCP/SRG mappings database on-device (~730 KB download,
+ * under a minute) and write a `source: 'local-build'` manifest so auto-update
+ * leaves it alone. The licensing-insurance path for the MCP CSVs.
+ */
+async function runLocalMappingsBuild(spec: DbSpec): Promise<void> {
+  const destDbPath = path.join(dataDir, spec.fileName);
+  const destManifestPath = path.join(dataDir, spec.manifestName);
+  const tempDbPath = destDbPath + '.tmp';
+
+  if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+  }
+
+  const { buildLocalMappingsDb } = await import('../mappings/mcp-ingest.js');
+  try {
+    const result = await buildLocalMappingsDb({
+      dbPath: tempDbPath,
+      onProgress: (message) => console.log(`${c.dim}   ${message}${c.reset}`),
+    });
+
+    if (fs.existsSync(destDbPath)) {
+      fs.unlinkSync(destDbPath);
+    }
+    fs.renameSync(tempDbPath, destDbPath);
+
+    const { LOCAL_BUILD_SOURCE } = await import('../db-versioning.js');
+    const manifest = {
+      version: '0.0.0-local',
+      timestamp: new Date().toISOString(),
+      type: 'full',
+      hash: await sha256File(destDbPath),
+      size: fs.statSync(destDbPath).size,
+      downloadUrl: '',
+      changelog: `Built locally from mcp_config ${result.mcpConfigVersion} (${result.mcpSource}) + mcp_stable 39-1.12`,
+      source: LOCAL_BUILD_SOURCE,
+    };
+    fs.writeFileSync(destManifestPath, JSON.stringify(manifest, null, 2));
+  } finally {
+    for (const suffix of ['', '-wal', '-shm']) {
+      fs.rmSync(tempDbPath + suffix, { force: true });
+    }
+  }
+}
+
+/** Headless entry point for `manage --build-mappings`. Returns the exit code. */
+export async function runHeadlessMappingsBuild(): Promise<number> {
+  console.log(`${c.cyan}${sym.package}${c.reset} Building the 1.12.2 mappings database locally...`);
+  try {
+    await runLocalMappingsBuild(DBS.mappings);
+    console.log(
+      `${c.green}${sym.check}${c.reset} Done: ${path.join(dataDir, DBS.mappings.fileName)}`
+    );
+    return 0;
+  } catch (err) {
+    console.error(
+      `${c.red}${sym.cross}${c.reset} Build failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+    return 1;
+  }
+}
+
+/** Ask how to install the mappings DB: prebuilt download vs local 1.12.2 build. */
+async function promptMappingsInstallMethod(
+  item: ManagedDb
+): Promise<'download' | 'build' | 'skip'> {
+  const hasRemote = !!item.remoteInfo;
+  console.log(`\n${item.icon} ${c.brightWhite}${item.name}${c.reset} — choose an install method:`);
+  if (hasRemote && item.remoteInfo) {
+    const sizeMb = (item.remoteInfo.size / 1024 / 1024).toFixed(1);
+    console.log(
+      `  ${c.brightCyan}1.${c.reset} Download prebuilt (~${sizeMb} MB) ${c.dim}(recommended)${c.reset}\n` +
+        `     1.12.2 MCP/SRG + modern Parchment/Mojang reference versions`
+    );
+  } else {
+    console.log(`  ${c.dim}1. Download prebuilt — unavailable (no release found)${c.reset}`);
+  }
+  console.log(
+    `  ${c.brightCyan}2.${c.reset} Build 1.12.2 locally ${c.dim}(~730 KB download, <1 min)${c.reset}\n` +
+      `     1.12.2 MCP/SRG only — fetches mcp_config + mcp_stable from\n` +
+      `     maven.outlands.top / maven.minecraftforge.net at install time`
+  );
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer: string = await new Promise((resolve) =>
+    rl.question(`${c.white}Select [${hasRemote ? '1' : '2'}]: ${c.reset}`, resolve)
+  );
+  rl.close();
+
+  const choice = answer.trim() || (hasRemote ? '1' : '2');
+  if (choice === '2') {
+    return 'build';
+  }
+  if (choice === '1' && hasRemote) {
+    return 'download';
+  }
+  return 'skip';
+}
+
 export async function runInstaller() {
   printHeader();
   console.log(`${c.cyan}${sym.info} Checking for available databases...${c.reset}\n`);
@@ -852,6 +963,36 @@ export async function runInstaller() {
   let failCount = 0;
 
   for (const item of selected) {
+    // The mappings DB has a second install method: build the 1.12.2 era
+    // locally from the MCP sources (also the only path when offline).
+    if (item.id === 'mappings') {
+      const method = await promptMappingsInstallMethod(item);
+      if (method === 'build') {
+        console.log(
+          `\n${c.cyan}${sym.package}${c.reset} ${c.white}Building${c.reset} ${item.icon} ${c.brightWhite}${item.name}${c.reset} ${c.brightBlack}(1.12.2 local build)${c.reset}`
+        );
+        try {
+          await runLocalMappingsBuild(item);
+          console.log(
+            `${c.brightGreen}${sym.sparkle} Successfully built ${item.name}!${c.reset}\n`
+          );
+          successCount++;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(
+            `\n${c.red}${sym.cross} Failed to build ${item.name}: ${message}${c.reset}\n`
+          );
+          failCount++;
+        }
+        continue;
+      }
+      if (method === 'skip') {
+        console.log(`${c.yellow}Skipping ${item.name}.${c.reset}`);
+        continue;
+      }
+      // method === 'download' falls through to the standard download flow
+    }
+
     if (!item.remoteInfo) {
       console.log(
         `${c.red}${sym.cross} Skipping ${item.name}: Remote version unavailable.${c.reset}`

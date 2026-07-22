@@ -1,21 +1,16 @@
 #!/usr/bin/env npx tsx
 /**
- * Parchment + Mojang Mappings Indexer
+ * Mappings Indexer — both eras into one mappings.db (schema v2).
  *
- * Downloads and indexes both Parchment and Mojang official mappings from their
- * respective sources into a SQLite database for comprehensive Minecraft name lookups.
+ * Eras (distinguished by classes.mapping_set):
+ * - 'mcp' (Minecraft 1.12.2): MCP/SRG via src/mappings/mcp-ingest.ts —
+ *   mcp_config (Outlands maven, Forge-maven fallback) + mcp_stable CSVs.
+ * - 'parchment' (modern versions): Parchment (maven.parchmentmc.org) parameter
+ *   names/javadoc + Mojang official obfuscation mappings (piston-meta).
  *
- * Data sources:
- * - Parchment (maven.parchmentmc.org): Parameter names, javadoc documentation
- * - Mojang Official (piston-meta.mojang.com): Obfuscated → deobfuscated mappings
- *
- * Features:
- * - Dynamic version discovery (no hardcoded version list)
- * - Pre-release version handling (1.21.6-pre1, snapshots)
- * - Obfuscated name integration from Mojang
- * - Full-text search with FTS5
- *
- * NOT included in npm package - for local/maintainer use only.
+ * The DDL lives in src/mappings/schema.ts (shared with the on-device build
+ * path in `manage`). This orchestration script is NOT included in the npm
+ * package — for local/maintainer/CI use only.
  */
 
 import * as fs from 'fs';
@@ -25,6 +20,12 @@ import * as http from 'http';
 import { existsSync, mkdirSync, rmSync, readFileSync, createWriteStream } from 'fs';
 import Database from 'better-sqlite3';
 import { DBS } from '../src/dbs.js';
+import { initializeMappingsDb } from '../src/mappings/schema.js';
+import {
+  downloadMcpArtifacts,
+  ingestMcpEra,
+  MCP_MINECRAFT_VERSION,
+} from '../src/mappings/mcp-ingest.js';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -154,7 +155,8 @@ interface MojangClassMapping {
 interface MojangMethodMapping {
   deobfuscated: string; // method name only
   obfuscated: string;
-  descriptor: string; // e.g., "(II)V"
+  args: string; // Java-style comma-separated argument types
+  returnType: string; // Java-style return type
 }
 
 interface MojangFieldMapping {
@@ -206,123 +208,6 @@ function _logProgress(current: number, total: number, label: string): void {
   const bar = '█'.repeat(filled) + '░'.repeat(barLength - filled);
   process.stdout.write(`\r${colors.cyan}[${bar}] ${percent}% ${label}${colors.reset}   `);
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// DATABASE SCHEMA
-// ═══════════════════════════════════════════════════════════════════════════════
-
-const SCHEMA = `
--- Metadata table for schema versioning
-CREATE TABLE IF NOT EXISTS metadata (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-
--- Classes table
-CREATE TABLE IF NOT EXISTS classes (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  obfuscated_name TEXT,
-  package_name TEXT NOT NULL,
-  javadoc TEXT,
-  minecraft_version TEXT NOT NULL,
-  UNIQUE(name, package_name, minecraft_version)
-);
-
--- Methods table
-CREATE TABLE IF NOT EXISTS methods (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  class_id INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  obfuscated_name TEXT,
-  descriptor TEXT NOT NULL,
-  javadoc TEXT,
-  FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
-);
-
--- Fields table
-CREATE TABLE IF NOT EXISTS fields (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  class_id INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  obfuscated_name TEXT,
-  descriptor TEXT NOT NULL,
-  javadoc TEXT,
-  FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
-);
-
--- Parameters table
-CREATE TABLE IF NOT EXISTS parameters (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  method_id INTEGER NOT NULL,
-  param_index INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  javadoc TEXT,
-  FOREIGN KEY (method_id) REFERENCES methods(id) ON DELETE CASCADE
-);
-
--- Indexes for efficient lookups
-CREATE INDEX IF NOT EXISTS idx_classes_name ON classes(name);
-CREATE INDEX IF NOT EXISTS idx_classes_package ON classes(package_name);
-CREATE INDEX IF NOT EXISTS idx_classes_version ON classes(minecraft_version);
-CREATE INDEX IF NOT EXISTS idx_classes_obf ON classes(obfuscated_name);
-CREATE INDEX IF NOT EXISTS idx_methods_name ON methods(name);
-CREATE INDEX IF NOT EXISTS idx_methods_class ON methods(class_id);
-CREATE INDEX IF NOT EXISTS idx_methods_obf ON methods(obfuscated_name);
-CREATE INDEX IF NOT EXISTS idx_fields_name ON fields(name);
-CREATE INDEX IF NOT EXISTS idx_fields_class ON fields(class_id);
-CREATE INDEX IF NOT EXISTS idx_fields_obf ON fields(obfuscated_name);
-CREATE INDEX IF NOT EXISTS idx_parameters_method ON parameters(method_id);
-
--- Full-text search for classes
-CREATE VIRTUAL TABLE IF NOT EXISTS classes_fts USING fts5(
-  name,
-  javadoc,
-  content='classes',
-  content_rowid='id'
-);
-
--- Full-text search for methods
-CREATE VIRTUAL TABLE IF NOT EXISTS methods_fts USING fts5(
-  name,
-  javadoc,
-  content='methods',
-  content_rowid='id'
-);
-
--- Full-text search for fields
-CREATE VIRTUAL TABLE IF NOT EXISTS fields_fts USING fts5(
-  name,
-  javadoc,
-  content='fields',
-  content_rowid='id'
-);
-
--- Triggers for FTS sync
-CREATE TRIGGER IF NOT EXISTS classes_ai AFTER INSERT ON classes BEGIN
-  INSERT INTO classes_fts(rowid, name, javadoc) VALUES (new.id, new.name, new.javadoc);
-END;
-
-CREATE TRIGGER IF NOT EXISTS classes_ad AFTER DELETE ON classes BEGIN
-  DELETE FROM classes_fts WHERE rowid = old.id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS methods_ai AFTER INSERT ON methods BEGIN
-  INSERT INTO methods_fts(rowid, name, javadoc) VALUES (new.id, new.name, new.javadoc);
-END;
-
-CREATE TRIGGER IF NOT EXISTS methods_ad AFTER DELETE ON methods BEGIN
-  DELETE FROM methods_fts WHERE rowid = old.id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS fields_ai AFTER INSERT ON fields BEGIN
-  INSERT INTO fields_fts(rowid, name, javadoc) VALUES (new.id, new.name, new.javadoc);
-END;
-
-CREATE TRIGGER IF NOT EXISTS fields_ad AFTER DELETE ON fields BEGIN
-  DELETE FROM fields_fts WHERE rowid = old.id;
-END;
-`;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NETWORK UTILITIES
@@ -668,7 +553,8 @@ function parseMojangMappings(text: string): MojangMappings {
           currentClass.methods.set(key, {
             deobfuscated: methodName,
             obfuscated: obfName,
-            descriptor: `(${args})${returnType}`, // Simplified descriptor
+            args,
+            returnType,
           });
         }
       } else {
@@ -784,17 +670,48 @@ async function downloadParchmentData(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 function initializeDatabase(dbPath: string): Database.Database {
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('synchronous = NORMAL');
-  db.pragma('foreign_keys = ON');
+  // Shared v2 DDL + PRAGMAs + schema_version metadata (src/mappings/schema.ts)
+  return initializeMappingsDb(dbPath);
+}
 
-  db.exec(SCHEMA);
+/**
+ * Convert a Mojang ProGuard Java-type signature to a JVM descriptor so
+ * overloaded methods can be matched on (name, descriptor) against Parchment.
+ * e.g. args "net.minecraft.world.level.Level,int[]" + return "boolean"
+ *   -> "(Lnet/minecraft/world/level/Level;[I)Z"
+ */
+const JAVA_PRIMITIVES: Record<string, string> = {
+  byte: 'B',
+  char: 'C',
+  double: 'D',
+  float: 'F',
+  int: 'I',
+  long: 'J',
+  short: 'S',
+  boolean: 'Z',
+  void: 'V',
+};
 
-  // Set schema version
-  db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES ('schema_version', '1')`).run();
+function javaTypeToJvmType(javaType: string): string {
+  let type = javaType.trim();
+  let arrayDims = 0;
+  while (type.endsWith('[]')) {
+    arrayDims++;
+    type = type.slice(0, -2).trim();
+  }
+  const base = JAVA_PRIMITIVES[type] ?? `L${type.replace(/\./g, '/')};`;
+  return '['.repeat(arrayDims) + base;
+}
 
-  return db;
+function javaSignatureToJvmDescriptor(args: string, returnType: string): string {
+  const params =
+    args.trim() === ''
+      ? ''
+      : args
+          .split(',')
+          .map((a) => javaTypeToJvmType(a))
+          .join('');
+  return `(${params})${javaTypeToJvmType(returnType)}`;
 }
 
 function indexParchmentData(
@@ -812,19 +729,19 @@ function indexParchmentData(
     documentedFields: 0,
   };
 
-  // Prepared statements
+  // Prepared statements — srg_name / srg_token stay NULL for the modern era
   const insertClass = db.prepare(`
-    INSERT OR REPLACE INTO classes (name, obfuscated_name, package_name, javadoc, minecraft_version)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT OR REPLACE INTO classes (name, notch_name, package_name, javadoc, minecraft_version, mapping_set)
+    VALUES (?, ?, ?, ?, ?, 'parchment')
   `);
 
   const insertMethod = db.prepare(`
-    INSERT INTO methods (class_id, name, obfuscated_name, descriptor, javadoc)
+    INSERT INTO methods (class_id, name, notch_name, descriptor, javadoc)
     VALUES (?, ?, ?, ?, ?)
   `);
 
   const insertField = db.prepare(`
-    INSERT INTO fields (class_id, name, obfuscated_name, descriptor, javadoc)
+    INSERT INTO fields (class_id, name, notch_name, descriptor, javadoc)
     VALUES (?, ?, ?, ?, ?)
   `);
 
@@ -873,16 +790,25 @@ function indexParchmentData(
         for (const method of cls.methods) {
           const methodJavadoc = method.javadoc ? method.javadoc.join('\n') : null;
 
-          // Try to find obfuscated method name from Mojang mappings
+          // Try to find obfuscated method name from Mojang mappings.
+          // Match on (name, descriptor) so overloads don't collapse; the Mojang
+          // Java-type signature is converted to a JVM descriptor for comparison.
           let obfuscatedMethodName: string | null = null;
           if (mojangClass) {
-            // Try to match by method name and descriptor
-            // Mojang uses Java-style types, Parchment uses JVM descriptors
+            const candidates: MojangMethodMapping[] = [];
             for (const [_key, mapping] of mojangClass.methods) {
               if (mapping.deobfuscated === method.name) {
-                obfuscatedMethodName = mapping.obfuscated;
-                break;
+                candidates.push(mapping);
               }
+            }
+            const first = candidates[0];
+            if (candidates.length === 1 && first) {
+              obfuscatedMethodName = first.obfuscated;
+            } else if (candidates.length > 1) {
+              const byDescriptor = candidates.find(
+                (c) => javaSignatureToJvmDescriptor(c.args, c.returnType) === method.descriptor
+              );
+              obfuscatedMethodName = (byDescriptor ?? first)?.obfuscated ?? null;
             }
           }
 
@@ -957,7 +883,13 @@ async function main() {
   const includePreReleases = args.includes('--pre-releases') || args.includes('-p');
   const includeSnapshots = args.includes('--snapshots') || args.includes('-s');
   const skipMojang = args.includes('--skip-mojang');
-  const specificVersions = args.filter((a) => !a.startsWith('-'));
+  const skipMcp = args.includes('--skip-mcp');
+  const mcpOnly = args.includes('--mcp-only');
+  const mcpConfigIdx = args.indexOf('--mcp-config');
+  const mcpConfigOverride = mcpConfigIdx >= 0 ? args[mcpConfigIdx + 1] : undefined;
+  const specificVersions = args.filter(
+    (a, i) => !a.startsWith('-') && (mcpConfigIdx < 0 || i !== mcpConfigIdx + 1)
+  );
 
   // Update config based on args
   if (includePreReleases) CONFIG.includePreReleases = true;
@@ -971,6 +903,11 @@ async function main() {
   );
   log('info', `  --snapshots (-s): ${CONFIG.includeSnapshots ? 'Yes' : 'No'} - Include snapshots`);
   log('info', `  --skip-mojang: ${skipMojang ? 'Yes' : 'No'} - Skip Mojang obfuscation mappings`);
+  log('info', `  --skip-mcp: ${skipMcp ? 'Yes' : 'No'} - Skip the 1.12.2 MCP/SRG era`);
+  log('info', `  --mcp-only: ${mcpOnly ? 'Yes' : 'No'} - Index only the 1.12.2 MCP/SRG era`);
+  if (mcpConfigOverride) {
+    log('info', `  --mcp-config: ${mcpConfigOverride}`);
+  }
   console.log();
 
   // Ensure data directory exists
@@ -978,18 +915,31 @@ async function main() {
     mkdirSync(CONFIG.dataDir, { recursive: true });
   }
 
+  // The MCP era runs by default, when explicitly requested, or when 1.12.2 is
+  // among the specified versions (Parchment has no 1.12.2 data — it never
+  // enters the modern loop).
+  const runMcpEra =
+    !skipMcp &&
+    (mcpOnly || specificVersions.length === 0 || specificVersions.includes(MCP_MINECRAFT_VERSION));
+  const modernVersions = specificVersions.filter((v) => v !== MCP_MINECRAFT_VERSION);
+
   // Discover available versions dynamically OR use specific versions
   let targetVersions: ParchmentVersionInfo[];
 
-  if (specificVersions.length > 0) {
+  if (mcpOnly) {
+    targetVersions = [];
+  } else if (modernVersions.length > 0) {
     // User specified versions
-    targetVersions = specificVersions.map((v) => ({
+    targetVersions = modernVersions.map((v) => ({
       mcVersion: v,
       parchmentVersion: '',
       isPreRelease: /pre|rc/i.test(v),
       isSnapshot: /snapshot|w\d{2}[a-z]/i.test(v),
     }));
     log('info', `Using ${targetVersions.length} specified versions`);
+  } else if (specificVersions.length > 0) {
+    // Only 1.12.2 was specified — nothing for the modern loop
+    targetVersions = [];
   } else {
     // Discover from Maven
     const allVersions = await discoverParchmentVersions();
@@ -997,7 +947,7 @@ async function main() {
     log('info', `Filtered to ${targetVersions.length} versions (excluding pre-releases/snapshots)`);
   }
 
-  if (targetVersions.length === 0) {
+  if (targetVersions.length === 0 && !runMcpEra) {
     log('error', 'No versions to process!');
     process.exit(1);
   }
@@ -1031,7 +981,68 @@ async function main() {
     let successCount = 0;
     let failCount = 0;
     let obfuscationStats = { withObf: 0, withoutObf: 0 };
+    let mcpIngested = false;
 
+    // ── 1.12.2 MCP/SRG era ──────────────────────────────────────────────────
+    if (runMcpEra) {
+      console.log(
+        `\n${colors.bright}Processing Minecraft ${MCP_MINECRAFT_VERSION} (MCP/SRG era)${colors.reset}`
+      );
+      const mcpExisting = db
+        .prepare(`SELECT COUNT(*) as count FROM classes WHERE minecraft_version = ?`)
+        .get(MCP_MINECRAFT_VERSION) as { count: number };
+
+      if (mcpExisting.count > 0 && !forceReindex) {
+        log(
+          'info',
+          `Already indexed ${mcpExisting.count} classes for ${MCP_MINECRAFT_VERSION}, skipping.`
+        );
+        mcpIngested = true;
+      } else {
+        if (mcpExisting.count > 0) {
+          log('info', `Removing existing data for ${MCP_MINECRAFT_VERSION}...`);
+          db.prepare(`DELETE FROM classes WHERE minecraft_version = ?`).run(MCP_MINECRAFT_VERSION);
+        }
+        try {
+          const artifacts = await downloadMcpArtifacts({
+            mcpConfigVersion: mcpConfigOverride,
+            onProgress: (message) => log('info', message),
+          });
+          const mcpStats = ingestMcpEra(db, artifacts);
+          totalStats.classes += mcpStats.classes;
+          totalStats.methods += mcpStats.methods;
+          totalStats.fields += mcpStats.fields;
+          totalStats.parameters += mcpStats.parameters;
+          totalStats.documentedMethods += mcpStats.documentedMethods;
+          totalStats.documentedFields += mcpStats.documentedFields;
+          obfuscationStats.withObf++;
+          successCount++;
+          mcpIngested = true;
+          log(
+            'success',
+            `Indexed: ${mcpStats.classes} classes, ${mcpStats.methods} methods, ` +
+              `${mcpStats.fields} fields, ${mcpStats.parameters} parameters ` +
+              `(mcp_config ${artifacts.mcpConfigVersion}, source: ${artifacts.mcpSource})`
+          );
+          if (mcpStats.skippedParams > 0 || mcpStats.skippedConstructors > 0) {
+            log(
+              'warn',
+              `Skipped ${mcpStats.skippedParams} unmappable params, ` +
+                `${mcpStats.skippedConstructors} constructors with unknown owners`
+            );
+          }
+        } catch (error) {
+          // The MCP era is the primary target (Cleanroom 1.12.2) — fail loudly
+          // rather than shipping a mappings DB without it. Use --skip-mcp to
+          // build a modern-only DB deliberately.
+          log('error', `MCP era failed: ${error instanceof Error ? error.message : String(error)}`);
+          db.close();
+          process.exit(1);
+        }
+      }
+    }
+
+    // ── Modern (Parchment/Mojang) era ───────────────────────────────────────
     for (let i = 0; i < targetVersions.length; i++) {
       const versionInfo = targetVersions[i];
       const mcVersion = versionInfo.mcVersion;
@@ -1123,21 +1134,16 @@ async function main() {
     db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES ('indexed_at', ?)`).run(
       timestamp
     );
+    // Derive from the DB itself so incremental runs don't drop prior versions
+    const indexedVersions = db
+      .prepare(`SELECT DISTINCT minecraft_version FROM classes ORDER BY minecraft_version`)
+      .all() as Array<{ minecraft_version: string }>;
     db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES ('versions_indexed', ?)`).run(
-      JSON.stringify(
-        targetVersions
-          .map((v) => v.mcVersion)
-          .filter((v) => {
-            const count = db
-              .prepare(`SELECT COUNT(*) as count FROM classes WHERE minecraft_version = ?`)
-              .get(v) as { count: number };
-            return count.count > 0;
-          })
-      )
+      JSON.stringify(indexedVersions.map((v) => v.minecraft_version))
     );
     db.prepare(
       `INSERT OR REPLACE INTO metadata (key, value) VALUES ('has_obfuscated_mappings', ?)`
-    ).run(String(obfuscationStats.withObf > 0));
+    ).run(String(obfuscationStats.withObf > 0 || mcpIngested));
 
     // Final summary
     console.log(

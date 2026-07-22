@@ -90,12 +90,25 @@ jobs:
       # MAPPINGS DATABASE
       # ═══════════════════════════════════════════════════════════════════════════
 
+      - name: Check Outlands maven availability
+        run: |
+          # Canary for the 1.12.2 MCP era's primary source. The indexer falls
+          # back to the Forge maven's older mcp_config build on its own; this
+          # step only makes silent degradation visible in the weekly run.
+          MCP_CONFIG_URL="https://maven.outlands.top/releases/de/oceanlabs/mcp/mcp_config/1.12.2-20260220.202731/mcp_config-1.12.2-20260220.202731.zip"
+          if curl -sfI --max-time 30 "$MCP_CONFIG_URL" > /dev/null; then
+            echo "✅ Outlands maven reachable (mcp_config pinned build present)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "::warning::Outlands maven unreachable — 1.12.2 mappings will build from the Forge-maven fallback (older mcp_config build)"
+            echo "⚠️ Outlands maven unreachable — mappings built from Forge-maven fallback" >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: Re-index Mappings (Full Rebuild)
         run: |
           # Remove existing database to ensure a fresh index
           rm -f data/mappings.db
 
-          # Run full mappings index with force flag
+          # Run full mappings index with force flag (1.12.2 MCP era + modern Parchment/Mojang)
           pnpm run index-mappings:force
         env:
           NODE_OPTIONS: --max-old-space-size=8192
@@ -122,13 +135,25 @@ jobs:
       # ═══════════════════════════════════════════════════════════════════════════
 
       - name: Update Release Assets
+        # if: always() so a mappings-indexing failure earlier in the job does
+        # not also discard the successfully refreshed docs DB.
+        if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.get_release.outputs.tag }}
         run: |
-          echo "Uploading database assets to release $TAG..."
-          gh release upload "$TAG" data/docs.db data/docs-manifest.json --clobber
-          gh release upload "$TAG" data/mappings.db data/mappings-manifest.json --clobber
+          if [ -f data/docs.db ] && [ -f data/docs-manifest.json ]; then
+            echo "Uploading docs assets to release $TAG..."
+            gh release upload "$TAG" data/docs.db data/docs-manifest.json --clobber
+          else
+            echo "::warning::docs.db or its manifest missing — skipping docs upload"
+          fi
+          if [ -f data/mappings.db ] && [ -f data/mappings-manifest.json ]; then
+            echo "Uploading mappings assets to release $TAG..."
+            gh release upload "$TAG" data/mappings.db data/mappings-manifest.json --clobber
+          else
+            echo "::warning::mappings.db or its manifest missing — skipping mappings upload"
+          fi
 
       - name: Log summary
         if: always()

@@ -30,7 +30,7 @@ import {
   MAPPINGS_TOOLS,
   handleSearchMappings,
   handleGetClassDetails,
-  handleLookupObfuscated,
+  handleResolveSymbol,
   handleGetMethodSignature,
   handleListMappingVersions,
   handleBrowsePackage,
@@ -38,6 +38,11 @@ import {
 
 // Check for CLI commands
 if (process.argv.includes('manage')) {
+  if (process.argv.includes('--build-mappings')) {
+    // Headless on-device build of the 1.12.2 mappings database
+    const { runHeadlessMappingsBuild } = await import('./cli/manage.js');
+    process.exit(await runHeadlessMappingsBuild());
+  }
   const { runInstaller } = await import('./cli/manage.js');
   await runInstaller();
   process.exit(0);
@@ -209,7 +214,7 @@ server.setRequestHandler(ListToolsRequestSchema, () => {
   // Add mappings tools if database is available
   if (MappingsService.isAvailable()) {
     tools.push(...MAPPINGS_TOOLS);
-    console.error('[MCP] Parchment mappings database available - additional tools registered');
+    console.error('[MCP] Mappings database available - additional tools registered');
   }
 
   return { tools };
@@ -311,9 +316,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
     }
 
-    case 'lookup_obfuscated': {
-      return handleLookupObfuscated({
-        obfuscated_name: (args?.obfuscated_name as string) || '',
+    case 'resolve_symbol': {
+      return handleResolveSymbol({
+        symbol: (args?.symbol as string) || '',
         minecraft_version: args?.minecraft_version as string | undefined,
       });
     }

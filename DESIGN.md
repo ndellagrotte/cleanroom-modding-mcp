@@ -1,6 +1,6 @@
 # DESIGN: Reorienting mcmodding-mcp into a Cleanroom Mod-Development MCP Server
 
-**Status:** Proposal — no implementation has begun.
+**Status:** Phases 0–2 implemented (distribution repair + rebrand, loader registry + corpus retargeting, 1.12.2 MCP/SRG mappings with `resolve_symbol` and on-device generation). Phases 3+ (Cleanroom API DB, porting layer, examples rebuild) not yet started.
 **Scope of this document:** the complete design for transforming this fork of `mcmodding-mcp` into an MCP server whose mission is enabling AI agents to build the best possible **Cleanroom** mods (Minecraft 1.12.2).
 
 How this document was produced: the entire server source (`src/`, `scripts/`, `.github/`) and the entire Cleanroom Loader reference tree (`cleanroom-src/`, gitignored, read-only) were read and inventoried; every design-critical claim was then adversarially re-verified against the source. Citations use `path:line` form. Where a citation refers to `cleanroom-src/`, remember that directory is reference material only — nothing in this design makes the server's code or build depend on it.

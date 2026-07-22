@@ -9,6 +9,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { LOADERS, LOADER_IDS, TARGET_VERSION } from '../loaders.js';
 import { DBS, DB_IDS, isInstalled } from '../dbs.js';
 import { ExampleService } from '../services/example-service.js';
+import { MappingsService } from '../services/mappings-service.js';
 
 export function handleListTargets(): CallToolResult {
   try {
@@ -40,14 +41,29 @@ export function handleListTargets(): CallToolResult {
       output += '\n**Indexed documentation versions:** docs database not installed yet\n';
     }
 
+    // Best effort — orientation output must never fail on a service hiccup
+    let mappingsOutdated = false;
+    try {
+      mappingsOutdated = MappingsService.isSchemaOutdated();
+    } catch {
+      mappingsOutdated = false;
+    }
+
     output += '\n## Installed Databases\n\n';
     for (const id of DB_IDS) {
       const spec = DBS[id];
-      const status = isInstalled(id)
-        ? '✅ installed'
-        : spec.required
+      let status: string;
+      if (id === 'mappings' && mappingsOutdated) {
+        // File exists but the schema gate disabled it — "installed" would lie.
+        status =
+          '⚠️ installed but schema-outdated (mappings tools disabled; updates on next startup, or run `npx cleanroom-modding-mcp manage`)';
+      } else if (isInstalled(id)) {
+        status = '✅ installed';
+      } else {
+        status = spec.required
           ? '⬜ not installed (downloads automatically on startup)'
           : '⬜ not installed (`npx cleanroom-modding-mcp manage` to add)';
+      }
       output += `- ${spec.icon} **${spec.name}** — ${status}\n`;
     }
 

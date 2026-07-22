@@ -17,8 +17,8 @@ describe('DbVersioning', () => {
   beforeEach(async () => {
     vi.resetModules();
     // Mock fs module
-    vi.mock('fs', () => ({
-      default: {
+    vi.mock('fs', () => {
+      const fns = {
         existsSync: vi.fn(),
         readFileSync: vi.fn(),
         writeFileSync: vi.fn(),
@@ -28,8 +28,10 @@ describe('DbVersioning', () => {
         unlinkSync: vi.fn(),
         renameSync: vi.fn(),
         createReadStream: vi.fn(),
-      },
-    }));
+      };
+      // Provide named exports too: some modules use `import * as fs from 'fs'`
+      return { default: fns, ...fns };
+    });
 
     const module = await import('./db-versioning.js');
     DbVersioning = module.DbVersioning;
@@ -692,8 +694,8 @@ describe('Version Comparison Edge Cases', () => {
 
   beforeEach(async () => {
     vi.resetModules();
-    vi.mock('fs', () => ({
-      default: {
+    vi.mock('fs', () => {
+      const fns = {
         existsSync: vi.fn().mockReturnValue(false),
         readFileSync: vi.fn(),
         writeFileSync: vi.fn(),
@@ -703,8 +705,10 @@ describe('Version Comparison Edge Cases', () => {
         unlinkSync: vi.fn(),
         renameSync: vi.fn(),
         createReadStream: vi.fn(),
-      },
-    }));
+      };
+      // Provide named exports too: some modules use `import * as fs from 'fs'`
+      return { default: fns, ...fns };
+    });
 
     const module = await import('./db-versioning.js');
     DbVersioning = module.DbVersioning;

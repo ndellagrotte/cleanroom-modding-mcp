@@ -184,6 +184,82 @@ describe('DbVersioning distribution flow', () => {
     expect(fs.existsSync(markerPath)).toBe(false);
   });
 
+  it('forces an update when the installed DB schema does not match the build', async () => {
+    const { DbVersioning, DBS, dbPath } = await load();
+    fs.mkdirSync(tempDir, { recursive: true });
+
+    // A v1-schema mappings DB on disk with a manifest version EQUAL to the
+    // remote — the version comparison alone would report "up to date".
+    const Database = (await import('better-sqlite3')).default;
+    const db = new Database(dbPath('mappings'));
+    db.exec(
+      `CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+       INSERT INTO metadata VALUES ('schema_version','1');`
+    );
+    db.close();
+    fs.writeFileSync(
+      path.join(tempDir, DBS.mappings.manifestName),
+      JSON.stringify({ version: '1.2.0' })
+    );
+    vi.stubGlobal(
+      'fetch',
+      mockFetch([
+        {
+          url: /\/releases$/,
+          body: [
+            {
+              id: 9,
+              tag_name: 'v9.9.9',
+              published_at: '2026-01-01T00:00:00Z',
+              assets: [
+                {
+                  name: 'mappings.db',
+                  browser_download_url: 'https://cdn.test/mappings.db',
+                  size: 1,
+                },
+                {
+                  name: 'mappings-manifest.json',
+                  browser_download_url: 'https://cdn.test/mappings-manifest.json',
+                  size: 1,
+                },
+              ],
+            },
+          ],
+        },
+        {
+          url: /mappings-manifest\.json$/,
+          body: {
+            version: '1.2.0',
+            timestamp: '',
+            type: 'full',
+            hash: DB_HASH,
+            size: DB_CONTENT.length,
+            downloadUrl: 'https://cdn.test/mappings.db',
+            changelog: '',
+          },
+        },
+      ])
+    );
+
+    expect(await new DbVersioning(DBS.mappings).isUpdateAvailable()).toBe(true);
+  });
+
+  it('never auto-updates a locally built database', async () => {
+    const { DbVersioning, DBS } = await load();
+    fs.mkdirSync(tempDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDir, DBS.mappings.manifestName),
+      JSON.stringify({ version: '0.0.0-local', source: 'local-build' })
+    );
+    const fetchSpy = mockFetch([{ url: /\/releases$/, body: releasesFixture() }]);
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const versioning = new DbVersioning(DBS.mappings);
+    expect(await versioning.isUpdateAvailable()).toBe(false);
+    // The decision is local: no release lookup happens at all.
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('backs up the existing database before replacing it', async () => {
     const manifest = manifestFixture({ downloadUrl: 'https://cdn.test/v0.5.0/docs.db' });
     vi.stubGlobal('fetch', mockFetch([{ url: /docs\.db$/, body: {}, binary: DB_CONTENT }]));
