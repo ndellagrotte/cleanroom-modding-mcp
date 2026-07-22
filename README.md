@@ -6,7 +6,7 @@
 
 _Docs, SRG mappings, and cross-loader porting knowledge for the Cleanroom / Forge 1.12.2 ecosystem_
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-green?style=flat-square)](https://opensource.org/licenses/MIT)
+[![License: GPL-V3](https://img.shields.io/badge/License-GPLV3-green?style=flat-square)](https://opensource.org/license/gpl-3.0)
 [![Node.js](https://img.shields.io/badge/Node.js-≥20.0.0-339933?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org/)
 
 </div>
@@ -15,7 +15,7 @@ _Docs, SRG mappings, and cross-loader porting knowledge for the Cleanroom / Forg
 
 **cleanroom-modding-mcp** is a [Model Context Protocol](https://modelcontextprotocol.io/) server whose mission is making an AI agent as effective as a veteran 1.12.2 modder. It serves three workflows, in priority order:
 
-1. **From-scratch [Cleanroom](https://github.com/CleanroomMC/Cleanroom) mod development** — Cleanroom is the continuation of MinecraftForge for Minecraft 1.12.2, running on Java 25+ with built-in mixin support.
+1. **From-scratch [Cleanroom](https://github.com/CleanroomMC/Cleanroom) mod development** — Cleanroom is the continuation of the Forge modloader for Minecraft 1.12.2, running on Java 25+ with built-in mixin support.
 2. **Cross-loader ports to Cleanroom** — the Fabric and NeoForge corpora are retained as *porting reference*: searchable source-loader documentation for translating mods to 1.12.2.
 3. **Backports to Cleanroom** — modern-Minecraft knowledge (docs, Parchment/Mojang mappings) serves as the source side of a backport.
 
@@ -49,9 +49,11 @@ All database assets are attached to this repository's `v{version}` GitHub Releas
 | Database | File | Installed | Auto-update |
 | --- | --- | --- | --- |
 | 📚 Documentation | `docs.db` | automatically (postinstall / first use) | on every startup |
-| 🗺️ Mappings | `mappings.db` | via `manage` | once installed |
+| 🗺️ Mappings | `mappings.db` | via `manage` (prebuilt download, or local 1.12.2 build) | once installed¹ |
 | 🧩 Mod examples | `examples.db` | via `manage` | once installed |
 | 🧬 Cleanroom API | `cleanroom-api.db` | via `manage` | once installed |
+
+¹ The mappings database can also be **built on-device** — `npx cleanroom-modding-mcp manage --build-mappings` fetches the MCP sources (~730 KB from `maven.outlands.top` / `maven.minecraftforge.net`) and builds the 1.12.2 MCP/SRG data locally in under a minute (no modern reference versions). Locally built databases are never overwritten by auto-update; switch back to the prebuilt DB explicitly via `manage`.
 
 Databases live in a shared platform-standard data directory:
 
@@ -69,10 +71,9 @@ Four base tools are always available; mappings and mod-examples tool groups regi
 | `get_example` | Code examples for modding topics, filterable by scope/loader/version |
 | `explain_concept` | Concept explanations from a loader's perspective (default: Cleanroom) — capabilities, SRG names, mixins, `mcmod.info`, … |
 | `list_targets` | Orientation: the loader/version matrix, indexed versions, installed databases |
-| `search_mappings`, `get_class_details`, `lookup_obfuscated`*, `get_method_signature`, `list_mapping_versions`, `browse_package` | Minecraft class/method/field mappings (requires `mappings.db`) |
+| `resolve_symbol` | Crash-log workhorse: resolve any symbol (SRG `func_/field_/p_`, obfuscated notch tokens, readable names) to all mapping layers (requires `mappings.db`) |
+| `search_mappings`, `get_class_details`, `get_method_signature`, `list_mapping_versions`, `browse_package` | Minecraft class/method/field mappings — 1.12.2 MCP/SRG (default) + modern Parchment/Mojang backport reference (requires `mappings.db`) |
 | `search_mod_examples`, `get_mod_example`, `list_canonical_mods`, `list_mod_categories`, `get_mod_patterns` | Curated mod examples (requires `examples.db`) |
-
-\* `lookup_obfuscated` becomes `resolve_symbol` (SRG-aware) when the 1.12.2 mappings land.
 
 ## Environment Variables
 
@@ -103,4 +104,4 @@ Every database and its `<id>-manifest.json` are uploaded to the main `v{version}
 
 ## Credits & License
 
-MIT. Forked from [OGMatrix/mcmodding-mcp](https://github.com/OGMatrix/mcmodding-mcp); reoriented for the [CleanroomMC](https://github.com/CleanroomMC) ecosystem (not affiliated with CleanroomMC).
+GPL-V3. Forked from [OGMatrix/mcmodding-mcp](https://github.com/OGMatrix/mcmodding-mcp); reoriented for the [CleanroomMC](https://github.com/CleanroomMC) ecosystem (not affiliated with CleanroomMC).

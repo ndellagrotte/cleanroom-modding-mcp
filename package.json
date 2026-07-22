@@ -1,12 +1,39 @@
 {
-  "name": "cleanroom-modding-mcp",
-  "version": "0.4.5",
-  "packageManager": "pnpm@10.30.0",
+  "name": "@ndellagrotte/cleanroom-modding-mcp",
+  "version": "1.0.0",
   "description": "MCP server enabling AI agents to build Cleanroom (Minecraft 1.12.2) mods — docs, SRG mappings, and cross-loader porting knowledge",
+  "keywords": [
+    "minecraft",
+    "modding",
+    "cleanroom",
+    "forge",
+    "1.12.2",
+    "srg",
+    "fabric",
+    "neoforge",
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "documentation"
+  ],
+  "homepage": "https://github.com/ndellagrotte/cleanroom-modding-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/ndellagrotte/cleanroom-modding-mcp/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ndellagrotte/cleanroom-modding-mcp.git"
+  },
+  "license": "GPL-3.0-only",
+  "author": "Nicholas DellaGrotte <nicholas.dellagrotte@pm.me> (https://github.com/ndellagrotte)",
   "type": "module",
   "main": "dist/index.js",
+  "types": "./dist/index.d.ts",
   "bin": {
     "cleanroom-modding-mcp": "dist/index.js"
+  },
+  "directories": {
+    "doc": "docs"
   },
   "files": [
     "dist",
@@ -42,28 +69,10 @@
     "index-mappings": "npx tsx scripts/index-mappings.ts",
     "index-mappings:force": "npx tsx scripts/index-mappings.ts --force"
   },
-  "keywords": [
-    "minecraft",
-    "modding",
-    "cleanroom",
-    "forge",
-    "1.12.2",
-    "srg",
-    "fabric",
-    "neoforge",
-    "mcp",
-    "model-context-protocol",
-    "ai",
-    "documentation"
-  ],
-  "author": "ndellagrotte",
-  "license": "MIT",
-  "engines": {
-    "node": ">=20.0.0"
-  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@xenova/transformers": "^2.17.2",
+    "adm-zip": "^0.5.17",
     "better-sqlite3": "^12.10.0",
     "cheerio": "^1.2.0",
     "jsonrepair": "^3.14.0",
@@ -82,7 +91,6 @@
     "@typescript-eslint/parser": "^8.59.3",
     "@vitest/coverage-v8": "^4.1.6",
     "@vitest/ui": "^4.1.6",
-    "adm-zip": "^0.5.17",
     "eslint": "^9.15.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.2.1",
@@ -95,6 +103,10 @@
     "typescript-eslint": "^8.59.3",
     "vitest": "^4.1.6"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "pnpm@10.30.0",
   "lint-staged": {
     "*.ts": [
       "eslint --fix",
@@ -106,14 +118,6 @@
       "@commitlint/config-conventional"
     ]
   },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/ndellagrotte/cleanroom-modding-mcp.git"
-  },
-  "bugs": {
-    "url": "https://github.com/ndellagrotte/cleanroom-modding-mcp/issues"
-  },
-  "homepage": "https://github.com/ndellagrotte/cleanroom-modding-mcp#readme",
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3",
