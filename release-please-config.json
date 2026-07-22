@@ -68,11 +68,7 @@
           "hidden": false
         }
       ],
-      "extra-files": [
-        "src/index.ts",
-        "scripts/generate-db-manifest.ts",
-        "scripts/generate-mod-examples-manifest.ts"
-      ]
+      "extra-files": []
     }
   },
   "plugins": [
@@ -82,7 +78,7 @@
     },
     {
       "type": "linked-versions",
-      "groupName": "mcmodding-mcp",
+      "groupName": "cleanroom-modding-mcp",
       "components": ["."]
     }
   ],

@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Please check the [README](https://github.com/OGMatrix/mcmodding-mcp) first!
+        Please check the [README](https://github.com/ndellagrotte/cleanroom-modding-mcp) first!
 
   - type: textarea
     id: question

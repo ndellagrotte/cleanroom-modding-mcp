@@ -2,13 +2,15 @@
  * Type definitions for the indexer
  */
 
+import type { Loader } from '../loaders.js';
+
 export interface DocumentPage {
   url: string;
   title: string;
   content: string;
   rawHtml: string;
   category: string;
-  loader: 'fabric' | 'neoforge' | 'shared';
+  loader: Loader;
   minecraftVersion?: string;
   sections: DocumentSection[];
   metadata: PageMetadata;
@@ -74,11 +76,8 @@ export interface IndexStats {
   totalCodeBlocks: number;
   lastUpdated: Date;
   version: string;
-  loaders: {
-    fabric: number;
-    neoforge: number;
-    shared: number;
-  };
+  /** Document count per loader id — dynamic so unknown loaders are never dropped. */
+  loaders: Record<string, number>;
 }
 
 export interface ChunkOptions {

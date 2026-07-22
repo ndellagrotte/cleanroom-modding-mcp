@@ -17,12 +17,20 @@ import os from 'os';
 import { DocumentCrawler, getFabricDocumentationUrls } from '../src/indexer/crawler.js';
 import { DocumentChunker } from '../src/indexer/chunker.js';
 import { DocumentStore } from '../src/indexer/store.js';
+import { DBS } from '../src/dbs.js';
+import { LOADERS, LOADER_IDS, isLoader, type Loader } from '../src/loaders.js';
 import {
   getFabricUrlsFromSitemap,
   getFabricWikiUrlsFromSitemap,
+  getForgeUrlsFromSitemap,
   getNeoforgeUrlsFromSitemap,
 } from '../src/indexer/sitemap.js';
+import {
+  getCleanroomWikiPages,
+  getCleanroomWikiFallbackUrls,
+} from '../src/indexer/cleanroom-wiki.js';
 import { EmbeddingGenerator } from '../src/indexer/embeddings.js';
+import type { DocumentPage } from '../src/indexer/types.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,6 +40,57 @@ interface IndexOptions {
   useSitemap?: boolean;
   generateEmbeddings?: boolean;
   embeddingsBatchSize?: number;
+  loaders?: Loader[];
+}
+
+/** Loaders that have documentation sources registered (excludes 'shared'). */
+const INDEXABLE_LOADERS: Loader[] = LOADER_IDS.filter((id) => LOADERS[id].sources.length > 0);
+
+/**
+ * Discover crawl URLs and/or pre-built pages for one loader.
+ *
+ * The target corpus (cleanroom/forge) is always discovered through the
+ * sources registered in src/loaders.ts; the legacy --sitemap flag keeps its
+ * historical meaning for the reference corpus only (sitemap discovery vs the
+ * static Fabric URL list).
+ */
+async function discoverForLoader(
+  loader: Loader,
+  useSitemap: boolean
+): Promise<{ urls: string[]; pages: DocumentPage[] }> {
+  switch (loader) {
+    case 'fabric': {
+      if (!useSitemap) {
+        return { urls: getFabricDocumentationUrls(), pages: [] };
+      }
+      const urls = [
+        ...(await getFabricWikiUrlsFromSitemap()),
+        ...(await getFabricUrlsFromSitemap()),
+      ];
+      if (urls.length === 0) {
+        // Only Fabric's own failure may trigger the static Fabric fallback —
+        // it must never fire during a run that didn't select fabric.
+        console.log('⚠️  Fabric sitemap fetch failed, falling back to static list');
+        return { urls: getFabricDocumentationUrls(), pages: [] };
+      }
+      return { urls, pages: [] };
+    }
+    case 'neoforge':
+      return { urls: useSitemap ? await getNeoforgeUrlsFromSitemap() : [], pages: [] };
+    case 'forge':
+      return { urls: await getForgeUrlsFromSitemap(), pages: [] };
+    case 'cleanroom': {
+      try {
+        return { urls: [], pages: await getCleanroomWikiPages() };
+      } catch (error) {
+        console.log(`⚠️  Cleanroom repo-markdown ingest failed (${String(error)});`);
+        console.log('    falling back to crawling the live wiki via hashmap.json');
+        return { urls: await getCleanroomWikiFallbackUrls(), pages: [] };
+      }
+    }
+    case 'shared':
+      return { urls: [], pages: [] };
+  }
 }
 
 /**
@@ -82,30 +141,27 @@ async function main(options: IndexOptions = {}) {
   const dataDir = join(__dirname, '..', 'data');
   await mkdir(dataDir, { recursive: true });
 
-  const dbPath = join(dataDir, 'mcmodding-docs.db');
+  const dbPath = join(dataDir, DBS.docs.fileName);
   const store = new DocumentStore(dbPath);
 
   try {
-    // Get URLs to crawl
-    let urls: string[];
-    if (options.useSitemap) {
-      console.log('📡 Fetching URLs from sitemap...');
-      urls = [];
-      urls.push(...(await getFabricWikiUrlsFromSitemap()));
-      urls.push(...(await getFabricUrlsFromSitemap()));
-      urls.push(...(await getNeoforgeUrlsFromSitemap()));
+    // Discover URLs / pre-built pages per selected loader
+    const selectedLoaders = options.loaders ?? INDEXABLE_LOADERS;
+    console.log(`📡 Discovering documentation for: ${selectedLoaders.join(', ')}`);
 
-      if (urls.length === 0) {
-        console.log('⚠️  Sitemap fetch failed, falling back to static list');
-        urls = getFabricDocumentationUrls();
-      } else {
-        console.log(`✅ Fetched ${urls.length} URLs from sitemap`);
-      }
-    } else {
-      urls = getFabricDocumentationUrls();
+    const urls: string[] = [];
+    const prebuiltPages: DocumentPage[] = [];
+    for (const loader of selectedLoaders) {
+      const discovered = await discoverForLoader(loader, options.useSitemap ?? false);
+      console.log(
+        `  • ${loader}: ${discovered.urls.length} URLs to crawl` +
+          (discovered.pages.length > 0 ? `, ${discovered.pages.length} repo-markdown pages` : '')
+      );
+      urls.push(...discovered.urls);
+      prebuiltPages.push(...discovered.pages);
     }
 
-    console.log(`📋 Found ${urls.length} documentation pages to index\n`);
+    console.log(`📋 Found ${urls.length + prebuiltPages.length} documentation pages to index\n`);
 
     // Initialize crawler with progress tracking
     const crawler = new DocumentCrawler({
@@ -125,10 +181,15 @@ async function main(options: IndexOptions = {}) {
       );
     });
 
-    // Crawl all pages
+    // Crawl all pages, then merge in the pages built straight from markdown
     console.log('🕷️  Crawling documentation...');
     const documents = await crawler.crawlAll(urls);
-    console.log(`\n✅ Successfully crawled ${documents.length} pages\n`);
+    console.log(`\n✅ Successfully crawled ${documents.length} pages`);
+    if (prebuiltPages.length > 0) {
+      documents.push(...prebuiltPages);
+      console.log(`📄 Added ${prebuiltPages.length} repo-markdown pages`);
+    }
+    console.log('');
 
     // Initialize chunker
     const chunker = new DocumentChunker({
@@ -261,9 +322,9 @@ async function main(options: IndexOptions = {}) {
     console.log(`  • Total Documents: ${stats.totalDocuments}`);
     console.log(`  • Total Sections: ${stats.totalSections}`);
     console.log(`  • Total Code Blocks: ${stats.totalCodeBlocks}`);
-    console.log(`  • Fabric Docs: ${stats.loaders.fabric}`);
-    console.log(`  • NeoForge Docs: ${stats.loaders.neoforge}`);
-    console.log(`  • Shared Docs: ${stats.loaders.shared}`);
+    for (const [loaderId, count] of Object.entries(stats.loaders)) {
+      console.log(`  • ${loaderId}: ${count} docs`);
+    }
 
     // Show version breakdown
     const versions = store.getAllVersions();
@@ -299,12 +360,40 @@ async function main(options: IndexOptions = {}) {
 
 // Parse command line arguments
 const args = process.argv.slice(2);
+
+/** Parse --loaders a,b / --loaders=a,b into validated loader ids. */
+function parseLoadersArg(argv: string[]): Loader[] | undefined {
+  let raw: string | undefined;
+  const eqForm = argv.find((a) => a.startsWith('--loaders='));
+  if (eqForm) {
+    raw = eqForm.slice('--loaders='.length);
+  } else {
+    const flagIndex = argv.indexOf('--loaders');
+    if (flagIndex !== -1) {
+      raw = argv[flagIndex + 1];
+    }
+  }
+  if (raw === undefined) return undefined;
+
+  const ids = raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const invalid = ids.filter((id) => !isLoader(id));
+  if (ids.length === 0 || invalid.length > 0) {
+    console.error(`Invalid --loaders value "${raw}". Valid ids: ${INDEXABLE_LOADERS.join(', ')}`);
+    process.exit(1);
+  }
+  return ids.filter(isLoader);
+}
+
 const options: IndexOptions = {
   force: args.includes('--force') || args.includes('-f'),
   incremental: args.includes('--incremental') || args.includes('-i'),
   useSitemap: args.includes('--sitemap') || args.includes('-s'),
   generateEmbeddings: args.includes('--embeddings') || args.includes('-e'),
   embeddingsBatchSize: 100,
+  loaders: parseLoadersArg(args),
 };
 
 // Show help
@@ -314,8 +403,10 @@ if (args.includes('--help') || args.includes('-h')) {
   console.log('Options:');
   console.log('  -f, --force         Force full re-index (ignore hashes)');
   console.log('  -i, --incremental   Incremental update (skip unchanged)');
-  console.log('  -s, --sitemap       Fetch URLs from sitemap.xml');
+  console.log('  -s, --sitemap       Fetch reference-corpus URLs from sitemap.xml');
   console.log('  -e, --embeddings    Generate semantic embeddings');
+  console.log('      --loaders a,b   Only index the given loaders');
+  console.log(`                      (default: ${INDEXABLE_LOADERS.join(',')})`);
   console.log('  -h, --help          Show this help message');
   console.log('');
   console.log('Examples:');
@@ -324,6 +415,7 @@ if (args.includes('--help') || args.includes('-h')) {
   console.log('  npm run index-docs -- --sitemap             # Use sitemap for URLs');
   console.log('  npm run index-docs -- --embeddings          # Generate embeddings');
   console.log('  npm run index-docs -- -i -s -e              # All features');
+  console.log('  npm run index-docs -- -s -e --loaders cleanroom,forge   # Target corpus only');
   process.exit(0);
 }
 
@@ -333,6 +425,7 @@ console.log(`  • Force re-index: ${options.force ? 'Yes' : 'No'}`);
 console.log(`  • Incremental: ${options.incremental ? 'Yes' : 'No'}`);
 console.log(`  • Use sitemap: ${options.useSitemap ? 'Yes' : 'No'}`);
 console.log(`  • Generate embeddings: ${options.generateEmbeddings ? 'Yes' : 'No'}`);
+console.log(`  • Loaders: ${(options.loaders ?? INDEXABLE_LOADERS).join(', ')}`);
 console.log('');
 
 main(options).catch((error) => {

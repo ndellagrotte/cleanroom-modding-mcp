@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as fs from 'fs';
 import { getDefaultDbPath } from '../data-dir.js';
+import { DBS } from '../dbs.js';
 
 // ============================================================================
 // Search Algorithm Unit Tests (Pure Functions)
@@ -335,7 +336,7 @@ describe('Search Algorithm Functions', () => {
 // ============================================================================
 
 describe('MappingsService Integration', () => {
-  const TEST_DB_PATH = getDefaultDbPath('parchment-mappings.db');
+  const TEST_DB_PATH = getDefaultDbPath(DBS.mappings.fileName);
   let hasDatabase = false;
 
   beforeAll(() => {
@@ -352,296 +353,293 @@ describe('MappingsService Integration', () => {
     });
   });
 
-  describe.runIf(fs.existsSync(getDefaultDbPath('parchment-mappings.db')))(
-    'MappingsService',
-    () => {
-      let MappingsService: typeof import('./mappings-service.js').MappingsService;
-      let service: InstanceType<typeof MappingsService>;
+  describe.runIf(fs.existsSync(getDefaultDbPath(DBS.mappings.fileName)))('MappingsService', () => {
+    let MappingsService: typeof import('./mappings-service.js').MappingsService;
+    let service: InstanceType<typeof MappingsService>;
 
-      beforeAll(async () => {
-        const module = await import('./mappings-service.js');
-        MappingsService = module.MappingsService;
-        service = new MappingsService(TEST_DB_PATH);
+    beforeAll(async () => {
+      const module = await import('./mappings-service.js');
+      MappingsService = module.MappingsService;
+      service = new MappingsService(TEST_DB_PATH);
+    });
+
+    afterAll(() => {
+      if (service) {
+        service.close();
+      }
+    });
+
+    describe('getStats', () => {
+      it('should return database statistics', () => {
+        const stats = service.getStats();
+
+        expect(stats).toHaveProperty('totalClasses');
+        expect(stats).toHaveProperty('totalMethods');
+        expect(stats).toHaveProperty('totalFields');
+        expect(stats).toHaveProperty('totalParameters');
+        expect(stats).toHaveProperty('minecraftVersions');
+
+        expect(stats.totalClasses).toBeGreaterThan(0);
+        expect(stats.totalMethods).toBeGreaterThan(0);
+        expect(Array.isArray(stats.minecraftVersions)).toBe(true);
+      });
+    });
+
+    describe('getMinecraftVersions', () => {
+      it('should return array of version strings', () => {
+        const versions = service.getMinecraftVersions();
+
+        expect(Array.isArray(versions)).toBe(true);
+        expect(versions.length).toBeGreaterThan(0);
+        // Versions should look like Minecraft versions
+        expect(versions.some((v) => v.startsWith('1.'))).toBe(true);
+      });
+    });
+
+    describe('getLatestVersion', () => {
+      it('should return a version string', () => {
+        const version = service.getLatestVersion();
+
+        expect(typeof version).toBe('string');
+        expect(version).toMatch(/^\d+\.\d+/);
+      });
+    });
+
+    describe('search', () => {
+      describe('exact matching', () => {
+        it('should find exact method name match', () => {
+          const results = service.search({ query: 'sendMessage', limit: 10 });
+
+          expect(results.length).toBeGreaterThan(0);
+          const exactMatch = results.find((r) => r.name === 'sendMessage');
+          expect(exactMatch).toBeDefined();
+          expect(exactMatch?.score).toBe(100);
+        });
+
+        it('should find exact class name match', () => {
+          const results = service.search({ query: 'BlockEntity', limit: 10 });
+
+          expect(results.length).toBeGreaterThan(0);
+          const exactMatch = results.find((r) => r.name === 'BlockEntity');
+          expect(exactMatch).toBeDefined();
+        });
       });
 
-      afterAll(() => {
-        if (service) {
-          service.close();
+      describe('natural language queries', () => {
+        it('should find CamelCase from space-separated query', () => {
+          const results = service.search({ query: 'get name', limit: 20 });
+
+          expect(results.length).toBeGreaterThan(0);
+          // Should find methods with 'get' and 'name' tokens
+          const match = results.find((r) => r.name.toLowerCase().includes('name'));
+          expect(match).toBeDefined();
+        });
+
+        it('should find multi-word methods', () => {
+          const results = service.search({ query: 'set health', limit: 20 });
+
+          expect(results.length).toBeGreaterThan(0);
+          // Should find methods with health
+          const match = results.find((r) => r.name.toLowerCase().includes('health'));
+          expect(match).toBeDefined();
+        });
+      });
+
+      describe('fuzzy matching', () => {
+        it('should find method with typo (missing letter)', () => {
+          const results = service.search({ query: 'setHelth', limit: 10 });
+
+          expect(results.length).toBeGreaterThan(0);
+          const match = results.find((r) => r.name === 'setHealth');
+          expect(match).toBeDefined();
+          expect(match!.score).toBeGreaterThan(50);
+        });
+
+        it('should find method with transposed letters', () => {
+          const results = service.search({ query: 'rendor', limit: 20 });
+
+          expect(results.length).toBeGreaterThan(0);
+          // Should find 'render' related methods
+          const match = results.find((r) => r.name.toLowerCase().includes('render'));
+          expect(match).toBeDefined();
+        });
+      });
+
+      describe('abbreviation expansion', () => {
+        it('should expand msg to message', () => {
+          const results = service.search({ query: 'send msg', limit: 20 });
+
+          expect(results.length).toBeGreaterThan(0);
+          const match = results.find((r) => r.name.toLowerCase().includes('message'));
+          expect(match).toBeDefined();
+        });
+
+        it('should expand inv to inventory', () => {
+          const results = service.search({ query: 'clear inv', limit: 20 });
+
+          expect(results.length).toBeGreaterThan(0);
+          const match = results.find((r) => r.name.toLowerCase().includes('inventory'));
+          expect(match).toBeDefined();
+        });
+      });
+
+      describe('type filtering', () => {
+        it('should filter by method type', () => {
+          const results = service.search({ query: 'render', type: 'method', limit: 20 });
+
+          expect(results.length).toBeGreaterThan(0);
+          results.forEach((r) => {
+            expect(r.type).toBe('method');
+          });
+        });
+
+        it('should filter by class type', () => {
+          const results = service.search({ query: 'Entity', type: 'class', limit: 20 });
+
+          expect(results.length).toBeGreaterThan(0);
+          results.forEach((r) => {
+            expect(r.type).toBe('class');
+          });
+        });
+
+        it('should filter by field type', () => {
+          const results = service.search({ query: 'SLOTS', type: 'field', limit: 20 });
+
+          expect(results.length).toBeGreaterThan(0);
+          results.forEach((r) => {
+            expect(r.type).toBe('field');
+          });
+        });
+      });
+
+      describe('limit handling', () => {
+        it('should respect limit parameter', () => {
+          const results5 = service.search({ query: 'get', limit: 5 });
+          const results20 = service.search({ query: 'get', limit: 20 });
+
+          expect(results5.length).toBeLessThanOrEqual(5);
+          expect(results20.length).toBeLessThanOrEqual(20);
+          expect(results20.length).toBeGreaterThan(results5.length);
+        });
+      });
+
+      describe('edge cases', () => {
+        it('should return empty for nonsense query', () => {
+          const results = service.search({ query: 'xyznonexistent12345', limit: 10 });
+
+          expect(results.length).toBe(0);
+        });
+
+        it('should handle single character query gracefully', () => {
+          const results = service.search({ query: 'a', limit: 10 });
+
+          // Should return results but not crash
+          expect(Array.isArray(results)).toBe(true);
+        });
+
+        it('should handle empty query', () => {
+          const results = service.search({ query: '', limit: 10 });
+
+          expect(results.length).toBe(0);
+        });
+
+        it('should handle query with only spaces', () => {
+          const results = service.search({ query: '   ', limit: 10 });
+
+          expect(results.length).toBe(0);
+        });
+      });
+
+      describe('internal method deprioritization', () => {
+        it('should rank normal methods higher than lambda methods', () => {
+          const results = service.search({ query: 'static', limit: 50 });
+
+          // If lambda methods are present, they should have lower scores
+          const lambdaResults = results.filter((r) => r.name.includes('lambda$'));
+          const normalResults = results.filter(
+            (r) => !r.name.includes('lambda$') && !r.name.startsWith('_')
+          );
+
+          if (lambdaResults.length > 0 && normalResults.length > 0) {
+            const avgLambdaScore =
+              lambdaResults.reduce((a, b) => a + b.score, 0) / lambdaResults.length;
+            const avgNormalScore =
+              normalResults.reduce((a, b) => a + b.score, 0) / normalResults.length;
+            expect(avgNormalScore).toBeGreaterThan(avgLambdaScore);
+          }
+        });
+      });
+    });
+
+    describe('getClass', () => {
+      it('should return class by full name', () => {
+        const cls = service.getClass('net.minecraft.world.level.block.Block');
+
+        expect(cls).toBeDefined();
+        expect(cls?.name).toBe('Block');
+      });
+
+      it('should return null/undefined for non-existent class', () => {
+        const cls = service.getClass('com.nonexistent.FakeClass12345');
+
+        expect(cls).toBeFalsy();
+      });
+    });
+
+    describe('getClassMethods', () => {
+      it('should return methods for a class', () => {
+        const cls = service.getClass('net.minecraft.world.level.block.Block');
+        if (cls) {
+          const methods = service.getClassMethods(cls.id);
+          expect(Array.isArray(methods)).toBe(true);
         }
       });
+    });
 
-      describe('getStats', () => {
-        it('should return database statistics', () => {
-          const stats = service.getStats();
+    describe('getClassFields', () => {
+      it('should return fields for a class', () => {
+        const cls = service.getClass('net.minecraft.world.level.block.Block');
+        if (cls) {
+          const fields = service.getClassFields(cls.id);
+          expect(Array.isArray(fields)).toBe(true);
+        }
+      });
+    });
 
-          expect(stats).toHaveProperty('totalClasses');
-          expect(stats).toHaveProperty('totalMethods');
-          expect(stats).toHaveProperty('totalFields');
-          expect(stats).toHaveProperty('totalParameters');
-          expect(stats).toHaveProperty('minecraftVersions');
+    describe('lookupObfuscated', () => {
+      it('should return null for invalid obfuscated name', () => {
+        const result = service.lookupObfuscated('notarealclass');
 
-          expect(stats.totalClasses).toBeGreaterThan(0);
-          expect(stats.totalMethods).toBeGreaterThan(0);
-          expect(Array.isArray(stats.minecraftVersions)).toBe(true);
-        });
+        expect(result).toBeNull();
+      });
+    });
+
+    describe('getPackages', () => {
+      it('should return list of top-level packages', () => {
+        const packages = service.getPackages();
+
+        expect(Array.isArray(packages)).toBe(true);
+        expect(packages.length).toBeGreaterThan(0);
+        // Should contain common Minecraft packages
+        expect(packages.some((p) => p === 'net' || p === 'com')).toBe(true);
+      });
+    });
+
+    describe('getClassesInPackage', () => {
+      it('should return classes in a package', () => {
+        const classes = service.getClassesInPackage('net.minecraft.world');
+
+        expect(Array.isArray(classes)).toBe(true);
+        expect(classes.length).toBeGreaterThan(0);
       });
 
-      describe('getMinecraftVersions', () => {
-        it('should return array of version strings', () => {
-          const versions = service.getMinecraftVersions();
+      it('should return empty array for non-existent package', () => {
+        const classes = service.getClassesInPackage('nonexistent.package.path');
 
-          expect(Array.isArray(versions)).toBe(true);
-          expect(versions.length).toBeGreaterThan(0);
-          // Versions should look like Minecraft versions
-          expect(versions.some((v) => v.startsWith('1.'))).toBe(true);
-        });
+        expect(classes).toEqual([]);
       });
-
-      describe('getLatestVersion', () => {
-        it('should return a version string', () => {
-          const version = service.getLatestVersion();
-
-          expect(typeof version).toBe('string');
-          expect(version).toMatch(/^\d+\.\d+/);
-        });
-      });
-
-      describe('search', () => {
-        describe('exact matching', () => {
-          it('should find exact method name match', () => {
-            const results = service.search({ query: 'sendMessage', limit: 10 });
-
-            expect(results.length).toBeGreaterThan(0);
-            const exactMatch = results.find((r) => r.name === 'sendMessage');
-            expect(exactMatch).toBeDefined();
-            expect(exactMatch?.score).toBe(100);
-          });
-
-          it('should find exact class name match', () => {
-            const results = service.search({ query: 'BlockEntity', limit: 10 });
-
-            expect(results.length).toBeGreaterThan(0);
-            const exactMatch = results.find((r) => r.name === 'BlockEntity');
-            expect(exactMatch).toBeDefined();
-          });
-        });
-
-        describe('natural language queries', () => {
-          it('should find CamelCase from space-separated query', () => {
-            const results = service.search({ query: 'get name', limit: 20 });
-
-            expect(results.length).toBeGreaterThan(0);
-            // Should find methods with 'get' and 'name' tokens
-            const match = results.find((r) => r.name.toLowerCase().includes('name'));
-            expect(match).toBeDefined();
-          });
-
-          it('should find multi-word methods', () => {
-            const results = service.search({ query: 'set health', limit: 20 });
-
-            expect(results.length).toBeGreaterThan(0);
-            // Should find methods with health
-            const match = results.find((r) => r.name.toLowerCase().includes('health'));
-            expect(match).toBeDefined();
-          });
-        });
-
-        describe('fuzzy matching', () => {
-          it('should find method with typo (missing letter)', () => {
-            const results = service.search({ query: 'setHelth', limit: 10 });
-
-            expect(results.length).toBeGreaterThan(0);
-            const match = results.find((r) => r.name === 'setHealth');
-            expect(match).toBeDefined();
-            expect(match!.score).toBeGreaterThan(50);
-          });
-
-          it('should find method with transposed letters', () => {
-            const results = service.search({ query: 'rendor', limit: 20 });
-
-            expect(results.length).toBeGreaterThan(0);
-            // Should find 'render' related methods
-            const match = results.find((r) => r.name.toLowerCase().includes('render'));
-            expect(match).toBeDefined();
-          });
-        });
-
-        describe('abbreviation expansion', () => {
-          it('should expand msg to message', () => {
-            const results = service.search({ query: 'send msg', limit: 20 });
-
-            expect(results.length).toBeGreaterThan(0);
-            const match = results.find((r) => r.name.toLowerCase().includes('message'));
-            expect(match).toBeDefined();
-          });
-
-          it('should expand inv to inventory', () => {
-            const results = service.search({ query: 'clear inv', limit: 20 });
-
-            expect(results.length).toBeGreaterThan(0);
-            const match = results.find((r) => r.name.toLowerCase().includes('inventory'));
-            expect(match).toBeDefined();
-          });
-        });
-
-        describe('type filtering', () => {
-          it('should filter by method type', () => {
-            const results = service.search({ query: 'render', type: 'method', limit: 20 });
-
-            expect(results.length).toBeGreaterThan(0);
-            results.forEach((r) => {
-              expect(r.type).toBe('method');
-            });
-          });
-
-          it('should filter by class type', () => {
-            const results = service.search({ query: 'Entity', type: 'class', limit: 20 });
-
-            expect(results.length).toBeGreaterThan(0);
-            results.forEach((r) => {
-              expect(r.type).toBe('class');
-            });
-          });
-
-          it('should filter by field type', () => {
-            const results = service.search({ query: 'SLOTS', type: 'field', limit: 20 });
-
-            expect(results.length).toBeGreaterThan(0);
-            results.forEach((r) => {
-              expect(r.type).toBe('field');
-            });
-          });
-        });
-
-        describe('limit handling', () => {
-          it('should respect limit parameter', () => {
-            const results5 = service.search({ query: 'get', limit: 5 });
-            const results20 = service.search({ query: 'get', limit: 20 });
-
-            expect(results5.length).toBeLessThanOrEqual(5);
-            expect(results20.length).toBeLessThanOrEqual(20);
-            expect(results20.length).toBeGreaterThan(results5.length);
-          });
-        });
-
-        describe('edge cases', () => {
-          it('should return empty for nonsense query', () => {
-            const results = service.search({ query: 'xyznonexistent12345', limit: 10 });
-
-            expect(results.length).toBe(0);
-          });
-
-          it('should handle single character query gracefully', () => {
-            const results = service.search({ query: 'a', limit: 10 });
-
-            // Should return results but not crash
-            expect(Array.isArray(results)).toBe(true);
-          });
-
-          it('should handle empty query', () => {
-            const results = service.search({ query: '', limit: 10 });
-
-            expect(results.length).toBe(0);
-          });
-
-          it('should handle query with only spaces', () => {
-            const results = service.search({ query: '   ', limit: 10 });
-
-            expect(results.length).toBe(0);
-          });
-        });
-
-        describe('internal method deprioritization', () => {
-          it('should rank normal methods higher than lambda methods', () => {
-            const results = service.search({ query: 'static', limit: 50 });
-
-            // If lambda methods are present, they should have lower scores
-            const lambdaResults = results.filter((r) => r.name.includes('lambda$'));
-            const normalResults = results.filter(
-              (r) => !r.name.includes('lambda$') && !r.name.startsWith('_')
-            );
-
-            if (lambdaResults.length > 0 && normalResults.length > 0) {
-              const avgLambdaScore =
-                lambdaResults.reduce((a, b) => a + b.score, 0) / lambdaResults.length;
-              const avgNormalScore =
-                normalResults.reduce((a, b) => a + b.score, 0) / normalResults.length;
-              expect(avgNormalScore).toBeGreaterThan(avgLambdaScore);
-            }
-          });
-        });
-      });
-
-      describe('getClass', () => {
-        it('should return class by full name', () => {
-          const cls = service.getClass('net.minecraft.world.level.block.Block');
-
-          expect(cls).toBeDefined();
-          expect(cls?.name).toBe('Block');
-        });
-
-        it('should return null/undefined for non-existent class', () => {
-          const cls = service.getClass('com.nonexistent.FakeClass12345');
-
-          expect(cls).toBeFalsy();
-        });
-      });
-
-      describe('getClassMethods', () => {
-        it('should return methods for a class', () => {
-          const cls = service.getClass('net.minecraft.world.level.block.Block');
-          if (cls) {
-            const methods = service.getClassMethods(cls.id);
-            expect(Array.isArray(methods)).toBe(true);
-          }
-        });
-      });
-
-      describe('getClassFields', () => {
-        it('should return fields for a class', () => {
-          const cls = service.getClass('net.minecraft.world.level.block.Block');
-          if (cls) {
-            const fields = service.getClassFields(cls.id);
-            expect(Array.isArray(fields)).toBe(true);
-          }
-        });
-      });
-
-      describe('lookupObfuscated', () => {
-        it('should return null for invalid obfuscated name', () => {
-          const result = service.lookupObfuscated('notarealclass');
-
-          expect(result).toBeNull();
-        });
-      });
-
-      describe('getPackages', () => {
-        it('should return list of top-level packages', () => {
-          const packages = service.getPackages();
-
-          expect(Array.isArray(packages)).toBe(true);
-          expect(packages.length).toBeGreaterThan(0);
-          // Should contain common Minecraft packages
-          expect(packages.some((p) => p === 'net' || p === 'com')).toBe(true);
-        });
-      });
-
-      describe('getClassesInPackage', () => {
-        it('should return classes in a package', () => {
-          const classes = service.getClassesInPackage('net.minecraft.world');
-
-          expect(Array.isArray(classes)).toBe(true);
-          expect(classes.length).toBeGreaterThan(0);
-        });
-
-        it('should return empty array for non-existent package', () => {
-          const classes = service.getClassesInPackage('nonexistent.package.path');
-
-          expect(classes).toEqual([]);
-        });
-      });
-    }
-  );
+    });
+  });
 });
 
 // ============================================================================
@@ -652,7 +650,7 @@ describe('Scoring Algorithm', () => {
   describe('score consistency', () => {
     it('exact match should always score 100', () => {
       // We test this through the service if available
-      const TEST_DB_PATH = getDefaultDbPath('parchment-mappings.db');
+      const TEST_DB_PATH = getDefaultDbPath(DBS.mappings.fileName);
       if (!fs.existsSync(TEST_DB_PATH)) {
         console.log('Skipping scoring tests - no database');
         return;
@@ -698,7 +696,7 @@ describe('Scoring Algorithm', () => {
 // ============================================================================
 
 describe('Result Format', () => {
-  const TEST_DB_PATH = getDefaultDbPath('parchment-mappings.db');
+  const TEST_DB_PATH = getDefaultDbPath(DBS.mappings.fileName);
 
   describe.runIf(fs.existsSync(TEST_DB_PATH))('MappingSearchResult structure', () => {
     let MappingsService: typeof import('./mappings-service.js').MappingsService;

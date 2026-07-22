@@ -2,49 +2,42 @@
 /* eslint-disable no-undef, no-control-regex, no-unused-vars */
 
 /**
- * MCModding-MCP Postinstall Script
- * Downloads the documentation database during npm installation
- * with a stunning visual CLI experience
+ * cleanroom-modding-mcp postinstall script
+ * Downloads the documentation database during npm installation.
+ *
+ * All identity facts (repo slug, DB/manifest filenames, data directory) come
+ * from the compiled registry in dist/ — this script must never duplicate them.
+ * In a dev checkout without dist/, the download is skipped: the server fetches
+ * the database on first use.
  */
 
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import https from 'https';
-import os from 'os';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// SHARED DATA DIRECTORY (must match src/data-dir.ts logic exactly)
+// CONFIGURATION (from the compiled dist/ registry — published tarballs always ship dist/)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function getDefaultDataDir() {
-  if (process.env.MCMODDING_DATA_DIR) {
-    return process.env.MCMODDING_DATA_DIR;
-  }
-  const platform = process.platform;
-  if (platform === 'win32') {
-    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    return path.join(appData, 'mcmodding-mcp');
-  }
-  if (platform === 'darwin') {
-    return path.join(os.homedir(), 'Library', 'Application Support', 'mcmodding-mcp');
-  }
-  // Linux / FreeBSD / others: XDG Base Directory Specification
-  const xdgDataHome = process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share');
-  return path.join(xdgDataHome, 'mcmodding-mcp');
+let CONFIG;
+try {
+  const { getDefaultDataDir } = await import('../dist/data-dir.js');
+  const { DBS, getApiBase, REPO_URL, USER_AGENT, PACKAGE_NAME } = await import('../dist/dbs.js');
+  CONFIG = {
+    releasesUrl: `${getApiBase()}/releases`,
+    dataDir: getDefaultDataDir(),
+    dbFileName: DBS.docs.fileName,
+    manifestFileName: DBS.docs.manifestName,
+    userAgent: USER_AGENT,
+    repoUrl: REPO_URL,
+    packageName: PACKAGE_NAME,
+  };
+} catch {
+  console.log('cleanroom-modding-mcp: dist/ not built — skipping database download.');
+  console.log('The database will be downloaded on first use.');
+  process.exit(0);
 }
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// CONFIGURATION
-// ═══════════════════════════════════════════════════════════════════════════════
-
-const CONFIG = {
-  repoUrl: 'https://api.github.com/repos/OGMatrix/mcmodding-mcp/releases',
-  dataDir: getDefaultDataDir(),
-  dbFileName: 'mcmodding-docs.db',
-  manifestFileName: 'db-manifest.json',
-  userAgent: 'mcmodding-mcp-installer',
-};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ANSI COLORS & STYLES
@@ -203,14 +196,11 @@ function printBanner() {
     c.brightCyan + sym.topLeft + sym.horizontal.repeat(width - 2) + sym.topRight + c.reset
   );
 
-  // ASCII Art Logo
+  // Logo
   const logo = [
-    `${c.brightGreen}    __  __  ___   __  __           _     _ _             ${c.reset}`,
-    `${c.brightGreen}   |  \\/  |/ __| |  \\/  | ___   __| | __| (_)_ __   __ _ ${c.reset}`,
-    `${c.brightGreen}   | |\\/| | |    | |\\/| |/ _ \\ / _\` |/ _\` | | '_ \\ / _\` |${c.reset}`,
-    `${c.brightGreen}   | |  | | |___ | |  | | (_) | (_| | (_| | | | | | (_| |${c.reset}`,
-    `${c.brightGreen}   |_|  |_|\\____||_|  |_|\\___/ \\__,_|\\__,_|_|_| |_|\\__, |${c.reset}`,
-    `${c.brightGreen}                                                   |___/ ${c.reset}`,
+    ``,
+    `${c.brightGreen}${c.bold}CLEANROOM MODDING MCP${c.reset}`,
+    ``,
   ];
 
   logo.forEach((line) => {
@@ -226,8 +216,7 @@ function printBanner() {
   });
 
   // Subtitle
-  console.log(c.brightCyan + sym.vertical + ' '.repeat(innerWidth) + sym.vertical + c.reset);
-  const subtitle = `${c.brightMagenta}${sym.pickaxe} ${c.bold}Minecraft Modding Documentation${c.reset}${c.brightMagenta} ${sym.pickaxe}${c.reset}`;
+  const subtitle = `${c.brightMagenta}${sym.pickaxe} ${c.bold}Minecraft 1.12.2 Modding Knowledge${c.reset}${c.brightMagenta} ${sym.pickaxe}${c.reset}`;
   console.log(
     c.brightCyan +
       sym.vertical +
@@ -419,13 +408,13 @@ function printWelcomeScreen() {
 
   const welcomeLines = [
     '',
-    `${c.bold}${c.brightWhite}Welcome to MCModding-MCP!${c.reset}`,
+    `${c.bold}${c.brightWhite}Welcome to Cleanroom Modding MCP!${c.reset}`,
     '',
-    `${c.dim}Your AI assistant now has access to comprehensive${c.reset}`,
-    `${c.dim}Minecraft modding documentation for:${c.reset}`,
+    `${c.dim}Your AI assistant now has access to Minecraft${c.reset}`,
+    `${c.dim}modding knowledge for:${c.reset}`,
     '',
-    `  ${c.brightGreen}${sym.check}${c.reset} ${c.cyan}Fabric${c.reset} - Lightweight modding toolchain`,
-    `  ${c.brightGreen}${sym.check}${c.reset} ${c.magenta}NeoForge${c.reset} - Community-driven mod loader`,
+    `  ${c.brightGreen}${sym.check}${c.reset} ${c.cyan}Cleanroom / Forge 1.12.2${c.reset} - the development target`,
+    `  ${c.brightGreen}${sym.check}${c.reset} ${c.magenta}Fabric & NeoForge${c.reset} - porting reference`,
     '',
   ];
 
@@ -465,9 +454,9 @@ function printWelcomeScreen() {
     ['', ''],
     [`  ${c.brightBlack}{${c.reset}`, ''],
     [`    ${c.brightBlue}"mcpServers"${c.reset}: {`, ''],
-    [`      ${c.brightGreen}"mcmodding"${c.reset}: {`, ''],
+    [`      ${c.brightGreen}"cleanroom"${c.reset}: {`, ''],
     [`        ${c.brightMagenta}"command"${c.reset}: ${c.yellow}"npx"${c.reset},`, ''],
-    [`        ${c.brightMagenta}"args"${c.reset}: [${c.yellow}"mcmodding-mcp"${c.reset}]`, ''],
+    [`        ${c.brightMagenta}"args"${c.reset}: [${c.yellow}"cleanroom-modding-mcp"${c.reset}]`, ''],
     [`      }`, ''],
     [`    }`, ''],
     [`  ${c.brightBlack}}${c.reset}`, ''],
@@ -504,10 +493,10 @@ function printWelcomeScreen() {
   console.log(c.brightMagenta + '  ' + sym.sVertical + c.reset);
 
   const tools = [
-    [`${c.brightCyan}search_docs${c.reset}`, 'Search documentation with semantic understanding'],
-    [`${c.brightCyan}get_document${c.reset}`, 'Retrieve full documentation pages'],
-    [`${c.brightCyan}list_categories${c.reset}`, 'Browse available documentation categories'],
-    [`${c.brightCyan}get_code_examples${c.reset}`, 'Find relevant code snippets and examples'],
+    [`${c.brightCyan}search_docs${c.reset}`, 'Search modding docs (Cleanroom/Forge 1.12.2 first)'],
+    [`${c.brightCyan}get_example${c.reset}`, 'Get working code examples for modding topics'],
+    [`${c.brightCyan}explain_concept${c.reset}`, 'Explain modding concepts and patterns'],
+    [`${c.brightCyan}list_targets${c.reset}`, 'Show target/reference loaders and installed DBs'],
   ];
 
   tools.forEach(([name, desc]) => {
@@ -530,10 +519,10 @@ function printWelcomeScreen() {
   console.log(c.dim + '  ' + sym.sHorizontal.repeat(width - 4) + c.reset);
   console.log();
   console.log(
-    `  ${c.dim}${sym.book}${c.reset} ${c.brightBlue}GitHub:${c.reset} ${c.underline}https://github.com/OGMatrix/mcmodding-mcp${c.reset}`
+    `  ${c.dim}${sym.book}${c.reset} ${c.brightBlue}GitHub:${c.reset} ${c.underline}${CONFIG.repoUrl}${c.reset}`
   );
   console.log(
-    `  ${c.dim}${sym.warning}${c.reset} ${c.brightBlue}Issues:${c.reset} ${c.underline}https://github.com/OGMatrix/mcmodding-mcp/issues${c.reset}`
+    `  ${c.dim}${sym.warning}${c.reset} ${c.brightBlue}Issues:${c.reset} ${c.underline}${CONFIG.repoUrl}/issues${c.reset}`
   );
   console.log();
   console.log(c.dim + '  ' + sym.sHorizontal.repeat(width - 4) + c.reset);
@@ -670,13 +659,15 @@ async function downloadWithProgress(url, destPath, onProgress) {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 async function fetchReleaseInfo() {
-  const response = await httpsGet(CONFIG.repoUrl);
+  const response = await httpsGet(CONFIG.releasesUrl);
   const releases = JSON.parse(response);
 
-  // Find the first release that has the required assets
+  // Newest v-tag release that has both required assets (releases whose asset
+  // upload failed are skipped).
   for (const release of releases) {
-    const hasManifest = release.assets.some((a) => a.name === 'db-manifest.json');
-    const hasDb = release.assets.some((a) => a.name === 'mcmodding-docs.db');
+    if (!release.tag_name.startsWith('v')) continue;
+    const hasManifest = release.assets.some((a) => a.name === CONFIG.manifestFileName);
+    const hasDb = release.assets.some((a) => a.name === CONFIG.dbFileName);
 
     if (hasManifest && hasDb) {
       return release;
@@ -774,7 +765,7 @@ async function main() {
     let release, manifest;
     try {
       release = await fetchReleaseInfo();
-      const manifestAsset = release.assets.find((a) => a.name === 'db-manifest.json');
+      const manifestAsset = release.assets.find((a) => a.name === CONFIG.manifestFileName);
       if (!manifestAsset) throw new Error('No manifest found in release');
 
       manifest = await fetchManifest(manifestAsset.browser_download_url);

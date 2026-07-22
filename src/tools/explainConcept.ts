@@ -1,13 +1,15 @@
 /**
- * Explain Fabric and Minecraft modding concepts
+ * Explain Minecraft modding concepts (Cleanroom/Forge 1.12.2 by default)
  * Provides comprehensive explanations using hybrid search (FTS + semantic)
  */
 
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConceptService, type ConceptExplanation } from '../services/concept-service.js';
+import { isLoader, type Loader } from '../loaders.js';
 
 export interface ExplainConceptParams {
   concept: string;
+  loader?: string;
 }
 
 // Singleton instance for reuse
@@ -26,6 +28,10 @@ function getConceptService(): ConceptService {
  */
 export async function handleExplainConcept(params: ExplainConceptParams): Promise<CallToolResult> {
   const { concept } = params;
+
+  // Default perspective is the target loader; unknown values are ignored.
+  const loader: Loader | undefined =
+    params.loader && isLoader(params.loader) ? params.loader : undefined;
 
   // Validate input
   if (!concept || typeof concept !== 'string' || concept.trim().length === 0) {
@@ -59,7 +65,7 @@ export async function handleExplainConcept(params: ExplainConceptParams): Promis
     const service = getConceptService();
 
     // Get comprehensive explanation
-    const explanation = await service.explainConcept(trimmedConcept);
+    const explanation = await service.explainConcept(trimmedConcept, loader);
 
     // Format for AI
     const formattedOutput = service.formatForAI(explanation);
@@ -71,7 +77,7 @@ export async function handleExplainConcept(params: ExplainConceptParams): Promis
       suggestions += 'Try:\n';
       suggestions += '- Using a more common term (e.g., "mixin" instead of "bytecode injection")\n';
       suggestions += '- Checking spelling\n';
-      suggestions += '- Using `search_fabric_docs` for broader search\n';
+      suggestions += '- Using `search_docs` for broader search\n';
     }
 
     return {
@@ -103,6 +109,18 @@ export async function handleExplainConcept(params: ExplainConceptParams): Promis
  */
 export function getSuggestedConcepts(): string[] {
   return [
+    // Target-family (Cleanroom / Forge 1.12.2) concepts
+    'capabilities',
+    'srg names',
+    'coremods',
+    'mcmod.info',
+    'creativetabs',
+    'oredictionary',
+    'mixinbooter',
+    'gameregistry',
+    'access transformers',
+    'tileentity',
+    // Cross-loader fundamentals
     'mixin',
     'registry',
     'entrypoint',

@@ -49,6 +49,8 @@ const STOPWORDS = new Set([
  * High-frequency domain terms that should have lower weight
  */
 const COMMON_TERMS = new Set([
+  'cleanroom',
+  'forge',
   'fabric',
   'neoforge',
   'minecraft',

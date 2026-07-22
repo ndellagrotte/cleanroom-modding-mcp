@@ -13,6 +13,9 @@ import {
   type ScoredResult,
 } from './search-utils.js';
 import { getDefaultDbPath } from '../data-dir.js';
+import { DBS } from '../dbs.js';
+import { LOADER_IDS, scopeToLoaders, TARGET_VERSION, type Scope } from '../loaders.js';
+import { DOC_CATEGORIES } from '../categories.js';
 
 // Singleton instance for the embedding generator
 let embeddingGeneratorInstance: EmbeddingGenerator | null = null;
@@ -49,7 +52,10 @@ export interface ExampleSearchOptions {
   topic: string;
   language?: string;
   minecraftVersion?: string;
+  /** Explicit loader filter — overrides `scope` when set. */
   loader?: string;
+  /** Loader-family filter: 'target' (cleanroom/forge), 'reference' (fabric/neoforge), or 'all'. */
+  scope?: Scope;
   category?: string;
   limit?: number;
 }
@@ -74,7 +80,7 @@ export class ExampleService {
   private store: DocumentStore;
 
   constructor(dbPath?: string) {
-    const finalPath = dbPath || process.env.DB_PATH || getDefaultDbPath('mcmodding-docs.db');
+    const finalPath = dbPath || process.env.DB_PATH || getDefaultDbPath(DBS.docs.fileName);
     console.error(`[ExampleService] Using database at: ${finalPath}`);
     this.store = new DocumentStore(finalPath);
   }
@@ -83,7 +89,13 @@ export class ExampleService {
    * Get code examples using intelligent multi-strategy search
    */
   async getExamples(options: ExampleSearchOptions): Promise<CodeExample[]> {
-    const { topic, language, minecraftVersion, loader, category, limit = 5 } = options;
+    const { topic, language, minecraftVersion, category, limit = 5 } = options;
+
+    // Explicit loader wins; otherwise a scope expands to its loader set
+    // ('all' or no scope = no filter).
+    const loader: string | string[] | undefined =
+      options.loader ??
+      (options.scope && options.scope !== 'all' ? scopeToLoaders(options.scope) : undefined);
 
     console.error(`[ExampleService] Searching for: "${topic}"`);
 
@@ -163,10 +175,14 @@ export class ExampleService {
   }
 
   /**
-   * Get the latest Minecraft version from indexed documentation
+   * Resolve "latest" family-scoped: within the target family it is always the
+   * fixed 1.12.2; within reference (or unscoped) it is derived from the
+   * indexed data — never a hardcoded modern version.
    */
-  getLatestMinecraftVersion(): string {
-    // 1.21.10 is the latest stable as of June 2024
+  getLatestMinecraftVersion(scope: Scope = 'target'): string {
+    if (scope === 'target') {
+      return TARGET_VERSION;
+    }
     const versions = this.store.getAllVersions().sort((a, b) => {
       const aParts = a.split('.').map(Number);
       const bParts = b.split('.').map(Number);
@@ -180,11 +196,7 @@ export class ExampleService {
       return 0;
     });
     console.error(`[ExampleService] Available versions: ${versions.join(', ')}`);
-    if (versions.length === 0) {
-      return '1.21.4'; // Fallback default
-    }
-    // Versions are sorted DESC by the store, so first is latest
-    return versions[0] || '1.21.4';
+    return versions[0] || TARGET_VERSION;
   }
 
   /**
@@ -193,7 +205,7 @@ export class ExampleService {
   private async searchViaEmbeddings(
     topic: string,
     options: {
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       category?: string;
     }
@@ -272,7 +284,7 @@ export class ExampleService {
     options: {
       language?: string;
       minecraftVersion?: string;
-      loader?: string;
+      loader?: string | string[];
       category?: string;
     }
   ): ScoredResult<CodeBlockResult>[] {
@@ -335,7 +347,7 @@ export class ExampleService {
     options: {
       language?: string;
       minecraftVersion?: string;
-      loader?: string;
+      loader?: string | string[];
     }
   ): ScoredResult<CodeBlockResult>[] {
     const results: ScoredResult<CodeBlockResult>[] = [];
@@ -382,7 +394,7 @@ export class ExampleService {
     options: {
       language?: string;
       minecraftVersion?: string;
-      loader?: string;
+      loader?: string | string[];
       category?: string;
     }
   ): ScoredResult<CodeBlockResult>[] {
@@ -436,7 +448,7 @@ export class ExampleService {
     options: {
       language?: string;
       minecraftVersion?: string;
-      loader?: string;
+      loader?: string | string[];
       limit?: number;
     }
   ): ScoredResult<CodeBlockResult>[] {
@@ -562,14 +574,13 @@ export class ExampleService {
     loaders: string[];
     versions: string[];
   } {
-    const stats = this.store.getStats();
     const languages = this.store.getAvailableLanguages();
     const versions = this.store.getAllVersions();
 
     return {
-      categories: Object.keys(stats.loaders),
+      categories: [...DOC_CATEGORIES],
       languages,
-      loaders: ['fabric', 'neoforge', 'shared'],
+      loaders: LOADER_IDS,
       versions,
     };
   }

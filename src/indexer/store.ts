@@ -24,6 +24,32 @@ export interface ChunkResult {
   minecraft_version: string | null;
 }
 
+/**
+ * Build a SQL loader filter accepting a single loader id or a list.
+ * - single string  -> ` AND <column> = ?` with one value
+ * - non-empty list -> ` AND <column> IN (?, ...)` with one placeholder per value
+ * - undefined, empty string, or empty list -> no clause (no filter)
+ *
+ * Every query in this file aliases the documents table as `d`, so the column
+ * defaults to `d.loader`; pass a different column expression if a query ever
+ * uses another alias.
+ */
+function loaderFilter(
+  loader: string | string[] | undefined,
+  column: string = 'd.loader'
+): { clause: string; values: string[] } {
+  if (!loader || loader.length === 0) {
+    return { clause: '', values: [] };
+  }
+
+  if (Array.isArray(loader)) {
+    const placeholders = loader.map(() => '?').join(', ');
+    return { clause: ` AND ${column} IN (${placeholders})`, values: [...loader] };
+  }
+
+  return { clause: ` AND ${column} = ?`, values: [loader] };
+}
+
 export class DocumentStore {
   private db: Database.Database;
 
@@ -290,7 +316,7 @@ export class DocumentStore {
   /**
    * Search using chunks (more precise results)
    */
-  searchChunks(query: string, category?: string, loader?: string, limit: number = 10) {
+  searchChunks(query: string, category?: string, loader?: string | string[], limit: number = 10) {
     let sql = `
       SELECT
         c.id,
@@ -316,10 +342,9 @@ export class DocumentStore {
       params.push(category);
     }
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     sql += ` ORDER BY chunks_fts.rank LIMIT ?`;
     params.push(limit);
@@ -331,7 +356,12 @@ export class DocumentStore {
   /**
    * Search documents (broader results)
    */
-  searchDocuments(query: string, category?: string, loader?: string, limit: number = 10) {
+  searchDocuments(
+    query: string,
+    category?: string,
+    loader?: string | string[],
+    limit: number = 10
+  ) {
     let sql = `
       SELECT
         d.id,
@@ -353,10 +383,9 @@ export class DocumentStore {
       params.push(category);
     }
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     sql += ` ORDER BY documents_fts.rank LIMIT ?`;
     params.push(limit);
@@ -393,16 +422,10 @@ export class DocumentStore {
       .prepare("SELECT value FROM metadata WHERE key = 'index_version'")
       .get() as { value: string };
 
-    const loaders = {
-      fabric: 0,
-      neoforge: 0,
-      shared: 0,
-    };
+    const loaders: Record<string, number> = {};
 
     for (const item of loaderCounts) {
-      if (item.loader in loaders) {
-        loaders[item.loader as keyof typeof loaders] = item.count;
-      }
+      loaders[item.loader] = (loaders[item.loader] ?? 0) + item.count;
     }
 
     return {
@@ -578,7 +601,7 @@ export class DocumentStore {
     query: string,
     version: string,
     category?: string,
-    loader?: string,
+    loader?: string | string[],
     limit: number = 10
   ) {
     let sql = `
@@ -607,10 +630,9 @@ export class DocumentStore {
       params.push(category);
     }
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     sql += ` ORDER BY chunks_fts.rank LIMIT ?`;
     params.push(limit);
@@ -649,7 +671,7 @@ export class DocumentStore {
     options: {
       language?: string;
       minecraftVersion?: string;
-      loader?: string;
+      loader?: string | string[];
       category?: string;
       limit?: number;
     } = {}
@@ -695,10 +717,9 @@ export class DocumentStore {
       params.push(minecraftVersion, `${minecraftVersion}.%`);
     }
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     if (category && category !== 'all') {
       sql += ' AND d.category = ?';
@@ -778,7 +799,7 @@ export class DocumentStore {
   getCodeBlocksByLanguage(
     language: string,
     options: {
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       limit?: number;
     } = {}
@@ -808,10 +829,9 @@ export class DocumentStore {
 
     const params: (string | number)[] = [language];
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     if (minecraftVersion) {
       // Prefix match for version (e.g. "1.21" matches "1.21.4")
@@ -846,7 +866,7 @@ export class DocumentStore {
   searchSections(
     query: string,
     options: {
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       category?: string;
       limit?: number;
@@ -869,16 +889,15 @@ export class DocumentStore {
         d.minecraft_version
       FROM sections s
       JOIN documents d ON s.document_id = d.id
-      WHERE s.heading LIKE ? OR s.content LIKE ?
+      WHERE (s.heading LIKE ? OR s.content LIKE ?)
     `;
 
     const searchPattern = `%${query}%`;
     const params: (string | number)[] = [searchPattern, searchPattern];
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     if (minecraftVersion) {
       // Prefix match for version (e.g. "1.21" matches "1.21.4")
@@ -935,7 +954,7 @@ export class DocumentStore {
     embedding: number[],
     options: {
       limit?: number;
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string; // Exact match or prefix
       category?: string;
     } = {}
@@ -968,10 +987,9 @@ export class DocumentStore {
 
     const params: (string | number)[] = [];
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     if (category && category !== 'all') {
       sql += ' AND d.category = ?';
@@ -1035,7 +1053,7 @@ export class DocumentStore {
     options: {
       hasCode?: boolean;
       language?: string;
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       category?: string;
       limit?: number;
@@ -1096,10 +1114,9 @@ export class DocumentStore {
           params.push(language);
         }
 
-        if (loader) {
-          sql += ' AND d.loader = ?';
-          params.push(loader);
-        }
+        const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+        sql += loaderClause;
+        params.push(...loaderValues);
 
         if (minecraftVersion) {
           // Prefix match for version (e.g. "1.21" matches "1.21.4")
@@ -1164,10 +1181,9 @@ export class DocumentStore {
         params.push(language);
       }
 
-      if (loader) {
-        sql += ' AND d.loader = ?';
-        params.push(loader);
-      }
+      const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+      sql += loaderClause;
+      params.push(...loaderValues);
       if (minecraftVersion) {
         // Prefix match for version (e.g. "1.21" matches "1.21.4")
         sql += ' AND (d.minecraft_version = ? OR d.minecraft_version LIKE ?)';
@@ -1195,7 +1211,7 @@ export class DocumentStore {
   searchDocumentsLike(
     patterns: string[],
     options: {
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       category?: string;
       limit?: number;
@@ -1228,10 +1244,9 @@ export class DocumentStore {
       params.push(pattern, pattern);
     }
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
     if (minecraftVersion) {
       // Prefix match for version (e.g. "1.21" matches "1.21.4")
       sql += ' AND (d.minecraft_version = ? OR d.minecraft_version LIKE ?)';
@@ -1265,7 +1280,7 @@ export class DocumentStore {
     codePatterns: string[],
     options: {
       language?: string;
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       limit?: number;
     } = {}
@@ -1307,10 +1322,9 @@ export class DocumentStore {
       params.push(language);
     }
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     if (minecraftVersion) {
       // Prefix match for version (e.g. "1.21" matches "1.21.4")
@@ -1345,7 +1359,7 @@ export class DocumentStore {
   getAllCodeBlocksWithContext(
     options: {
       language?: string;
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       limit?: number;
     } = {}
@@ -1380,10 +1394,9 @@ export class DocumentStore {
       params.push(language);
     }
 
-    if (loader) {
-      sql += ' AND d.loader = ?';
-      params.push(loader);
-    }
+    const { clause: loaderClause, values: loaderValues } = loaderFilter(loader);
+    sql += loaderClause;
+    params.push(...loaderValues);
 
     if (minecraftVersion) {
       // Prefix match for version (e.g. "1.21" matches "1.21.4")

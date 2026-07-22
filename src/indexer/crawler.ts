@@ -11,6 +11,8 @@ import { load, CheerioAPI } from 'cheerio';
 import fetch from 'node-fetch';
 import { createHash } from 'crypto';
 import { detectMinecraftVersion } from './sitemap.js';
+import { detectLoaderFromUrl, type Loader } from '../loaders.js';
+import { categorizeDocPath } from '../categories.js';
 import type {
   DocumentPage,
   DocumentSection,
@@ -168,7 +170,7 @@ export class DocumentCrawler {
       delayMs: 1000,
       retryAttempts: 3,
       retryDelayMs: 2000,
-      userAgent: 'mcmodding-mcp-indexer/0.1.0',
+      userAgent: 'cleanroom-modding-mcp-indexer/0.1.0',
       timeout: 30000,
       ...options,
     };
@@ -321,8 +323,8 @@ export class DocumentCrawler {
     // Detect loader from URL
     const loader = this.detectLoader(url);
 
-    // Detect Minecraft version
-    const minecraftVersion = detectMinecraftVersion(url, content);
+    // Detect Minecraft version (fallback comes from the loader's registry entry)
+    const minecraftVersion = detectMinecraftVersion(url, content, loader);
 
     return {
       url,
@@ -354,16 +356,31 @@ export class DocumentCrawler {
   }
 
   /**
-   * Extract category from URL
+   * Extract category from URL.
+   * Stage 1 is the historical versioned-path heuristic (Fabric/NeoForge docs,
+   * DokuWiki namespaces). When it yields nothing, stage 2 matches individual
+   * path segments — the shape of the Forge 1.12.x RTD tree ("1.12.x" defeats
+   * the version alternation) and the Cleanroom wiki routes.
    */
   private extractCategory(url: string): string {
     const match = url.match(
       /https?:\/\/[^/]+\/(?:.*\/)?(?:(?:\d+(?:\.\d+)*|develop)\/([^/]+)|([^/:\\s]+):)/
     );
-    if (match) {
-      return match[1] || 'general';
+    if (match?.[1]) {
+      return match[1];
     }
-    return 'general';
+
+    let path: string;
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      path = url;
+    }
+    const segments = path
+      .split('/')
+      .filter(Boolean)
+      .filter((s) => s !== 'en' && s !== 'docs' && s !== 'wiki' && !/^\d+(\.\d+)*(\.x)?$/.test(s));
+    return categorizeDocPath(segments);
   }
 
   /**
@@ -734,29 +751,10 @@ export class DocumentCrawler {
   }
 
   /**
-   * Detect loader from URL
+   * Detect loader from URL (host table + path hints live in the loader registry)
    */
-  private detectLoader(url: string): 'fabric' | 'neoforge' | 'shared' {
-    try {
-      const parsed = new URL(url);
-      // Check for fabricmc.net or its subdomains
-      if (parsed.host === 'fabricmc.net' || parsed.host.endsWith('.fabricmc.net')) {
-        return 'fabric';
-      }
-      if (parsed.host === 'neoforged.net' || parsed.host.endsWith('.neoforged.net')) {
-        return 'neoforge';
-      }
-    } catch {
-      // If parsing fails (possibly a relative URL), fallback to path-based detection
-      // ignore
-    }
-    if (url.includes('/fabric/')) {
-      return 'fabric';
-    }
-    if (url.includes('/neoforge/')) {
-      return 'neoforge';
-    }
-    return 'shared';
+  private detectLoader(url: string): Loader {
+    return detectLoaderFromUrl(url);
   }
 
   /**

@@ -8,6 +8,9 @@ import { DocumentStore } from '../indexer/store.js';
 import { EmbeddingGenerator } from '../indexer/embeddings.js';
 import { tokenizeQuery } from './search-utils.js';
 import { getDefaultDbPath } from '../data-dir.js';
+import { DBS } from '../dbs.js';
+import { LOADERS, perspectiveToLoaders, type Loader } from '../loaders.js';
+import type { CONCEPT_CATEGORIES } from '../categories.js';
 
 /**
  * Concept explanation result
@@ -31,6 +34,7 @@ export interface ConceptExplanation {
     relevance: number;
   }>;
   metadata: {
+    loader: Loader;
     sourcesUsed: number;
     hasEmbeddings: boolean;
     searchStrategy: string;
@@ -52,16 +56,21 @@ interface ScoredChunk {
 }
 
 /**
- * Known Minecraft modding concepts with aliases and descriptions
+ * Known Minecraft modding concepts with aliases and descriptions.
+ * Aliases expand bidirectionally by substring (see expandConcept), so keep
+ * them specific enough not to hijack unrelated concepts.
  */
-const KNOWN_CONCEPTS: Record<string, { aliases: string[]; category: string }> = {
+const KNOWN_CONCEPTS: Record<
+  string,
+  { aliases: string[]; category: (typeof CONCEPT_CATEGORIES)[number] }
+> = {
   mixin: {
     aliases: ['mixins', 'injection', 'inject', '@mixin', '@inject', 'bytecode modification'],
-    category: 'advanced',
+    category: 'mixins',
   },
   registry: {
     aliases: ['registries', 'registration', 'register', 'identifier', 'registry key'],
-    category: 'core',
+    category: 'general',
   },
   entrypoint: {
     aliases: ['entrypoints', 'mod initializer', 'initializer', 'onInitialize', 'main class'],
@@ -137,8 +146,168 @@ const KNOWN_CONCEPTS: Record<string, { aliases: string[]; category: string }> = 
   },
   world: {
     aliases: ['worldgen', 'world generation', 'dimension', 'biome', 'feature'],
-    category: 'world',
+    category: 'general',
   },
+  // 1.12.2-era target-family concepts (DESIGN.md §4.1)
+  capabilities: {
+    aliases: [
+      'capability',
+      'capability system',
+      'icapabilityprovider',
+      'capability provider',
+      'attach capabilities',
+      'getcapability',
+      '@capabilityinject',
+      'attachment equivalent',
+    ],
+    category: 'capabilities',
+  },
+  'srg names': {
+    aliases: [
+      'srg',
+      'srg name',
+      'searge',
+      'func_',
+      'field_',
+      'mcp mappings',
+      'obfuscated names',
+      'deobfuscation',
+    ],
+    category: 'mappings',
+  },
+  coremods: {
+    aliases: [
+      'coremod',
+      'core mod',
+      'loading plugin',
+      'ifmlloadingplugin',
+      'iclasstransformer',
+      'class transformer',
+      'asm transformation',
+    ],
+    category: 'coremods-mixins',
+  },
+  'mcmod.info': {
+    aliases: ['mcmod info', 'mod info file', 'mod metadata 1.12'],
+    category: 'getting-started',
+  },
+  creativetabs: {
+    aliases: ['creative tab', 'creative tabs', 'creativetab', 'item group', 'itemgroup'],
+    category: 'items',
+  },
+  oredictionary: {
+    aliases: ['ore dictionary', 'oredict', 'ore dict', 'ore registration'],
+    category: 'items',
+  },
+  mixinbooter: {
+    aliases: [
+      'mixin booter',
+      'cleanmix',
+      'ilatemixinloader',
+      'iearlymixinloader',
+      'late mixin',
+      'early mixin',
+      'mixin connector',
+      'imixinconnector',
+    ],
+    category: 'coremods-mixins',
+  },
+  gameregistry: {
+    aliases: [
+      'game registry',
+      'registryevent',
+      'registry event',
+      'setregistryname',
+      'objectholder',
+      '@objectholder',
+      'object holder',
+      'iforgeregistry',
+    ],
+    category: 'general',
+  },
+  'access transformers': {
+    aliases: [
+      'access transformer',
+      'accesstransformer',
+      'forge_at.cfg',
+      'access widener equivalent',
+    ],
+    category: 'toolchain',
+  },
+};
+
+/**
+ * Curated code tokens per concept, split by loader role: the target family
+ * speaks Forge-1.12.2 idiom, the reference family speaks Fabric/NeoForge
+ * idiom. A neutral perspective searches both vocabularies.
+ */
+const TARGET_CONCEPT_PATTERNS: Record<string, string[]> = {
+  capabilities: [
+    'ICapabilityProvider',
+    'getCapability',
+    'CapabilityManager',
+    'AttachCapabilitiesEvent',
+    '@CapabilityInject',
+  ],
+  'srg names': ['func_', 'field_', 'ObfuscationReflectionHelper', 'p_'],
+  coremods: ['IFMLLoadingPlugin', 'IClassTransformer', 'transformClass'],
+  mixinbooter: [
+    'ILateMixinLoader',
+    'IEarlyMixinLoader',
+    'MixinBooter',
+    'MixinConfigs',
+    'IMixinConnector',
+  ],
+  gameregistry: [
+    'GameRegistry',
+    'RegistryEvent',
+    '@ObjectHolder',
+    'setRegistryName',
+    'IForgeRegistry',
+  ],
+  creativetabs: ['CreativeTabs', 'setCreativeTab', 'getTabIconItem'],
+  oredictionary: ['OreDictionary', 'registerOre', 'getOres'],
+  'access transformers': ['forge_at.cfg', 'AccessTransformer', 'public-f'],
+  'mcmod.info': ['mcmod.info', 'mcversion', 'modid'],
+  event: [
+    '@SubscribeEvent',
+    'MinecraftForge.EVENT_BUS',
+    '@Mod.EventHandler',
+    'FMLPreInitializationEvent',
+  ],
+  registry: ['RegistryEvent.Register', 'GameRegistry', 'setRegistryName', '@ObjectHolder'],
+  item: ['Item', 'ItemStack', 'setRegistryName', 'setTranslationKey', 'CreativeTabs'],
+  block: ['Block', 'IBlockState', 'Material', 'setHardness'],
+  blockentity: ['TileEntity', 'ITickable', 'createNewTileEntity', 'readFromNBT'],
+  networking: ['SimpleNetworkWrapper', 'IMessage', 'IMessageHandler', 'MessageContext'],
+  // Mixin annotations are neutral tokens — identical on CleanMix
+  mixin: ['@Mixin', '@Inject', 'CallbackInfo', 'mixins.json'],
+  render: ['TileEntitySpecialRenderer', 'TESR', 'ModelLoader', 'IBakedModel'],
+  screen: ['GuiScreen', 'GuiContainer', 'Container'],
+  sound: ['SoundEvent', 'playSound', 'SoundHandler'],
+  keybind: ['KeyBinding', 'ClientRegistry.registerKeyBinding', 'Keyboard'],
+};
+
+const REFERENCE_CONCEPT_PATTERNS: Record<string, string[]> = {
+  mixin: ['@Mixin', '@Inject', '@Redirect', 'CallbackInfo', '@ModifyVariable'],
+  registry: ['Registry.register', 'Registries.', 'RegistryKey', 'Identifier'],
+  item: ['Item', 'ItemStack', 'Item.Settings', 'FabricItemSettings'],
+  block: ['Block', 'BlockState', 'Block.Settings', 'FabricBlockSettings'],
+  entity: ['Entity', 'EntityType', 'LivingEntity', 'FabricEntityTypeBuilder'],
+  blockentity: ['BlockEntity', 'BlockEntityType', 'FabricBlockEntityTypeBuilder'],
+  networking: [
+    'PacketByteBuf',
+    'ServerPlayNetworking',
+    'ClientPlayNetworking',
+    'PayloadTypeRegistry',
+  ],
+  event: ['Event', 'Callback', 'ServerLifecycleEvents', 'ClientLifecycleEvents'],
+  command: ['CommandRegistrationCallback', 'LiteralArgumentBuilder', 'RequiredArgumentBuilder'],
+  recipe: ['Recipe', 'RecipeSerializer', 'RecipeType', 'Ingredient'],
+  screen: ['Screen', 'HandledScreen', 'ScreenHandler', 'DrawContext'],
+  render: ['Renderer', 'RenderLayer', 'VertexConsumer', 'MatrixStack'],
+  sound: ['SoundEvent', 'SoundEvents', 'playSound'],
+  keybind: ['KeyBinding', 'KeyBindingHelper', 'GLFW'],
 };
 
 /**
@@ -151,7 +320,7 @@ export class ConceptService {
   private initialized = false;
 
   constructor(dbPath?: string) {
-    const finalPath = dbPath || process.env.DB_PATH || getDefaultDbPath('mcmodding-docs.db');
+    const finalPath = dbPath || process.env.DB_PATH || getDefaultDbPath(DBS.docs.fileName);
     console.error(`[ConceptService] Using database at: ${finalPath}`);
     this.store = new DocumentStore(finalPath);
   }
@@ -185,20 +354,33 @@ export class ConceptService {
   }
 
   /**
-   * Explain a concept comprehensively
+   * Explain a concept comprehensively, from a loader perspective.
+   * The perspective picks the corpus filter (perspectiveToLoaders) and the
+   * loader-specific phrasing/code-pattern vocabulary; it defaults to the
+   * primary development target.
    */
-  async explainConcept(concept: string): Promise<ConceptExplanation> {
+  async explainConcept(concept: string, loader: Loader = 'cleanroom'): Promise<ConceptExplanation> {
     await this.initialize();
 
     const normalizedConcept = concept.toLowerCase().trim();
-    console.error(`[ConceptService] Explaining concept: "${normalizedConcept}"`);
+    console.error(
+      `[ConceptService] Explaining concept: "${normalizedConcept}" (perspective: ${loader})`
+    );
+
+    // Corpus filter for the perspective (undefined = no filter)
+    const loaderFilter = perspectiveToLoaders(loader);
 
     // Expand concept with known aliases
     const expandedTerms = this.expandConcept(normalizedConcept);
     console.error(`[ConceptService] Expanded terms: ${expandedTerms.join(', ')}`);
 
     // Perform hybrid search
-    const scoredChunks = await this.hybridSearch(expandedTerms, normalizedConcept);
+    const scoredChunks = await this.hybridSearch(
+      expandedTerms,
+      normalizedConcept,
+      loader,
+      loaderFilter
+    );
     console.error(`[ConceptService] Found ${scoredChunks.length} relevant chunks`);
 
     // Aggregate content from chunks
@@ -208,7 +390,12 @@ export class ConceptService {
     const keyPoints = this.extractKeyPoints(scoredChunks, normalizedConcept);
 
     // Find code examples
-    const codeExamples = this.findCodeExamples(normalizedConcept, expandedTerms);
+    const codeExamples = this.findCodeExamples(
+      normalizedConcept,
+      expandedTerms,
+      loader,
+      loaderFilter
+    );
 
     // Extract related concepts
     const relatedConcepts = this.extractRelatedConcepts(scoredChunks, normalizedConcept);
@@ -217,7 +404,7 @@ export class ConceptService {
     const resources = this.buildResourcesList(scoredChunks);
 
     // Generate summary and details
-    const summary = this.generateSummary(aggregatedContent, normalizedConcept, keyPoints);
+    const summary = this.generateSummary(aggregatedContent, normalizedConcept, keyPoints, loader);
     const details = this.generateDetails(aggregatedContent, scoredChunks);
 
     return {
@@ -229,6 +416,7 @@ export class ConceptService {
       relatedConcepts,
       resources,
       metadata: {
+        loader,
         sourcesUsed: new Set(scoredChunks.map((c) => c.documentUrl)).size,
         hasEmbeddings: this.embeddingsAvailable,
         searchStrategy: this.embeddingsAvailable
@@ -236,6 +424,16 @@ export class ConceptService {
           : 'FTS + section search',
       },
     };
+  }
+
+  /**
+   * Loader-aware phrasing shared by the semantic query and the fallback
+   * summary: the neutral perspective names no loader at all.
+   */
+  private loaderPhrase(loader: Loader): string {
+    return loader === 'shared'
+      ? 'in Minecraft modding'
+      : `in Minecraft modding with ${LOADERS[loader].displayName}`;
   }
 
   /**
@@ -270,7 +468,12 @@ export class ConceptService {
   /**
    * Perform hybrid search combining FTS and semantic search
    */
-  private async hybridSearch(terms: string[], originalConcept: string): Promise<ScoredChunk[]> {
+  private async hybridSearch(
+    terms: string[],
+    originalConcept: string,
+    loader: Loader,
+    loaderFilter: Loader[] | undefined
+  ): Promise<ScoredChunk[]> {
     const allChunks = new Map<string, ScoredChunk>();
 
     // Strategy 1: FTS search on chunks
@@ -278,7 +481,7 @@ export class ConceptService {
     const ftsResults = this.store.searchChunksAdvanced(
       ftsQuery,
       terms.map((t) => `%${t}%`),
-      { hasCode: false, limit: 50 }
+      { hasCode: false, loader: loaderFilter, limit: 50 }
     );
 
     for (const chunk of ftsResults) {
@@ -296,7 +499,10 @@ export class ConceptService {
     }
 
     // Strategy 2: Section search
-    const sectionResults = this.store.searchSections(originalConcept, { limit: 30 });
+    const sectionResults = this.store.searchSections(originalConcept, {
+      loader: loaderFilter,
+      limit: 30,
+    });
     for (const section of sectionResults) {
       const key = `section-${section.id}`;
       if (!allChunks.has(key)) {
@@ -313,11 +519,13 @@ export class ConceptService {
       }
     }
 
-    // Strategy 3: Optimized semantic search (batch-based processing)
+    // Strategy 3: Optimized semantic search (batch-based processing).
+    // Semantic matches only boost chunks the SQL strategies already found,
+    // so the loader filter above bounds this strategy too.
     if (this.embeddingsAvailable && this.embeddingGen) {
       try {
         const queryEmbedding = await this.embeddingGen.generateEmbedding(
-          `Explain ${originalConcept} in Minecraft modding with Fabric`
+          `Explain ${originalConcept} ${this.loaderPhrase(loader)}`
         );
 
         // Process embeddings in batches to avoid memory issues
@@ -468,14 +676,20 @@ export class ConceptService {
   /**
    * Find code examples for the concept
    */
-  private findCodeExamples(concept: string, terms: string[]): ConceptExplanation['codeExamples'] {
+  private findCodeExamples(
+    concept: string,
+    terms: string[],
+    loader: Loader,
+    loaderFilter: Loader[] | undefined
+  ): ConceptExplanation['codeExamples'] {
     const examples: ConceptExplanation['codeExamples'] = [];
     const seenCode = new Set<string>();
 
     // Search code blocks by patterns
-    const codePatterns = this.getCodePatterns(concept, terms);
+    const codePatterns = this.getCodePatterns(concept, terms, loader);
     const codeResults = this.store.searchCodeBlocksByPatterns(codePatterns, {
       language: 'java',
+      loader: loaderFilter,
       limit: 15,
     });
 
@@ -504,7 +718,7 @@ export class ConceptService {
       const codeChunks = this.store.searchChunksAdvanced(
         terms.filter((t) => t.length > 2).join(' OR '),
         terms.map((t) => `%${t}%`),
-        { hasCode: true, limit: 20 }
+        { hasCode: true, loader: loaderFilter, limit: 20 }
       );
 
       for (const chunk of codeChunks) {
@@ -532,46 +746,29 @@ export class ConceptService {
   }
 
   /**
-   * Get code patterns for a concept
+   * Get code patterns for a concept.
+   * Curated API tokens go FIRST: searchCodeBlocksByPatterns only uses the
+   * first 5 patterns, and the generic alias-derived ones are far weaker.
    */
-  private getCodePatterns(concept: string, terms: string[]): string[] {
+  private getCodePatterns(concept: string, terms: string[], loader: Loader): string[] {
     const patterns: string[] = [];
 
-    // Add direct patterns
+    // Curated tokens for the perspective's API vocabulary
+    const role = LOADERS[loader].role;
+    if (role !== 'reference') {
+      patterns.push(...(TARGET_CONCEPT_PATTERNS[concept] ?? []));
+    }
+    if (role !== 'target') {
+      patterns.push(...(REFERENCE_CONCEPT_PATTERNS[concept] ?? []));
+    }
+
+    // Generic patterns derived from the expanded terms
     for (const term of terms) {
       if (term.length > 3) {
         patterns.push(term);
         // Add PascalCase version
         patterns.push(term.charAt(0).toUpperCase() + term.slice(1));
       }
-    }
-
-    // Add known code patterns
-    const conceptPatterns: Record<string, string[]> = {
-      mixin: ['@Mixin', '@Inject', '@Redirect', 'CallbackInfo', '@ModifyVariable'],
-      registry: ['Registry.register', 'Registries.', 'RegistryKey', 'Identifier'],
-      item: ['Item', 'ItemStack', 'Item.Settings', 'FabricItemSettings'],
-      block: ['Block', 'BlockState', 'Block.Settings', 'FabricBlockSettings'],
-      entity: ['Entity', 'EntityType', 'LivingEntity', 'FabricEntityTypeBuilder'],
-      blockentity: ['BlockEntity', 'BlockEntityType', 'FabricBlockEntityTypeBuilder'],
-      network: [
-        'PacketByteBuf',
-        'ServerPlayNetworking',
-        'ClientPlayNetworking',
-        'PayloadTypeRegistry',
-      ],
-      event: ['Event', 'Callback', 'ServerLifecycleEvents', 'ClientLifecycleEvents'],
-      command: ['CommandRegistrationCallback', 'LiteralArgumentBuilder', 'RequiredArgumentBuilder'],
-      recipe: ['Recipe', 'RecipeSerializer', 'RecipeType', 'Ingredient'],
-      screen: ['Screen', 'HandledScreen', 'ScreenHandler', 'DrawContext'],
-      render: ['Renderer', 'RenderLayer', 'VertexConsumer', 'MatrixStack'],
-      sound: ['SoundEvent', 'SoundEvents', 'playSound'],
-      keybind: ['KeyBinding', 'KeyBindingHelper', 'GLFW'],
-    };
-
-    const knownPatterns = conceptPatterns[concept];
-    if (knownPatterns) {
-      patterns.push(...knownPatterns);
     }
 
     return [...new Set(patterns)];
@@ -641,7 +838,12 @@ export class ConceptService {
   /**
    * Generate summary from aggregated content
    */
-  private generateSummary(content: string, concept: string, keyPoints: string[]): string {
+  private generateSummary(
+    content: string,
+    concept: string,
+    keyPoints: string[],
+    loader: Loader
+  ): string {
     // Find the most relevant introductory sentence
     const sentences = content.split(/[.!?]+/).filter((s) => s.trim().length > 20);
 
@@ -667,7 +869,7 @@ export class ConceptService {
       return sentences[0].trim() + '.';
     }
 
-    return `${concept} is a concept in Minecraft modding with Fabric.`;
+    return `${concept} is a concept ${this.loaderPhrase(loader)}.`;
   }
 
   /**
@@ -764,7 +966,8 @@ export class ConceptService {
 
     // Metadata
     output += `---\n`;
-    output += `*Sources: ${explanation.metadata.sourcesUsed} documents | `;
+    output += `*Perspective: ${LOADERS[explanation.metadata.loader].displayName} | `;
+    output += `Sources: ${explanation.metadata.sourcesUsed} documents | `;
     output += `Search: ${explanation.metadata.searchStrategy}*\n`;
 
     return output;

@@ -1,5 +1,5 @@
 /**
- * Comprehensive tests for mcmodding-mcp
+ * Comprehensive tests for cleanroom-modding-mcp
  * Tests cover: DbVersioning, Tool Handlers, Utility Functions
  */
 
@@ -157,38 +157,15 @@ describe('DbVersioning', () => {
     });
   });
 
-  describe('getVersionInfo', () => {
-    it('should return unknown when no local manifest exists', () => {
-      vi.mocked(fs.existsSync).mockReturnValue(false);
-
-      const versioning = new DbVersioning();
-      const info = versioning.getVersionInfo();
-
-      expect(info.local).toBe('unknown');
-      expect(info.upToDate).toBe(true);
-    });
-
-    it('should return version from manifest when exists', () => {
-      const mockManifest = { version: '1.2.3' };
-      vi.mocked(fs.existsSync).mockReturnValue(true);
-      vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(mockManifest));
-
-      const versioning = new DbVersioning();
-      const info = versioning.getVersionInfo();
-
-      expect(info.local).toBe('1.2.3');
-    });
-  });
-
   describe('constructor', () => {
-    it('should use default database path when not provided', () => {
+    it('should default to the docs database spec and path', () => {
       const versioning = new DbVersioning();
       expect(versioning).toBeDefined();
     });
 
     it('should use custom database path when provided', () => {
       const customPath = '/custom/path/to/db.sqlite';
-      const versioning = new DbVersioning(customPath);
+      const versioning = new DbVersioning(undefined, customPath);
       expect(versioning).toBeDefined();
     });
   });
@@ -360,38 +337,34 @@ describe('handleExplainConcept', () => {
   });
 });
 
-describe('handleGetMinecraftVersion', () => {
-  let handleGetMinecraftVersion: typeof import('./tools/getMinecraftVersion.js').handleGetMinecraftVersion;
+describe('handleListTargets', () => {
+  let handleListTargets: typeof import('./tools/listTargets.js').handleListTargets;
 
   beforeEach(async () => {
     vi.resetModules();
-    const module = await import('./tools/getMinecraftVersion.js');
-    handleGetMinecraftVersion = module.handleGetMinecraftVersion;
+    const module = await import('./tools/listTargets.js');
+    handleListTargets = module.handleListTargets;
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  describe('type parameter', () => {
-    it('should handle latest type', () => {
-      const result = handleGetMinecraftVersion({ type: 'latest' });
+  it('should return the loader/version matrix', () => {
+    const result = handleListTargets();
 
-      expect(result).toHaveProperty('content');
-      expect(result.content[0]).toHaveProperty('type', 'text');
-    });
+    expect(result).toHaveProperty('content');
+    expect(result.content[0]).toHaveProperty('type', 'text');
+    const text = (result.content[0] as { type: string; text: string }).text;
+    expect(text).toContain('1.12.2');
+    expect(text).toContain('cleanroom');
+    expect(text).toContain('reference');
+  });
 
-    it('should handle all type', () => {
-      const result = handleGetMinecraftVersion({ type: 'all' });
-
-      expect(result).toHaveProperty('content');
-    });
-
-    it('should default to latest when no type provided', () => {
-      const result = handleGetMinecraftVersion({});
-
-      expect(result).toHaveProperty('content');
-    });
+  it('should report database install status', () => {
+    const result = handleListTargets();
+    const text = (result.content[0] as { type: string; text: string }).text;
+    expect(text).toContain('Installed Databases');
   });
 });
 
@@ -436,40 +409,6 @@ describe('Utility Functions', () => {
       categories.forEach((cat) => {
         expect(typeof cat).toBe('string');
       });
-    });
-  });
-
-  describe('getAvailableLoaders', () => {
-    let getAvailableLoaders: typeof import('./tools/searchDocs.js').getAvailableLoaders;
-
-    beforeEach(async () => {
-      const module = await import('./tools/searchDocs.js');
-      getAvailableLoaders = module.getAvailableLoaders;
-    });
-
-    it('should return an array of loaders', () => {
-      const loaders = getAvailableLoaders();
-
-      expect(Array.isArray(loaders)).toBe(true);
-      expect(loaders.length).toBeGreaterThan(0);
-    });
-
-    it('should include fabric loader', () => {
-      const loaders = getAvailableLoaders();
-
-      expect(loaders).toContain('fabric');
-    });
-
-    it('should include neoforge loader', () => {
-      const loaders = getAvailableLoaders();
-
-      expect(loaders).toContain('neoforge');
-    });
-
-    it('should include shared category', () => {
-      const loaders = getAvailableLoaders();
-
-      expect(loaders).toContain('shared');
     });
   });
 
@@ -673,18 +612,18 @@ describe('Tool Response Format', () => {
     let handleSearchDocs: typeof import('./tools/searchDocs.js').handleSearchDocs;
     let handleGetExample: typeof import('./tools/getExample.js').handleGetExample;
     let handleExplainConcept: typeof import('./tools/explainConcept.js').handleExplainConcept;
-    let handleGetMinecraftVersion: typeof import('./tools/getMinecraftVersion.js').handleGetMinecraftVersion;
+    let handleListTargets: typeof import('./tools/listTargets.js').handleListTargets;
 
     beforeEach(async () => {
       const searchModule = await import('./tools/searchDocs.js');
       const exampleModule = await import('./tools/getExample.js');
       const conceptModule = await import('./tools/explainConcept.js');
-      const versionModule = await import('./tools/getMinecraftVersion.js');
+      const targetsModule = await import('./tools/listTargets.js');
 
       handleSearchDocs = searchModule.handleSearchDocs;
       handleGetExample = exampleModule.handleGetExample;
       handleExplainConcept = conceptModule.handleExplainConcept;
-      handleGetMinecraftVersion = versionModule.handleGetMinecraftVersion;
+      handleListTargets = targetsModule.handleListTargets;
     });
 
     it('searchDocs should return valid CallToolResult', async () => {
@@ -715,11 +654,13 @@ describe('Tool Response Format', () => {
       expect(Array.isArray(result.content)).toBe(true);
     }, 120000); // 2 minutes - embedding model init is slow in CI
 
-    it('getMinecraftVersion should return valid CallToolResult', () => {
-      const result = handleGetMinecraftVersion({});
+    it('listTargets should return valid CallToolResult', () => {
+      const result = handleListTargets();
 
       expect(result).toHaveProperty('content');
       expect(Array.isArray(result.content)).toBe(true);
+      // The loader/version matrix renders even with no databases installed
+      expect((result.content[0] as { type: string; text: string }).text).toContain('1.12.2');
     });
 
     it('error responses should have isError flag', async () => {

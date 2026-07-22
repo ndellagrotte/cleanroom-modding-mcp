@@ -5,15 +5,19 @@
 
 import { ExampleService } from '../services/example-service.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { isLoader, type Scope } from '../loaders.js';
 
 export interface GetExampleParams {
   topic: string;
   language?: string;
+  scope?: string;
   loader?: string;
   minecraftVersion?: string;
   category?: string;
   limit?: number;
 }
+
+const SCOPES: Scope[] = ['target', 'reference', 'all'];
 
 /**
  * Handle get_example tool request
@@ -21,7 +25,13 @@ export interface GetExampleParams {
  */
 export async function handleGetExample(params: GetExampleParams): Promise<CallToolResult> {
   try {
-    const { topic, language = 'java', loader, minecraftVersion, category, limit = 5 } = params;
+    const { topic, language = 'java', loader, category, limit = 5 } = params;
+    let { minecraftVersion } = params;
+
+    // Scope defaults to 'target' (Cleanroom/Forge 1.12.2)
+    const scope: Scope = SCOPES.includes(params.scope as Scope)
+      ? (params.scope as Scope)
+      : 'target';
 
     // Validate topic
     if (!topic || !topic.trim()) {
@@ -38,8 +48,9 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
 
     const exampleService = new ExampleService();
 
-    if (params.minecraftVersion === 'latest') {
-      params.minecraftVersion = exampleService.getLatestMinecraftVersion();
+    if (minecraftVersion === 'latest') {
+      // Family-scoped: 1.12.2 within the target family, newest indexed otherwise.
+      minecraftVersion = exampleService.getLatestMinecraftVersion(scope);
     }
 
     // Validate and clamp limit
@@ -51,7 +62,8 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
     const examples = await exampleService.getExamples({
       topic,
       language,
-      loader,
+      scope,
+      loader: loader && isLoader(loader) ? loader : undefined,
       minecraftVersion,
       category,
       limit: finalLimit,
@@ -79,8 +91,8 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
       message +=
         '- Try using more general search terms (e.g., "item" instead of "custom item registration")\n';
       message += '- Remove version or loader filters\n';
-      message += '- Check if the topic is covered in the Fabric documentation\n';
-      message += '- Try searching with the `search_fabric_docs` tool first\n';
+      message += "- Try `scope: 'all'` to include the Fabric/NeoForge reference corpus\n";
+      message += '- Try searching with the `search_docs` tool first\n';
 
       console.error(`[get_example] No results found for "${topic}"`);
 

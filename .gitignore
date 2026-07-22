@@ -144,18 +144,9 @@ vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
 # Project-specific
-data/*.db-journal
-data/*.db.tmp
-data/*.db.backup
-!data/mcmodding-docs.db
-!data/manifest.json
-!data/mod-examples.db
-!data/mod-examples-manifest.json
+# Everything under data/ is generated (databases, manifests, temp files) except
+# the hand-curated equivalence corpus, which is committed and PR-reviewed.
+data/*
+!data/equivalence/
 .DS_Store
 .claude
-
-# Local-only scripts (not published to npm/git)
-# These require local LM Studio setup and are for maintainers only
-scripts/index-mod-examples.ts
-# scripts/generate-mod-examples-manifest.ts
-data

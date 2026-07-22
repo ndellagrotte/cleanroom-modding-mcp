@@ -9,6 +9,7 @@
 import fetch from 'node-fetch';
 import { load } from 'cheerio';
 import { gunzipSync } from 'zlib';
+import { defaultVersionFor, LOADERS, type Loader } from '../loaders.js';
 
 export interface SitemapEntry {
   url: string;
@@ -226,6 +227,42 @@ export async function getFabricUrlsFromSitemap(): Promise<string[]> {
 }
 
 /**
+ * Get Forge 1.12.x documentation URLs from the RTD sitemap.
+ * The sitemap's <loc> entries live on the ReadTheDocs internal host
+ * (mcforge.readthedocs.io); they are rewritten to the canonical public host,
+ * which serves the same routes.
+ */
+export async function getForgeUrlsFromSitemap(): Promise<string[]> {
+  const source = LOADERS.forge.sources.find((s) => s.kind === 'sitemap');
+  if (!source) {
+    console.error('No sitemap source registered for forge');
+    return [];
+  }
+
+  const parser = new SitemapParser(source.url, {
+    includeLocales: [], // English only
+    includePatterns: [/\/en\/1\.12\.x\//],
+    excludePatterns: [
+      /\/styleguide\//, // contribute-to-Forge content, not modding docs
+      /\/forgedev\//,
+      /\/#/, // Skip anchor links
+    ],
+  });
+
+  try {
+    const entries = await parser.parse();
+    return entries
+      .map((e) =>
+        e.url.replace('https://mcforge.readthedocs.io/', 'https://docs.minecraftforge.net/')
+      )
+      .sort();
+  } catch (error) {
+    console.error('Failed to fetch Forge sitemap:', error);
+    return [];
+  }
+}
+
+/**
  * Get Fabric documentation URLs from sitemap
  */
 export async function getNeoforgeUrlsFromSitemap(): Promise<string[]> {
@@ -317,9 +354,24 @@ function getFabricWikiStaticUrls(): string[] {
 }
 
 /**
- * Detect Minecraft version from URL or content
+ * Detect Minecraft version from URL or content.
+ *
+ * Target-family loaders (cleanroom/forge) have a FIXED version — their entire
+ * corpus is 1.12.2, so content sniffing (which can match Forge's own version
+ * numbers like "14.23.5") is skipped entirely. Reference loaders keep the
+ * URL → content heuristics, but the old hardcoded '1.21.10' fallback is gone:
+ * an undetectable version stays undefined rather than mislabeled.
  */
-export function detectMinecraftVersion(url: string, content: string): string | undefined {
+export function detectMinecraftVersion(
+  url: string,
+  content: string,
+  loader?: Loader
+): string | undefined {
+  const fixedVersion = loader ? defaultVersionFor(loader) : null;
+  if (fixedVersion) {
+    return fixedVersion;
+  }
+
   // Check URL for version patterns
   const urlVersionMatch = url.match(/\/(\d+\.\d+(?:\.\d+)?)\//);
   if (urlVersionMatch) {
@@ -341,8 +393,7 @@ export function detectMinecraftVersion(url: string, content: string): string | u
     }
   }
 
-  // Default to latest stable version if not detected
-  return '1.21.10';
+  return undefined;
 }
 
 /**

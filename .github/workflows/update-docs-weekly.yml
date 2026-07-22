@@ -14,13 +14,13 @@ jobs:
   update-docs:
     name: Update Documentation Index
     runs-on: ubuntu-latest
-    timeout-minutes: 180 # Increased timeout for full re-index including mappings
+    timeout-minutes: 180 # Full re-index including mappings
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          ref: dev # Checkout dev branch to commit changes later
+          ref: dev
           fetch-depth: 0
 
       - name: Install pnpm
@@ -58,7 +58,7 @@ jobs:
       - name: Re-index Documentation (Full Rebuild)
         run: |
           # Remove existing database to ensure a fresh index
-          rm -f data/mcmodding-docs.db
+          rm -f data/docs.db
 
           # Run full index (no incremental flag)
           pnpm run index-docs -- --sitemap --embeddings
@@ -68,14 +68,15 @@ jobs:
 
       - name: Generate Documentation Database Manifest
         run: |
+          # Carry the previous manifest forward so --bump sees its version.
+          gh release download "$LATEST_TAG" --pattern "docs-manifest.json" --output ./data/docs-manifest.json --clobber || true
+
           # Generate manifest from the EXACT file we just indexed.
-          # --db-path ensures the hash is computed from ./data/mcmodding-docs.db,
-          # not from ~/.local/share/mcmodding-mcp/ (postinstall's stale copy).
-          pnpm run db:manifest -- --bump patch --changelog "Weekly update for $LATEST_TAG" --release-tag "$LATEST_TAG" --db-path ./data/mcmodding-docs.db
+          pnpm run manifest -- --db docs --bump patch --changelog "Weekly update for $LATEST_TAG" --release-tag "$LATEST_TAG" --db-path ./data/docs.db
 
           # Verify: sha256 of the indexed DB must match what we just wrote into the manifest
-          DB_HASH=$(sha256sum ./data/mcmodding-docs.db | cut -d' ' -f1)
-          MANIFEST_HASH=$(node -p "require('./data/db-manifest.json').hash")
+          DB_HASH=$(sha256sum ./data/docs.db | cut -d' ' -f1)
+          MANIFEST_HASH=$(node -p "require('./data/docs-manifest.json').hash")
           if [ "$DB_HASH" != "$MANIFEST_HASH" ]; then
             echo "ERROR: manifest hash does not match indexed DB: $DB_HASH != $MANIFEST_HASH"
             exit 1
@@ -83,15 +84,16 @@ jobs:
           echo "Hash verified: $DB_HASH"
         env:
           LATEST_TAG: ${{ steps.get_release.outputs.tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ═══════════════════════════════════════════════════════════════════════════
-      # PARCHMENT MAPPINGS DATABASE
+      # MAPPINGS DATABASE
       # ═══════════════════════════════════════════════════════════════════════════
 
-      - name: Re-index Parchment Mappings (Full Rebuild)
+      - name: Re-index Mappings (Full Rebuild)
         run: |
           # Remove existing database to ensure a fresh index
-          rm -f data/parchment-mappings.db
+          rm -f data/mappings.db
 
           # Run full mappings index with force flag
           pnpm run index-mappings:force
@@ -100,13 +102,23 @@ jobs:
 
       - name: Generate Mappings Database Manifest
         run: |
-          # Generate mappings manifest with a patch bump
-          pnpm run mappings:manifest -- --bump patch --changelog "Weekly mappings update for $LATEST_TAG"
+          gh release download "$LATEST_TAG" --pattern "mappings-manifest.json" --output ./data/mappings-manifest.json --clobber || true
+
+          pnpm run manifest -- --db mappings --bump patch --changelog "Weekly mappings update for $LATEST_TAG" --release-tag "$LATEST_TAG" --db-path ./data/mappings.db
+
+          DB_HASH=$(sha256sum ./data/mappings.db | cut -d' ' -f1)
+          MANIFEST_HASH=$(node -p "require('./data/mappings-manifest.json').hash")
+          if [ "$DB_HASH" != "$MANIFEST_HASH" ]; then
+            echo "ERROR: manifest hash does not match indexed DB: $DB_HASH != $MANIFEST_HASH"
+            exit 1
+          fi
+          echo "Hash verified: $DB_HASH"
         env:
           LATEST_TAG: ${{ steps.get_release.outputs.tag }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # ═══════════════════════════════════════════════════════════════════════════
-      # UPLOAD AND COMMIT
+      # UPLOAD
       # ═══════════════════════════════════════════════════════════════════════════
 
       - name: Update Release Assets
@@ -115,10 +127,8 @@ jobs:
           TAG: ${{ steps.get_release.outputs.tag }}
         run: |
           echo "Uploading database assets to release $TAG..."
-          # Upload documentation database
-          gh release upload "$TAG" data/mcmodding-docs.db data/db-manifest.json --clobber
-          # Upload mappings database
-          gh release upload "$TAG" data/parchment-mappings.db data/parchment-mappings-manifest.json --clobber
+          gh release upload "$TAG" data/docs.db data/docs-manifest.json --clobber
+          gh release upload "$TAG" data/mappings.db data/mappings-manifest.json --clobber
 
       - name: Log summary
         if: always()
@@ -128,9 +138,8 @@ jobs:
           echo "### Documentation Database" >> $GITHUB_STEP_SUMMARY
           echo "✅ Full re-index completed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Parchment Mappings Database" >> $GITHUB_STEP_SUMMARY
+          echo "### Mappings Database" >> $GITHUB_STEP_SUMMARY
           echo "✅ Full mappings re-index completed" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Release" >> $GITHUB_STEP_SUMMARY
           echo "✅ Database assets updated in release ${{ steps.get_release.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Changes committed to dev branch" >> $GITHUB_STEP_SUMMARY

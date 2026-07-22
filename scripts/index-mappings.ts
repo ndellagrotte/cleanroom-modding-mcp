@@ -24,6 +24,7 @@ import * as https from 'https';
 import * as http from 'http';
 import { existsSync, mkdirSync, rmSync, readFileSync, createWriteStream } from 'fs';
 import Database from 'better-sqlite3';
+import { DBS } from '../src/dbs.js';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -42,7 +43,7 @@ const CONFIG = {
   mojangManifestUrl: 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json',
 
   // Database
-  dbPath: path.join(process.cwd(), 'data', 'parchment-mappings.db'),
+  dbPath: path.join(process.cwd(), 'data', DBS.mappings.fileName),
   dataDir: path.join(process.cwd(), 'data'),
   tempDir: path.join(process.cwd(), 'data', 'temp-parchment'),
 
@@ -333,7 +334,7 @@ function fetchUrl(url: string): Promise<string> {
 
     const request = protocol.get(
       url,
-      { headers: { 'User-Agent': 'mcmodding-mcp-indexer/1.0' } },
+      { headers: { 'User-Agent': 'cleanroom-modding-mcp-indexer/1.0' } },
       (response) => {
         if (response.statusCode === 301 || response.statusCode === 302) {
           const redirectUrl = response.headers.location;
@@ -370,7 +371,7 @@ async function downloadFile(url: string, destPath: string): Promise<void> {
 
     const request = protocol.get(
       url,
-      { headers: { 'User-Agent': 'mcmodding-mcp-indexer/1.0' } },
+      { headers: { 'User-Agent': 'cleanroom-modding-mcp-indexer/1.0' } },
       (response) => {
         if (response.statusCode === 301 || response.statusCode === 302) {
           file.close();
@@ -944,7 +945,7 @@ async function main() {
     `\n${colors.bright}${colors.cyan}═══════════════════════════════════════════════════════════════${colors.reset}`
   );
   console.log(
-    `${colors.bright}${colors.cyan}     Parchment + Mojang Mappings Indexer for mcmodding-mcp${colors.reset}`
+    `${colors.bright}${colors.cyan}     Mappings Indexer for cleanroom-modding-mcp${colors.reset}`
   );
   console.log(
     `${colors.bright}${colors.cyan}═══════════════════════════════════════════════════════════════${colors.reset}\n`

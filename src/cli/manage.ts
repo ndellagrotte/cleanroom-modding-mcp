@@ -5,28 +5,24 @@ import path from 'path';
 import https from 'https';
 import readline from 'readline';
 import { getDefaultDataDir } from '../data-dir.js';
+import {
+  DBS,
+  DB_IDS,
+  getApiBase,
+  selectRelease,
+  USER_AGENT,
+  type DbSpec,
+  type GitHubRelease,
+} from '../dbs.js';
+import { compareVersions, extractVersionFromTag } from '../version-utils.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// CONFIGURATION
+// CONFIGURATION (all identity/DB facts come from the src/dbs.ts registry)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-const CONFIG = {
-  repoOwner: 'OGMatrix',
-  repoName: 'mcmodding-mcp',
-  // Use the shared platform-appropriate data directory
-  dataDir: getDefaultDataDir(),
-  userAgent: 'mcmodding-mcp-installer',
-};
+const dataDir = getDefaultDataDir();
 
-interface OptionalDb {
-  id: string;
-  name: string;
-  fileName: string;
-  manifestName: string;
-  description: string;
-  tagPrefix: string;
-  icon: string;
-  isRequired?: boolean;
+interface ManagedDb extends DbSpec {
   localVersion?: string | null;
   remoteInfo?: RemoteInfo | null;
   selected?: boolean;
@@ -42,50 +38,6 @@ interface RemoteInfo {
   publishedAt: string;
   hash?: string;
 }
-
-interface GitHubAsset {
-  name: string;
-  browser_download_url: string;
-  size: number;
-}
-
-interface GitHubRelease {
-  id: number;
-  tag_name: string;
-  published_at: string;
-  assets: GitHubAsset[];
-}
-
-const AVAILABLE_DBS: OptionalDb[] = [
-  {
-    id: 'mcmodding-docs',
-    name: 'Documentation Database',
-    fileName: 'mcmodding-docs.db',
-    manifestName: 'db-manifest.json',
-    description: 'Core Fabric & NeoForge documentation - installed by default',
-    tagPrefix: 'v',
-    icon: '📚',
-    isRequired: true,
-  },
-  {
-    id: 'mod-examples',
-    name: 'Mod Examples Database',
-    fileName: 'mod-examples.db',
-    manifestName: 'mod-examples-manifest.json',
-    description: '1000+ high-quality modding examples for Fabric & NeoForge',
-    tagPrefix: 'v',
-    icon: '🧩',
-  },
-  {
-    id: 'parchment-mappings',
-    name: 'Parchment Mappings Database',
-    fileName: 'parchment-mappings.db',
-    manifestName: 'parchment-mappings-manifest.json',
-    description: 'Minecraft class/method/field mappings with parameter names & Javadocs',
-    tagPrefix: 'v',
-    icon: '🗺️',
-  },
-];
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ANSI COLORS & STYLES
@@ -182,7 +134,7 @@ function getTerminalWidth() {
   return process.stdout.columns || 80;
 }
 
-function centerText(text: string, width: number) {
+export function centerText(text: string, width: number) {
   const cleanText = text.replace(/\x1b\[[0-9;]*m/g, '');
   const totalPadding = Math.max(0, width - cleanText.length);
   const leftPadding = Math.floor(totalPadding / 2);
@@ -190,7 +142,7 @@ function centerText(text: string, width: number) {
   return ' '.repeat(leftPadding) + text + ' '.repeat(rightPadding);
 }
 
-function formatBytes(bytes: number) {
+export function formatBytes(bytes: number) {
   if (bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -198,11 +150,11 @@ function formatBytes(bytes: number) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-function formatSpeed(bytesPerSecond: number) {
+export function formatSpeed(bytesPerSecond: number) {
   return formatBytes(bytesPerSecond) + '/s';
 }
 
-function formatTime(seconds: number): string {
+export function formatTime(seconds: number): string {
   if (!isFinite(seconds) || seconds <= 0) return '--:--';
   if (seconds < 60) return `${Math.round(seconds)}s`;
   const mins = Math.floor(seconds / 60);
@@ -210,7 +162,7 @@ function formatTime(seconds: number): string {
   return `${mins}m ${secs.toString().padStart(2, '0')}s`;
 }
 
-function padLine(text: string, width: number): string {
+export function padLine(text: string, width: number): string {
   const cleanText = text.replace(/\x1b\[[0-9;]*m/g, '');
   const padding = Math.max(0, width - cleanText.length);
   return text + ' '.repeat(padding);
@@ -223,7 +175,7 @@ function padLine(text: string, width: number): string {
 async function fetchJson(url: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const options = {
-      headers: { 'User-Agent': CONFIG.userAgent },
+      headers: { 'User-Agent': USER_AGENT },
     };
     https
       .get(url, options, (res) => {
@@ -263,7 +215,7 @@ async function downloadFile(
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
     const options = {
-      headers: { 'User-Agent': CONFIG.userAgent },
+      headers: { 'User-Agent': USER_AGENT },
     };
 
     https
@@ -337,7 +289,7 @@ function downloadFileInteractive(
   const promise = new Promise<void>((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
     const options = {
-      headers: { 'User-Agent': CONFIG.userAgent },
+      headers: { 'User-Agent': USER_AGENT },
     };
 
     // Set up keyboard input
@@ -471,7 +423,10 @@ function printHeader() {
     c.brightCyan +
       sym.vertical +
       c.reset +
-      centerText(`${c.brightWhite}${c.bold}MCModding-MCP Database Manager${c.reset}`, innerWidth) +
+      centerText(
+        `${c.brightWhite}${c.bold}Cleanroom Modding MCP Database Manager${c.reset}`,
+        innerWidth
+      ) +
       c.brightCyan +
       sym.vertical +
       c.reset
@@ -681,8 +636,8 @@ class ProgressDisplay {
 // LOGIC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-function getLocalVersion(dbConfig: OptionalDb): string | null {
-  const manifestPath = path.join(CONFIG.dataDir, dbConfig.manifestName);
+function getLocalVersion(dbConfig: DbSpec): string | null {
+  const manifestPath = path.join(dataDir, dbConfig.manifestName);
   if (fs.existsSync(manifestPath)) {
     try {
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { version: string };
@@ -694,68 +649,49 @@ function getLocalVersion(dbConfig: OptionalDb): string | null {
   return null;
 }
 
-async function getRemoteVersion(dbConfig: OptionalDb): Promise<RemoteInfo | null> {
+async function getRemoteVersion(dbConfig: DbSpec): Promise<RemoteInfo | null> {
   try {
-    // Fetch releases from GitHub
-    const releases = (await fetchJson(
-      `https://api.github.com/repos/${CONFIG.repoOwner}/${CONFIG.repoName}/releases`
-    )) as GitHubRelease[];
+    const releases = (await fetchJson(`${getApiBase()}/releases`)) as GitHubRelease[];
 
-    // Iterate through releases to find the first one that:
-    // 1. Matches the tag prefix
-    // 2. Contains the required database asset
-    // This handles cases where the latest release failed and has no assets
-    for (const release of releases) {
-      if (!release.tag_name.startsWith(dbConfig.tagPrefix)) {
-        continue;
-      }
+    // Newest v-tag release that actually carries this DB's asset (releases
+    // whose asset upload failed are skipped by selectRelease).
+    const selected = selectRelease(releases, dbConfig);
+    if (!selected) {
+      return null;
+    }
+    const { release, dbAsset, manifestAsset } = selected;
 
-      // Find assets
-      const dbAsset = release.assets.find((a) => a.name === dbConfig.fileName);
+    let version = extractVersionFromTag(release.tag_name);
 
-      // Skip releases that don't have the required database asset
-      if (!dbAsset) {
-        continue;
-      }
-
-      const manifestAsset = release.assets.find((a) => a.name === dbConfig.manifestName);
-
-      // Extract version from tag (e.g., examples-v0.1.0 -> 0.1.0)
-      let version = release.tag_name.replace(dbConfig.tagPrefix, '');
-
-      // If manifest exists, try to get the real version from it
-      // This handles cases where DB version differs from Release tag
-      if (manifestAsset) {
-        try {
-          const manifest = (await fetchJson(manifestAsset.browser_download_url)) as {
-            version: string;
-          };
-          if (manifest && manifest.version) {
-            version = manifest.version;
-          }
-        } catch {
-          // Fallback to tag version if manifest fetch fails
+    // If a manifest exists, prefer its version: the DB version is independent
+    // of the release tag it happens to be attached to.
+    if (manifestAsset) {
+      try {
+        const manifest = (await fetchJson(manifestAsset.browser_download_url)) as {
+          version: string;
+        };
+        if (manifest && manifest.version) {
+          version = manifest.version;
         }
+      } catch {
+        // Fallback to tag version if manifest fetch fails
       }
-
-      return {
-        version,
-        releaseId: release.id,
-        downloadUrl: dbAsset.browser_download_url,
-        manifestUrl: manifestAsset ? manifestAsset.browser_download_url : null,
-        size: dbAsset.size,
-        publishedAt: release.published_at,
-      };
     }
 
-    // No release found with the required assets
-    return null;
+    return {
+      version,
+      releaseId: release.id,
+      downloadUrl: dbAsset.browser_download_url,
+      manifestUrl: manifestAsset ? manifestAsset.browser_download_url : null,
+      size: dbAsset.size,
+      publishedAt: release.published_at,
+    };
   } catch {
     return null;
   }
 }
 
-async function promptSelection(options: OptionalDb[]): Promise<OptionalDb[]> {
+async function promptSelection(options: ManagedDb[]): Promise<ManagedDb[]> {
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -774,7 +710,7 @@ async function promptSelection(options: OptionalDb[]): Promise<OptionalDb[]> {
         ? `${c.brightGreen}${sym.selected}${c.reset}`
         : `${c.brightBlack}${sym.unselected}${c.reset}`;
       const style = isSelected ? c.brightWhite + c.bold : c.white;
-      const requiredBadge = opt.isRequired ? ` ${c.brightBlack}[core]${c.reset}` : '';
+      const requiredBadge = opt.required ? ` ${c.brightBlack}[core]${c.reset}` : '';
 
       console.log(`${prefix}${checkbox} ${style}${opt.icon} ${opt.name}${c.reset}${requiredBadge}`);
 
@@ -851,26 +787,13 @@ async function promptSelection(options: OptionalDb[]): Promise<OptionalDb[]> {
   });
 }
 
-function compareVersions(v1: string, v2: string): number {
-  const parts1 = v1.split('.').map(Number);
-  const parts2 = v2.split('.').map(Number);
-
-  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-    const p1 = parts1[i] || 0;
-    const p2 = parts2[i] || 0;
-    if (p1 > p2) return 1;
-    if (p1 < p2) return -1;
-  }
-  return 0;
-}
-
 export async function runInstaller() {
   printHeader();
   console.log(`${c.cyan}${sym.info} Checking for available databases...${c.reset}\n`);
 
   // Gather info for all databases
-  const choices: OptionalDb[] = [];
-  for (const db of AVAILABLE_DBS) {
+  const choices: ManagedDb[] = [];
+  for (const db of DB_IDS.map((id) => DBS[id])) {
     console.log(`${c.dim}  Checking ${db.name}...${c.reset}`);
     const localVersion = getLocalVersion(db);
     const remoteInfo = await getRemoteVersion(db);
@@ -937,8 +860,8 @@ export async function runInstaller() {
       continue;
     }
 
-    const destDbPath = path.join(CONFIG.dataDir, item.fileName);
-    const destManifestPath = path.join(CONFIG.dataDir, item.manifestName);
+    const destDbPath = path.join(dataDir, item.fileName);
+    const destManifestPath = path.join(dataDir, item.manifestName);
     const tempDbPath = destDbPath + '.tmp';
 
     const action = item.localVersion ? 'Updating' : 'Installing';
@@ -951,8 +874,8 @@ export async function runInstaller() {
     );
 
     // Ensure data dir exists
-    if (!fs.existsSync(CONFIG.dataDir)) {
-      fs.mkdirSync(CONFIG.dataDir, { recursive: true });
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
     }
 
     try {

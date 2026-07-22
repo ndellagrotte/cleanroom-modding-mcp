@@ -41,7 +41,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: What version of mcmodding-mcp are you using?
+      description: What version of cleanroom-modding-mcp are you using?
       placeholder: v0.1.1
     validations:
       required: true

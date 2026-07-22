@@ -169,7 +169,7 @@ export const MAPPINGS_TOOLS = [
 
 const NOT_AVAILABLE_MESSAGE =
   'Parchment mappings database is not available. This is an optional feature that provides Minecraft class/method/field mappings with parameter names and Javadocs.\n\n' +
-  'To install it, run: `npx mcmodding-mcp manage`\n\n' +
+  'To install it, run: `npx cleanroom-modding-mcp manage`\n\n' +
   'The standard documentation tools (search_fabric_docs, get_example) are still available for modding guidance.';
 
 export interface SearchMappingsParams {

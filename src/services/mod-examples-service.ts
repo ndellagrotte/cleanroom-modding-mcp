@@ -6,6 +6,7 @@
 import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import { getDefaultDbPath } from '../data-dir.js';
+import { DBS } from '../dbs.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INTERFACES
@@ -89,7 +90,7 @@ export interface CategoryInfo {
 
 export class ModExamplesService {
   private db: Database.Database;
-  private static dbPath = getDefaultDbPath('mod-examples.db');
+  private static dbPath = getDefaultDbPath(DBS.examples.fileName);
 
   constructor(dbPath?: string) {
     const finalPath = dbPath || ModExamplesService.dbPath;

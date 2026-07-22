@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from 'module';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -8,10 +9,13 @@ import {
   ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { handleGetExample } from './tools/getExample.js';
-import { handleGetMinecraftVersion } from './tools/getMinecraftVersion.js';
+import { handleListTargets } from './tools/listTargets.js';
 import { handleSearchDocs } from './tools/searchDocs.js';
 import { handleExplainConcept } from './tools/explainConcept.js';
-import { DbVersioning } from './db-versioning.js';
+import { autoUpdateAll } from './db-versioning.js';
+import { PACKAGE_NAME } from './dbs.js';
+import { LOADER_IDS } from './loaders.js';
+import { DOC_CATEGORY_ENUM, DOC_CATEGORIES } from './categories.js';
 import { ModExamplesService } from './services/mod-examples-service.js';
 import { MappingsService } from './services/mappings-service.js';
 import {
@@ -39,10 +43,13 @@ if (process.argv.includes('manage')) {
   process.exit(0);
 }
 
+const require = createRequire(import.meta.url);
+const { version: PACKAGE_VERSION } = require('../package.json') as { version: string };
+
 const server = new Server(
   {
-    name: 'mcmodding-mcp',
-    version: '0.4.5',
+    name: PACKAGE_NAME,
+    version: PACKAGE_VERSION,
   },
   {
     capabilities: {
@@ -55,31 +62,51 @@ const server = new Server(
 // Base tools always available
 const BASE_TOOLS = [
   {
-    name: 'search_fabric_docs',
+    name: 'search_docs',
     description:
-      'Search Fabric modding documentation for guides and API information. Use this when you need to find documentation about Fabric modding features, APIs, or tutorials.',
+      'Search Minecraft modding documentation. Defaults to the TARGET scope: Cleanroom + Forge 1.12.2 — the loaders this server helps you build for. Use scope "reference" for Fabric/NeoForge porting material, "all" for comparative work.',
     inputSchema: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
           description:
-            "Search query (e.g., 'how to register items', 'mixin tutorial', 'networking'). Be specific for best results. Especially useful for finding guides and API references.",
+            "Search query (e.g., 'how to register items', 'mixin setup', 'capabilities'). Be specific for best results.",
+        },
+        scope: {
+          type: 'string',
+          enum: ['target', 'reference', 'all'],
+          description:
+            'Loader family to search: "target" = Cleanroom/Forge 1.12.2 (default), "reference" = Fabric/NeoForge porting material, "all" = everything',
+          default: 'target',
+        },
+        loader: {
+          type: 'string',
+          enum: LOADER_IDS,
+          description: 'Filter to one specific loader (overrides scope)',
         },
         category: {
           type: 'string',
-          enum: [
-            'getting-started',
-            'items',
-            'blocks',
-            'entities',
-            'rendering',
-            'networking',
-            'data-generation',
-            'all',
-          ],
+          enum: DOC_CATEGORY_ENUM,
           description: 'Documentation category to search within (default: all)',
           default: 'all',
+        },
+        minecraft_version: {
+          type: 'string',
+          description:
+            "Minecraft version filter (e.g., '1.12.2', '1.21.4'). 'latest' resolves per scope: 1.12.2 for target, newest indexed for reference.",
+        },
+        include_code: {
+          type: 'boolean',
+          description: 'Include code snippets in results (default: true)',
+          default: true,
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of results (1-20)',
+          default: 10,
+          minimum: 1,
+          maximum: 20,
         },
       },
       required: ['query'],
@@ -88,42 +115,40 @@ const BASE_TOOLS = [
   {
     name: 'get_example',
     description:
-      'Get code examples for Minecraft modding topics. Returns complete, working code snippets with full context including explanations, source documentation, and metadata. Use this when you need concrete code examples for implementing features.',
+      'Get code examples for Minecraft modding topics. Returns complete, working code snippets with full context including explanations, source documentation, and metadata. Defaults to the target scope (Cleanroom/Forge 1.12.2).',
     inputSchema: {
       type: 'object',
       properties: {
         topic: {
           type: 'string',
           description:
-            "Topic or pattern to get examples for (e.g., 'register item', 'block entity', 'mixin', 'networking', 'custom armor'). Can be free-form text.",
+            "Topic or pattern to get examples for (e.g., 'register item', 'tile entity', 'mixin', 'networking', 'custom armor'). Can be free-form text.",
         },
         language: {
           type: 'string',
           description: "Programming language (e.g., 'java', 'json', 'groovy')",
           default: 'java',
         },
+        scope: {
+          type: 'string',
+          enum: ['target', 'reference', 'all'],
+          description:
+            'Loader family: "target" = Cleanroom/Forge 1.12.2 (default), "reference" = Fabric/NeoForge, "all" = everything',
+          default: 'target',
+        },
         loader: {
           type: 'string',
-          enum: ['fabric', 'neoforge', 'shared'],
-          description: 'Mod loader to filter by',
+          enum: LOADER_IDS,
+          description: 'Filter to one specific loader (overrides scope)',
         },
         minecraft_version: {
           type: 'string',
-          description: "Target Minecraft version (e.g., '1.21.4', '1.21.10'). Latest: use 'latest'",
+          description:
+            "Minecraft version filter (e.g., '1.12.2', '1.21.4'). 'latest' resolves per scope.",
         },
         category: {
           type: 'string',
-          enum: [
-            'getting-started',
-            'items',
-            'blocks',
-            'entities',
-            'rendering',
-            'networking',
-            'data-generation',
-            'commands',
-            'sounds',
-          ],
+          enum: DOC_CATEGORIES,
           description: 'Documentation category to filter by',
         },
         limit: {
@@ -138,35 +163,34 @@ const BASE_TOOLS = [
     },
   },
   {
-    name: 'explain_fabric_concept',
+    name: 'explain_concept',
     description:
-      'Get detailed explanation of a Fabric or Minecraft modding concept. Use this to understand fundamental concepts, terminology, or architectural patterns.',
+      'Get a detailed explanation of a Minecraft modding concept, from the perspective of a specific loader (default: Cleanroom). Use this to understand fundamental concepts, terminology, or architectural patterns — e.g. capabilities, SRG names, mixins, mcmod.info.',
     inputSchema: {
       type: 'object',
       properties: {
         concept: {
           type: 'string',
           description:
-            "Concept to explain (e.g., 'mixins', 'registries', 'sided logic', 'fabric.mod.json', 'events')",
+            "Concept to explain (e.g., 'capabilities', 'srg names', 'mixins', 'oredictionary', 'mcmod.info', 'events'). Max 100 characters.",
+        },
+        loader: {
+          type: 'string',
+          enum: LOADER_IDS,
+          description: "Loader perspective for the explanation (default: 'cleanroom')",
+          default: 'cleanroom',
         },
       },
       required: ['concept'],
     },
   },
   {
-    name: 'get_minecraft_version',
+    name: 'list_targets',
     description:
-      'Get Minecraft version information from the indexed documentation. Returns either the latest version or all available versions.',
+      'Orientation call: shows which loaders are development targets (Cleanroom/Forge 1.12.2) vs porting reference (Fabric/NeoForge), the indexed documentation versions, and which optional databases are installed. Call this first in a new session.',
     inputSchema: {
       type: 'object',
-      properties: {
-        type: {
-          type: 'string',
-          enum: ['latest', 'all'],
-          description: "Type of version info: 'latest' for newest version, 'all' for complete list",
-          default: 'latest',
-        },
-      },
+      properties: {},
     },
   },
 ];
@@ -196,9 +220,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   switch (name) {
-    case 'search_fabric_docs': {
+    case 'search_docs': {
       return handleSearchDocs({
         query: (args?.query as string) || '',
+        scope: args?.scope as string | undefined,
         category: args?.category as string | undefined,
         loader: args?.loader as string | undefined,
         minecraftVersion: args?.minecraft_version as string | undefined,
@@ -211,6 +236,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return await handleGetExample({
         topic: (args?.topic as string) || '',
         language: args?.language as string | undefined,
+        scope: args?.scope as string | undefined,
         loader: args?.loader as string | undefined,
         minecraftVersion: args?.minecraft_version as string | undefined,
         category: args?.category as string | undefined,
@@ -218,16 +244,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
     }
 
-    case 'explain_fabric_concept': {
+    case 'explain_concept': {
       return await handleExplainConcept({
         concept: (args?.concept as string) || '',
+        loader: args?.loader as string | undefined,
       });
     }
 
-    case 'get_minecraft_version': {
-      return handleGetMinecraftVersion({
-        type: (args?.type as 'latest' | 'all') || 'latest',
-      });
+    case 'list_targets': {
+      return handleListTargets();
     }
 
     // Mod examples tools (only work if database is available)
@@ -334,19 +359,18 @@ server.setRequestHandler(ReadResourceRequestSchema, (request) => {
 
 // Start the server
 async function main() {
-  // Check for database updates on startup (skip if MCMODDING_SKIP_AUTO_UPDATE is set)
-  if (process.env.MCMODDING_SKIP_AUTO_UPDATE) {
-    console.error('[DbVersioning] Auto-update skipped (MCMODDING_SKIP_AUTO_UPDATE is set)');
+  // Check for database updates on startup (skip if CLEANROOM_MCP_SKIP_AUTO_UPDATE is set)
+  if (process.env.CLEANROOM_MCP_SKIP_AUTO_UPDATE) {
+    console.error('[DbVersioning] Auto-update skipped (CLEANROOM_MCP_SKIP_AUTO_UPDATE is set)');
   } else {
     try {
       console.error('[DbVersioning] Checking for database updates...');
-      const versioning = new DbVersioning();
-      const updated = await versioning.autoUpdate();
+      const updated = await autoUpdateAll();
       console.error('[DbVersioning] Update check complete');
       if (updated) {
-        console.error('[DbVersioning] Database updated. Restart recommended for best results.');
+        console.error('[DbVersioning] Database(s) updated. Restart recommended for best results.');
       } else {
-        console.error('[DbVersioning] Database is up to date');
+        console.error('[DbVersioning] Installed databases are up to date');
       }
     } catch (error) {
       console.error('[DbVersioning] Error checking for updates:', error);
@@ -356,7 +380,7 @@ async function main() {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Minecraft Modding MCP Server running on stdio');
+  console.error('Cleanroom Modding MCP Server running on stdio');
 }
 
 main().catch((error) => {

@@ -12,6 +12,9 @@ import {
   type ScoredResult,
 } from './search-utils.js';
 import { getDefaultDbPath } from '../data-dir.js';
+import { DBS } from '../dbs.js';
+import { LOADER_IDS, scopeToLoaders, type Scope } from '../loaders.js';
+import { DOC_CATEGORIES } from '../categories.js';
 
 export interface SearchResult {
   title: string;
@@ -32,7 +35,10 @@ export interface SearchResult {
 export interface SearchOptions {
   query: string;
   category?: string;
+  /** Explicit loader filter — overrides `scope` when set. */
   loader?: string;
+  /** Loader-family filter: 'target' (cleanroom/forge), 'reference' (fabric/neoforge), or 'all'. */
+  scope?: Scope;
   minecraftVersion?: string;
   includeCode?: boolean;
   limit?: number;
@@ -115,7 +121,7 @@ export class SearchService {
   private embeddingGenerator: EmbeddingGenerator;
 
   constructor(dbPath?: string) {
-    const finalPath = dbPath || process.env.DB_PATH || getDefaultDbPath('mcmodding-docs.db');
+    const finalPath = dbPath || process.env.DB_PATH || getDefaultDbPath(DBS.docs.fileName);
     console.error(`[SearchService] Using database at: ${finalPath}`);
     this.store = new DocumentStore(finalPath);
     this.embeddingGenerator = new EmbeddingGenerator();
@@ -125,8 +131,14 @@ export class SearchService {
    * Search documentation using intelligent multi-strategy search
    */
   async search(options: SearchOptions): Promise<SearchResult[]> {
-    const { query, category, loader, includeCode = true, limit = 10 } = options;
+    const { query, category, includeCode = true, limit = 10 } = options;
     let { minecraftVersion } = options;
+
+    // Explicit loader wins; otherwise a scope expands to its loader set
+    // ('all' or no scope = no filter).
+    const loader: string | string[] | undefined =
+      options.loader ??
+      (options.scope && options.scope !== 'all' ? scopeToLoaders(options.scope) : undefined);
 
     console.error(`[SearchService] Searching for: "${query}"`);
 
@@ -229,7 +241,7 @@ export class SearchService {
     query: string,
     options: {
       category?: string;
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       limit?: number;
     }
@@ -431,7 +443,7 @@ export class SearchService {
     query: TokenizedQuery,
     options: {
       category?: string;
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
       includeCode?: boolean;
     }
@@ -514,7 +526,7 @@ export class SearchService {
     query: TokenizedQuery,
     options: {
       category?: string;
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
     }
   ): ScoredResult<DocumentResult>[] {
@@ -557,7 +569,7 @@ export class SearchService {
     query: TokenizedQuery,
     options: {
       category?: string;
-      loader?: string;
+      loader?: string | string[];
       minecraftVersion?: string;
     }
   ): ScoredResult<DocumentResult>[] {
@@ -815,8 +827,8 @@ export class SearchService {
     return {
       totalDocuments: stats.totalDocuments,
       totalSections: stats.totalSections,
-      categories: Object.keys(stats.loaders),
-      loaders: ['fabric', 'neoforge', 'shared'],
+      categories: [...DOC_CATEGORIES],
+      loaders: LOADER_IDS,
       versions,
     };
   }

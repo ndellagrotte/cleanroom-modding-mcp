@@ -1,12 +1,12 @@
 {
-  "name": "mcmodding-mcp",
+  "name": "cleanroom-modding-mcp",
   "version": "0.4.5",
   "packageManager": "pnpm@10.30.0",
-  "description": "MCP server providing AI assistants with up-to-date Minecraft modding documentation for Fabric and NeoForge",
+  "description": "MCP server enabling AI agents to build Cleanroom (Minecraft 1.12.2) mods — docs, SRG mappings, and cross-loader porting knowledge",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "mcmodding-mcp": "dist/index.js"
+    "cleanroom-modding-mcp": "dist/index.js"
   },
   "files": [
     "dist",
@@ -35,21 +35,20 @@
     "prebuild:prod": "pnpm run clean",
     "postinstall": "node scripts/postinstall.js",
     "prepublishOnly": "",
-    "release:auto": "semantic-release",
     "release": "pnpm run build:prod && pnpm version",
     "validate": "pnpm run typecheck && pnpm run lint && pnpm run test",
-    "db:manifest": "npx tsx scripts/generate-db-manifest.ts",
-    "db:install-optional": "npx tsx src/index.ts install",
+    "manage": "npx tsx src/index.ts manage",
+    "manifest": "npx tsx scripts/generate-manifest.ts",
     "index-mappings": "npx tsx scripts/index-mappings.ts",
-    "index-mappings:force": "npx tsx scripts/index-mappings.ts --force",
-    "mappings:manifest": "npx tsx scripts/generate-mappings-manifest.ts",
-    "mappings:analyze": "npx tsx scripts/analyze-mappings.ts",
-    "index-mod-examples": "npx tsx scripts/index-mod-examples.ts",
-    "mod-examples:manifest": "npx tsx scripts/generate-mod-examples-manifest.ts"
+    "index-mappings:force": "npx tsx scripts/index-mappings.ts --force"
   },
   "keywords": [
     "minecraft",
     "modding",
+    "cleanroom",
+    "forge",
+    "1.12.2",
+    "srg",
     "fabric",
     "neoforge",
     "mcp",
@@ -57,7 +56,7 @@
     "ai",
     "documentation"
   ],
-  "author": "OGMatrix",
+  "author": "ndellagrotte",
   "license": "MIT",
   "engines": {
     "node": ">=20.0.0"
@@ -75,9 +74,6 @@
     "@commitlint/cli": "^19.6.0",
     "@commitlint/config-conventional": "^19.6.0",
     "@eslint/js": "^9.15.0",
-    "@semantic-release/changelog": "^6.0.3",
-    "@semantic-release/exec": "^7.1.0",
-    "@semantic-release/git": "^10.0.1",
     "@types/adm-zip": "^0.5.8",
     "@types/better-sqlite3": "^7.6.13",
     "@types/jquery": "^3.5.33",
@@ -87,7 +83,6 @@
     "@vitest/coverage-v8": "^4.1.6",
     "@vitest/ui": "^4.1.6",
     "adm-zip": "^0.5.17",
-    "conventional-changelog-conventionalcommits": "^9.3.1",
     "eslint": "^9.15.0",
     "eslint-config-prettier": "^9.1.0",
     "eslint-plugin-prettier": "^5.2.1",
@@ -95,7 +90,6 @@
     "lint-staged": "^15.2.11",
     "prettier": "^3.8.3",
     "rimraf": "^6.1.3",
-    "semantic-release": "^24.2.3",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.59.3",
@@ -114,12 +108,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/OGMatrix/mcmodding-mcp.git"
+    "url": "git+https://github.com/ndellagrotte/cleanroom-modding-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/OGMatrix/mcmodding-mcp/issues"
+    "url": "https://github.com/ndellagrotte/cleanroom-modding-mcp/issues"
   },
-  "homepage": "https://github.com/OGMatrix/mcmodding-mcp#readme",
+  "homepage": "https://github.com/ndellagrotte/cleanroom-modding-mcp#readme",
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3",
