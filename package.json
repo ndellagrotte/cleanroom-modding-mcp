@@ -57,6 +57,7 @@
     "index-docs:prod": "npx tsx --expose-gc --max-old-space-size=6144 scripts/index-docs.ts -- --sitemap --embeddings --force",
     "index-docs:no-embeddings": "npx tsx --expose-gc --max-old-space-size=4096 scripts/index-docs.ts -- --sitemap",
     "clean": "rimraf dist",
+    "_comment_clean_all": "WARNING: clean:all deletes ALL of data/, including the committed data/equivalence/ corpus and data/templates-pins.json. Both are git-tracked and recoverable with `git checkout -- data/`.",
     "clean:all": "rimraf dist data",
     "prebuild": "pnpm run clean",
     "prebuild:prod": "pnpm run clean",
@@ -64,6 +65,7 @@
     "prepublishOnly": "",
     "release": "pnpm run build:prod && pnpm version",
     "validate": "pnpm run typecheck && pnpm run lint && pnpm run test",
+    "validate:equivalence": "npx tsx scripts/validate-equivalence.ts",
     "manage": "npx tsx src/index.ts manage",
     "manifest": "npx tsx scripts/generate-manifest.ts",
     "index-mappings": "npx tsx scripts/index-mappings.ts",
@@ -105,7 +107,8 @@
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.59.3",
     "vitest": "^4.1.6",
-    "web-tree-sitter": "^0.26.11"
+    "web-tree-sitter": "^0.26.11",
+    "yaml": "^2.6.1"
   },
   "engines": {
     "node": ">=20.0.0"

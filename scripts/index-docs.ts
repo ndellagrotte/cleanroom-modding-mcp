@@ -31,6 +31,7 @@ import {
 } from '../src/indexer/cleanroom-wiki.js';
 import { EmbeddingGenerator } from '../src/indexer/embeddings.js';
 import type { DocumentPage } from '../src/indexer/types.js';
+import { compileEquivalence } from './equivalence-compile.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +42,8 @@ interface IndexOptions {
   generateEmbeddings?: boolean;
   embeddingsBatchSize?: number;
   loaders?: Loader[];
+  /** Compile data/equivalence/*.yaml into the equivalence table (default true). */
+  equivalence?: boolean;
 }
 
 /** Loaders that have documentation sources registered (excludes 'shared'). */
@@ -145,6 +148,22 @@ async function main(options: IndexOptions = {}) {
   const store = new DocumentStore(dbPath);
 
   try {
+    // Compile the equivalence corpus into its dedicated table (Phase 4).
+    // Independent of the crawl; runs unless explicitly disabled with --no-equivalence.
+    if (options.equivalence !== false) {
+      const equivDir = join(dataDir, 'equivalence');
+      const { entries, errors, fileCount } = await compileEquivalence(equivDir);
+      if (errors.length > 0) {
+        console.error(`❌ Equivalence corpus has ${errors.length} validation error(s):`);
+        for (const e of errors) console.error(`   - ${e}`);
+        throw new Error('Equivalence corpus validation failed — aborting index build.');
+      }
+      store.replaceEquivalence(entries);
+      console.log(
+        `🔗 Compiled ${entries.length} equivalence entries from ${fileCount} topic file(s)\n`
+      );
+    }
+
     // Discover URLs / pre-built pages per selected loader
     const selectedLoaders = options.loaders ?? INDEXABLE_LOADERS;
     console.log(`📡 Discovering documentation for: ${selectedLoaders.join(', ')}`);
@@ -316,6 +335,11 @@ async function main(options: IndexOptions = {}) {
     // Update timestamp
     store.updateTimestamp();
 
+    // Stamp the schema version LAST — only a fully-built DB (equivalence compiled + crawl
+    // stored) records schema_version=2, so an aborted rebuild-over-existing-file never leaves
+    // a file that claims v2 while incomplete.
+    store.stampSchemaVersion();
+
     // Show statistics
     console.log('📊 Indexing Statistics:');
     const stats = store.getStats();
@@ -394,6 +418,7 @@ const options: IndexOptions = {
   generateEmbeddings: args.includes('--embeddings') || args.includes('-e'),
   embeddingsBatchSize: 100,
   loaders: parseLoadersArg(args),
+  equivalence: !args.includes('--no-equivalence'),
 };
 
 // Show help
@@ -407,6 +432,7 @@ if (args.includes('--help') || args.includes('-h')) {
   console.log('  -e, --embeddings    Generate semantic embeddings');
   console.log('      --loaders a,b   Only index the given loaders');
   console.log(`                      (default: ${INDEXABLE_LOADERS.join(',')})`);
+  console.log('      --no-equivalence  Skip compiling data/equivalence/*.yaml');
   console.log('  -h, --help          Show this help message');
   console.log('');
   console.log('Examples:');
@@ -426,6 +452,7 @@ console.log(`  • Incremental: ${options.incremental ? 'Yes' : 'No'}`);
 console.log(`  • Use sitemap: ${options.useSitemap ? 'Yes' : 'No'}`);
 console.log(`  • Generate embeddings: ${options.generateEmbeddings ? 'Yes' : 'No'}`);
 console.log(`  • Loaders: ${(options.loaders ?? INDEXABLE_LOADERS).join(', ')}`);
+console.log(`  • Compile equivalence: ${options.equivalence !== false ? 'Yes' : 'No'}`);
 console.log('');
 
 main(options).catch((error) => {

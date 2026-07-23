@@ -1,0 +1,62 @@
+topic: events
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "UseBlockCallback.EVENT.register((player, world, hand, hit) -> ...)"
+      api_alt:
+        - "AttackBlockCallback.EVENT.register(...)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "@SubscribeEvent public void onRightClick(PlayerInteractEvent.RightClickBlock e) on MinecraftForge.EVENT_BUS"
+    kind: pattern-change
+    notes: |
+      Fabric's per-event Event objects become a single MinecraftForge.EVENT_BUS with
+      @SubscribeEvent-annotated methods. Register the handler object with
+      MinecraftForge.EVENT_BUS.register(this) (or @Mod.EventBusSubscriber).
+    caveats:
+      - "Event class names differ from Fabric callbacks; verify with search_cleanroom_api."
+    related:
+      - "cleanroom://guide/porting-from-fabric#events"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/events/intro/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "@SubscribeEvent on the mod bus vs the game bus (IEventBus)"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "@SubscribeEvent on MinecraftForge.EVENT_BUS; lifecycle via @Mod.EventHandler(FMLPreInitializationEvent, ...)"
+    kind: analog
+    notes: |
+      The 1.16+ split between the mod event bus and the forge event bus collapses. Lifecycle
+      events (setup) use @Mod.EventHandler with FMLPreInitializationEvent / FMLInitializationEvent
+      / FMLPostInitializationEvent; gameplay events use @SubscribeEvent on the global bus.
+    related:
+      - "cleanroom://guide/porting-from-neoforge#events"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/events/intro/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "ServerLifecycleEvents.SERVER_STARTED.register(server -> ...)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "@Mod.EventHandler public void onServerStarting(FMLServerStartingEvent e) / FMLServerStartedEvent"
+    kind: analog
+    notes: |
+      Fabric server lifecycle callbacks map to the FML server lifecycle events, which are
+      delivered to @Mod.EventHandler methods on your mod class.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/events/intro/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

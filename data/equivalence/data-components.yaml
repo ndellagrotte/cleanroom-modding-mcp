@@ -1,0 +1,41 @@
+topic: data-components
+entries:
+  - from:
+      vocab: modern-minecraft
+      era: yarn-<=1.21.11
+      api: "stack.set(DataComponentTypes.CUSTOM_DATA, ...) / ItemStack components"
+      versions: "1.20.5+"
+    to:
+      loader: cleanroom
+      api: null
+    kind: missing
+    notes: |
+      Item data components (1.20.5+) have no 1.12.2 equivalent. Store per-stack data in the
+      ItemStack's NBT: stack.getTagCompound() / stack.setTagCompound(new NBTTagCompound()) and
+      read/write your keys directly. Capabilities cover more complex per-stack state.
+    caveats:
+      - "Always null-check and lazily create the stack tag compound before writing."
+    related:
+      - "serialization-nbt-codecs/modern-minecraft/codec-mydata-codec-recordcodecbuilder-create"
+      - "cleanroom://guide/backporting#serialization-codecdatacomponents-nbt-missing"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "stack.getOrCreateTag() (modern CompoundTag on ItemStack)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "if (!stack.hasTagCompound()) stack.setTagCompound(new NBTTagCompound()); stack.getTagCompound()"
+    kind: direct
+    notes: |
+      Before 1.20.5, per-stack storage was ItemStack NBT on both sides; only the class/method
+      names differ (getOrCreateTag -> hasTagCompound/getTagCompound/setTagCompound).
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

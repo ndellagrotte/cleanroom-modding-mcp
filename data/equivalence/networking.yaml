@@ -1,0 +1,52 @@
+topic: networking
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "ServerPlayNetworking.registerGlobalReceiver(Identifier, PlayChannelHandler)"
+      api_alt:
+        - "ServerPlayNetworking.send(ServerPlayerEntity, Identifier, PacketByteBuf)"
+      versions: "1.16–1.20.4 (Yarn-named); package net.fabricmc.fabric.api.networking.v1"
+    to:
+      loader: cleanroom
+      api: "SimpleNetworkWrapper via NetworkRegistry.INSTANCE.newSimpleChannel; IMessage + IMessageHandler; registerMessage(handler, message, discriminator, Side)"
+    kind: pattern-change
+    notes: |
+      1.12.2 packets run on the network thread. Any main-thread work (world/entity
+      mutation) must be scheduled with IThreadListener.addScheduledTask — this maps to
+      Fabric's `client.execute(...)` / NeoForge's `context.enqueueWork(...)`.
+    code_after: |
+      SimpleNetworkWrapper CHANNEL =
+        NetworkRegistry.INSTANCE.newSimpleChannel("mymod");
+      CHANNEL.registerMessage(MyHandler.class, MyMessage.class, 0, Side.SERVER);
+    caveats:
+      - "registerMessage takes a zero-based discriminator byte plus the receiving Side."
+      - "IMessageHandler.onMessage returns a reply IMessage or null; never do world work inline."
+    related:
+      - "cleanroom://guide/porting-from-fabric#networking"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/networking/simpleimpl/"
+        license: "MIT-docs"
+        quote: "packets are handled on the network thread"
+    validated_against: "cleanroom 0.6.3-alpha; fabric-api 0.92.x"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "SimpleChannel channel = NetworkRegistry.newSimpleChannel(...); channel.registerMessage(...)"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "SimpleNetworkWrapper NetworkRegistry.INSTANCE.newSimpleChannel(String); registerMessage(IMessageHandler, IMessage, int, Side)"
+    kind: analog
+    notes: |
+      The 1.16+ SimpleChannel builder collapses to the 1.12.2 SimpleNetworkWrapper. There is
+      no protocol-version negotiation in 1.12.2; drop the `.networkProtocolVersion(...)` and
+      `.simpleChannel()` builder calls and register messages directly.
+    code_after: |
+      SimpleNetworkWrapper CHANNEL =
+        NetworkRegistry.INSTANCE.newSimpleChannel("mymod");
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/networking/simpleimpl/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

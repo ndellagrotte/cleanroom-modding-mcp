@@ -1,0 +1,39 @@
+topic: energy-transfer
+entries:
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "IEnergyStorage / EnergyStorage; getCapability(ForgeCapabilities.ENERGY)"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "net.minecraftforge.energy.IEnergyStorage + EnergyStorage; getCapability(CapabilityEnergy.ENERGY, side)"
+    kind: direct
+    notes: |
+      The Forge Energy (FE) capability existed in 1.12.2 already. Use CapabilityEnergy.ENERGY as
+      the token and expose an EnergyStorage through your ICapabilityProvider. API is essentially
+      unchanged aside from the capability-access idiom (no LazyOptional).
+    related:
+      - "capabilities-attachments/neoforge/getcapability-forgecapabilities-item-handler-ifpresent-lazyoptional-iitemhandler"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/datastorage/capabilities/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "Team Reborn Energy API: EnergyStorage.SIDED / SimpleEnergyStorage"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "Forge Energy: CapabilityEnergy.ENERGY + IEnergyStorage"
+    kind: analog
+    notes: |
+      Fabric mods use the Team Reborn Energy API; on 1.12.2 the ecosystem standard is Forge
+      Energy (FE) via CapabilityEnergy. Values are not 1:1 with any Fabric energy unit — treat FE
+      as the canonical unit.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/datastorage/capabilities/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

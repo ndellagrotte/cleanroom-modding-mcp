@@ -1,0 +1,62 @@
+topic: mixins-access-transformers
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "fabric.mod.json \"mixins\": [\"modid.mixins.json\"]"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "JAR manifest attribute MixinConfigs: modid.mixin.json (comma-separated)"
+    kind: pattern-change
+    notes: |
+      Cleanroom bundles CleanMix (a Fabric-Mixin fork) at org.spongepowered.asm, so mixin
+      classes port directly. Declaration moves from fabric.mod.json to the JAR manifest
+      MixinConfigs attribute. The legacy IEarlyMixinLoader / @MixinLoader paths are deprecated.
+    caveats:
+      - "compatibilityLevel in the config targets JAVA_8 in the template; refmaps are handled by Unimined."
+    related:
+      - "cleanroom://guide/mixin-setup"
+      - "cleanroom://template/mixins.json"
+    sources:
+      - url: "https://cleanroommc.com/wiki/forge-mod-development/mixin/mixinbooter"
+        license: "wiki-docs"
+    validated_against: "cleanroom 0.6.3-alpha; cleanmix 0.4.6"
+
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "modid.accesswidener: accessible method net/minecraft/... "
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "Access transformer modid_at.cfg: public net.minecraft.<Class> <member><descriptor>; FMLAT manifest attribute"
+    kind: pattern-change
+    notes: |
+      Access wideners become Forge access transformers. Entries are written in MCP names as
+      <modifier> <fully.qualified.Class> <member><descriptor>, wired via the FMLAT jar-manifest
+      attribute; Unimined remaps them to SRG at build. Never remove `final` via a mixin — use the AT.
+    related:
+      - "cleanroom://template/modid_at.cfg"
+      - "cleanroom://guide/mixin-setup"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/gettingstarted/structuring/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "@Mixin with MixinExtras @WrapOperation / @ModifyExpressionValue"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "Same MixinExtras annotations — MixinExtras 0.5.4 is bundled in Cleanroom"
+    kind: direct
+    notes: |
+      MixinExtras is available on both sides; the annotations are identical. Only the config
+      declaration mechanism (MixinConfigs manifest attribute) differs.
+    sources:
+      - url: "https://cleanroommc.com/wiki/forge-mod-development/mixin/mixinbooter"
+        license: "wiki-docs"
+    validated_against: "cleanroom 0.6.3-alpha; mixinextras 0.5.4"

@@ -1,0 +1,41 @@
+topic: block-entity-renderer
+entries:
+  - from:
+      vocab: modern-minecraft
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "BlockEntityRenderer<T> + BlockEntityRendererProvider; PoseStack/RenderSystem"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "TileEntitySpecialRenderer<T> (TESR); ClientRegistry.bindTileEntitySpecialRenderer(T.class, new MyTESR())"
+    kind: pattern-change
+    notes: |
+      Modern BlockEntityRenderer maps to the 1.12.2 TileEntitySpecialRenderer. Binding is done
+      with ClientRegistry.bindTileEntitySpecialRenderer during client preInit. The modern
+      PoseStack/RenderSystem pipeline becomes direct GlStateManager/Tessellator calls (LWJGL3 is
+      present, but the rendering API is the 1.12.2 one).
+    caveats:
+      - "The performant path is the abstract class FastTESR<T> plus TileEntitySpecialRenderer.isGlobalRenderer()."
+    related:
+      - "cleanroom://guide/backporting#rendering-ber-tesr-pattern-change"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "EntityRenderer<T> + EntityRendererProvider (entity rendering)"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "Render<T> + IRenderFactory; RenderingRegistry.registerEntityRenderingHandler(T.class, factory)"
+    kind: pattern-change
+    notes: |
+      Entity renderers use RenderingRegistry.registerEntityRenderingHandler with an
+      IRenderFactory in 1.12.2, producing a Render<T> subclass.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

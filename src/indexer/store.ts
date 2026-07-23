@@ -5,8 +5,31 @@
 import Database from 'better-sqlite3';
 import type { DocumentPage, IndexStats } from './types.js';
 import type { DocumentChunk } from './chunker.js';
+import type { CompiledEquivalenceEntry } from '../equivalence/types.js';
 
-const SCHEMA_VERSION = 1;
+/** Bump together with DBS.docs.schemaVersion in src/dbs.ts. */
+const SCHEMA_VERSION = 2;
+
+/** Raw equivalence row as stored (JSON columns kept as TEXT). */
+export interface EquivalenceDbRow {
+  entry_key: string;
+  topic: string;
+  from_vocab: string;
+  from_era: string | null;
+  from_api: string;
+  from_api_alt: string | null;
+  from_versions: string | null;
+  to_loader: string;
+  to_api: string | null;
+  kind: string;
+  notes: string | null;
+  code_before: string | null;
+  code_after: string | null;
+  caveats: string | null;
+  related: string | null;
+  sources: string | null;
+  validated_against: string | null;
+}
 
 export interface ChunkResult {
   id: string;
@@ -161,16 +184,19 @@ export class DocumentStore {
         VALUES (new.id, new.title, new.content, new.category);
       END;
 
+      -- External-content FTS5 delete/update MUST use the special 'delete' command with the
+      -- OLD column values; a plain 'DELETE FROM fts WHERE rowid=' leaves stale tokens behind
+      -- (FTS cannot reconstruct them once the base row is gone).
       CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
-        DELETE FROM documents_fts WHERE rowid = old.id;
+        INSERT INTO documents_fts(documents_fts, rowid, title, content, category)
+        VALUES('delete', old.id, old.title, old.content, old.category);
       END;
 
       CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-        UPDATE documents_fts SET
-          title = new.title,
-          content = new.content,
-          category = new.category
-        WHERE rowid = new.id;
+        INSERT INTO documents_fts(documents_fts, rowid, title, content, category)
+        VALUES('delete', old.id, old.title, old.content, old.category);
+        INSERT INTO documents_fts(rowid, title, content, category)
+        VALUES (new.id, new.title, new.content, new.category);
       END;
 
       CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
@@ -179,7 +205,63 @@ export class DocumentStore {
       END;
 
       CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
-        DELETE FROM chunks_fts WHERE rowid = old.rowid;
+        INSERT INTO chunks_fts(chunks_fts, rowid, content, section_heading)
+        VALUES('delete', old.rowid, old.content, old.section_heading);
+      END;
+
+      -- Equivalence corpus (Phase 4): cross-loader / backport API translations.
+      -- Dedicated table, NOT part of the documents/chunks FTS corpus.
+      CREATE TABLE IF NOT EXISTS equivalence (
+        id INTEGER PRIMARY KEY,
+        entry_key TEXT NOT NULL UNIQUE,   -- <topic>/<from_vocab>/<slug>; also cleanroom:// tail
+        topic TEXT NOT NULL,
+        from_vocab TEXT NOT NULL,         -- from-vocabulary (see FROM_VOCABS in src/equivalence/types.ts); NOT a Loader
+        from_era TEXT,
+        from_api TEXT NOT NULL,
+        from_api_alt TEXT,                -- JSON array of alternate-era spellings
+        from_versions TEXT,
+        to_loader TEXT NOT NULL,          -- 'cleanroom' | 'forge'
+        to_api TEXT,                      -- NULL when kind='missing'
+        kind TEXT NOT NULL CHECK (kind IN ('direct','analog','pattern-change','missing')),
+        notes TEXT,
+        code_before TEXT,
+        code_after TEXT,
+        caveats TEXT,                     -- JSON array
+        related TEXT,                     -- JSON array
+        keywords TEXT,                    -- JSON array (compile-derived: split identifiers)
+        sources TEXT,                     -- JSON array {url,license,quote}
+        validated_against TEXT
+      );
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS equivalence_fts USING fts5(
+        topic,
+        from_api,
+        from_api_alt,
+        to_api,
+        notes,
+        keywords,
+        content='equivalence',
+        content_rowid='id'
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_equivalence_topic ON equivalence(topic);
+      CREATE INDEX IF NOT EXISTS idx_equivalence_from ON equivalence(from_vocab);
+
+      CREATE TRIGGER IF NOT EXISTS equivalence_ai AFTER INSERT ON equivalence BEGIN
+        INSERT INTO equivalence_fts(rowid, topic, from_api, from_api_alt, to_api, notes, keywords)
+        VALUES (new.id, new.topic, new.from_api, new.from_api_alt, new.to_api, new.notes, new.keywords);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS equivalence_ad AFTER DELETE ON equivalence BEGIN
+        INSERT INTO equivalence_fts(equivalence_fts, rowid, topic, from_api, from_api_alt, to_api, notes, keywords)
+        VALUES('delete', old.id, old.topic, old.from_api, old.from_api_alt, old.to_api, old.notes, old.keywords);
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS equivalence_au AFTER UPDATE ON equivalence BEGIN
+        INSERT INTO equivalence_fts(equivalence_fts, rowid, topic, from_api, from_api_alt, to_api, notes, keywords)
+        VALUES('delete', old.id, old.topic, old.from_api, old.from_api_alt, old.to_api, old.notes, old.keywords);
+        INSERT INTO equivalence_fts(rowid, topic, from_api, from_api_alt, to_api, notes, keywords)
+        VALUES (new.id, new.topic, new.from_api, new.from_api_alt, new.to_api, new.notes, new.keywords);
       END;
     `);
 
@@ -191,10 +273,29 @@ export class DocumentStore {
    * Initialize metadata table
    */
   private initializeMetadata() {
+    // First-write-wins. Runtime services open existing DBs through this constructor, so
+    // schema_version must NOT be overwritten here — otherwise opening a shipped v1 docs.db
+    // would re-stamp it v2 and defeat the force-redownload gate. The build stamps the
+    // version explicitly via stampSchemaVersion() (a fresh clean-rebuild DB has no row yet,
+    // so INSERT OR IGNORE writes the current version).
     const stmt = this.db.prepare('INSERT OR IGNORE INTO metadata (key, value) VALUES (?, ?)');
     stmt.run('schema_version', SCHEMA_VERSION.toString());
     stmt.run('index_version', '0.1.0');
     stmt.run('last_updated', new Date().toISOString());
+  }
+
+  /**
+   * Authoritatively record the current schema version. Called by the build (index-docs)
+   * so a rebuild over an existing file still lands the correct version, without runtime
+   * opens ever mutating a shipped DB's recorded version.
+   */
+  stampSchemaVersion() {
+    this.db
+      .prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+      .run('schema_version', SCHEMA_VERSION.toString());
+    this.db
+      .prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
+      .run('last_updated', new Date().toISOString());
   }
 
   /**
@@ -1470,7 +1571,151 @@ export class DocumentStore {
   /**
    * Close the database
    */
+  // ───────────────────────────────────────────────────────────────────────────
+  // Equivalence corpus (Phase 4)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** The docs.db schema version recorded in metadata, or null if unreadable. */
+  getSchemaVersion(): number | null {
+    try {
+      const row = this.db
+        .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
+        .get() as { value?: string } | undefined;
+      if (!row?.value) return null;
+      const n = parseInt(row.value, 10);
+      return Number.isNaN(n) ? null : n;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether the dedicated equivalence table is present in this docs.db. */
+  hasEquivalenceTable(): boolean {
+    const row = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='equivalence'")
+      .get();
+    return row !== undefined;
+  }
+
+  /** Number of rows in the equivalence corpus (0 if the table is absent). */
+  countEquivalence(): number {
+    if (!this.hasEquivalenceTable()) return 0;
+    const row = this.db.prepare('SELECT count(*) AS n FROM equivalence').get() as { n: number };
+    return row.n;
+  }
+
+  /** Replace the entire equivalence corpus with the compiled entries. */
+  replaceEquivalence(entries: CompiledEquivalenceEntry[]) {
+    const insert = this.db.prepare(`
+      INSERT INTO equivalence (
+        entry_key, topic, from_vocab, from_era, from_api, from_api_alt, from_versions,
+        to_loader, to_api, kind, notes, code_before, code_after, caveats, related,
+        keywords, sources, validated_against
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const run = this.db.transaction((rows: CompiledEquivalenceEntry[]) => {
+      this.db.exec('DELETE FROM equivalence');
+      for (const e of rows) {
+        insert.run(
+          e.entry_key,
+          e.topic,
+          e.from_vocab,
+          e.from_era ?? null,
+          e.from_api,
+          JSON.stringify(e.from_api_alt ?? []),
+          e.from_versions ?? null,
+          e.to_loader,
+          e.to_api ?? null,
+          e.kind,
+          e.notes ?? null,
+          e.code_before ?? null,
+          e.code_after ?? null,
+          JSON.stringify(e.caveats ?? []),
+          JSON.stringify(e.related ?? []),
+          JSON.stringify(e.keywords ?? []),
+          JSON.stringify(e.sources ?? []),
+          e.validated_against ?? null
+        );
+      }
+    });
+    run(entries);
+  }
+
+  /**
+   * Full-text search over the equivalence corpus, filtered by from-vocabulary and
+   * (optionally) topic. `query` is tokenised into a safe FTS5 OR query so pasting a
+   * full API name (with dots/parens) never triggers an FTS syntax error.
+   */
+  searchEquivalence(opts: {
+    query: string;
+    fromVocab: string;
+    topic?: string;
+    limit: number;
+  }): EquivalenceDbRow[] {
+    const match = buildEquivalenceFtsQuery(opts.query);
+    const cols = `e.entry_key, e.topic, e.from_vocab, e.from_era, e.from_api, e.from_api_alt,
+      e.from_versions, e.to_loader, e.to_api, e.kind, e.notes, e.code_before, e.code_after,
+      e.caveats, e.related, e.sources, e.validated_against`;
+
+    // When the query has no usable FTS terms, fall back to a plain filter so a bare
+    // topic/vocab browse still returns rows.
+    if (!match) {
+      const params: (string | number)[] = [opts.fromVocab];
+      let sql = `SELECT ${cols} FROM equivalence e WHERE e.from_vocab = ?`;
+      if (opts.topic) {
+        sql += ' AND e.topic = ?';
+        params.push(opts.topic);
+      }
+      sql += ' ORDER BY e.topic, e.entry_key LIMIT ?';
+      params.push(opts.limit);
+      return this.db.prepare(sql).all(...params) as EquivalenceDbRow[];
+    }
+
+    const params: (string | number)[] = [match, opts.fromVocab];
+    let sql = `
+      SELECT ${cols}
+      FROM equivalence_fts
+      JOIN equivalence e ON equivalence_fts.rowid = e.id
+      WHERE equivalence_fts MATCH ?
+        AND e.from_vocab = ?
+    `;
+    if (opts.topic) {
+      sql += ' AND e.topic = ?';
+      params.push(opts.topic);
+    }
+    sql += ' ORDER BY equivalence_fts.rank LIMIT ?';
+    params.push(opts.limit);
+    return this.db.prepare(sql).all(...params) as EquivalenceDbRow[];
+  }
+
+  /** All equivalence rows for one topic (across every from-vocabulary), for concept banners. */
+  equivalenceByTopic(topic: string, limit: number): EquivalenceDbRow[] {
+    if (!this.hasEquivalenceTable()) return [];
+    const cols = `e.entry_key, e.topic, e.from_vocab, e.from_era, e.from_api, e.from_api_alt,
+      e.from_versions, e.to_loader, e.to_api, e.kind, e.notes, e.code_before, e.code_after,
+      e.caveats, e.related, e.sources, e.validated_against`;
+    return this.db
+      .prepare(
+        `SELECT ${cols} FROM equivalence e WHERE e.topic = ? ORDER BY e.from_vocab, e.entry_key LIMIT ?`
+      )
+      .all(topic, limit) as EquivalenceDbRow[];
+  }
+
   close() {
     this.db.close();
   }
+}
+
+/**
+ * Tokenise an arbitrary query (possibly a full `net.fabricmc.…(…)` API string) into a
+ * safe FTS5 MATCH expression: alphanumeric/underscore runs of length >= 3, quoted and
+ * OR'd. Returns '' when nothing usable remains (caller falls back to a plain filter).
+ */
+function buildEquivalenceFtsQuery(query: string): string {
+  const terms = Array.from(
+    new Set((query.toLowerCase().match(/[a-z0-9_]+/g) ?? []).filter((t) => t.length >= 3))
+  );
+  if (terms.length === 0) return '';
+  return terms.map((t) => `"${t}"`).join(' OR ');
 }

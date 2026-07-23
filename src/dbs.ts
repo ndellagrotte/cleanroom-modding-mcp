@@ -48,7 +48,8 @@ export const DBS: Record<DbId, DbSpec> = {
     fileName: 'docs.db',
     manifestName: 'docs-manifest.json',
     required: true,
-    schemaVersion: 1,
+    // Bump together with SCHEMA_VERSION in src/indexer/store.ts.
+    schemaVersion: 2,
     description: 'Cleanroom/Forge 1.12.2 docs plus Fabric & NeoForge porting reference',
     icon: '📚',
   },

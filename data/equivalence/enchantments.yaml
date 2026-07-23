@@ -1,0 +1,37 @@
+topic: enchantments
+entries:
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "class MyEnchantment extends Enchantment; DeferredRegister<Enchantment>"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "class MyEnchantment extends Enchantment { ... } registered in RegistryEvent.Register<Enchantment>; setRegistryName"
+    kind: analog
+    notes: |
+      Enchantments are still code-defined classes extending Enchantment in 1.12.2. Register in
+      RegistryEvent.Register<Enchantment>. The constructor takes (Rarity, EnumEnchantmentType,
+      EntityEquipmentSlot[]).
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/concepts/registries/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: modern-minecraft
+      era: yarn-<=1.21.11
+      api: "Data-driven enchantment JSON (data/<ns>/enchantment/*.json)"
+      versions: "1.21+"
+    to:
+      loader: cleanroom
+      api: null
+    kind: missing
+    notes: |
+      1.21's data-driven enchantments have no 1.12.2 equivalent. Define the enchantment as a
+      Java subclass of Enchantment and register it; effects are implemented in code (event
+      handlers), not JSON.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/concepts/registries/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

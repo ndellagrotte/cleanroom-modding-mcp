@@ -1,0 +1,36 @@
+topic: resource-loading
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "ResourceManagerHelper.get(ResourceType.SERVER_DATA).registerReloadListener(...)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "IResourceManagerReloadListener registered via ((IReloadableResourceManager) Minecraft.getMinecraft().getResourceManager()).registerReloadListener(...)"
+    kind: pattern-change
+    notes: |
+      Client resource reload uses IResourceManagerReloadListener in 1.12.2. There is no
+      server-data reload system comparable to modern datapack reload; server-side data is loaded
+      once at startup.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "SimpleJsonResourceReloadListener (server datapack listener)"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: null
+    kind: missing
+    notes: |
+      1.12.2 has no server-side JSON reload listener / datapack system. Load your JSON once
+      during FMLPostInitializationEvent (or from a custom folder) and cache it.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

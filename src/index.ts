@@ -6,7 +6,11 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
   ListResourcesRequestSchema,
+  ListResourceTemplatesRequestSchema,
   ReadResourceRequestSchema,
+  ListPromptsRequestSchema,
+  GetPromptRequestSchema,
+  McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { handleGetExample } from './tools/getExample.js';
 import { handleListTargets } from './tools/listTargets.js';
@@ -42,6 +46,18 @@ import {
   handleGetApiClass,
   type SearchCleanroomApiParams,
 } from './tools/cleanroomApi.js';
+import {
+  FIND_EQUIVALENT_TOOLS,
+  handleFindEquivalent,
+  type FindEquivalentParams,
+} from './tools/findEquivalent.js';
+import {
+  GET_PROJECT_TEMPLATE_TOOLS,
+  handleGetProjectTemplate,
+} from './tools/getProjectTemplate.js';
+import { GET_PORTING_GUIDE_TOOLS, handleGetPortingGuide } from './tools/getPortingGuide.js';
+import { listCleanroomResources, readCleanroomResource } from './resources.js';
+import { PROMPT_DEFS, getPromptResult } from './prompts.js';
 
 // Check for CLI commands
 if (process.argv.includes('manage')) {
@@ -67,6 +83,7 @@ const server = new Server(
     capabilities: {
       tools: {},
       resources: {},
+      prompts: {},
     },
   }
 );
@@ -209,8 +226,15 @@ const BASE_TOOLS = [
 
 // List available tools (conditionally include mod examples if database exists)
 server.setRequestHandler(ListToolsRequestSchema, () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const tools: any[] = [...BASE_TOOLS];
+  // Phase 4 porting tools are always listed: find_equivalent is backed by the required
+  // docs.db (it degrades gracefully if the corpus isn't present yet); the template/guide
+  // tools are backed by package-shipped content and need no DB.
+  const tools: any[] = [
+    ...BASE_TOOLS,
+    ...FIND_EQUIVALENT_TOOLS,
+    ...GET_PROJECT_TEMPLATE_TOOLS,
+    ...GET_PORTING_GUIDE_TOOLS,
+  ];
 
   // Add mod examples tools if database is available
   if (ModExamplesService.isAvailable()) {
@@ -238,6 +262,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   switch (name) {
+    case 'find_equivalent': {
+      return handleFindEquivalent({
+        query: (args?.query as string) || '',
+        from: args?.from as FindEquivalentParams['from'],
+        topic: args?.topic as string | undefined,
+        limit: args?.limit as number | undefined,
+      });
+    }
+
+    case 'get_project_template': {
+      return handleGetProjectTemplate({
+        component: (args?.component as string) || '',
+      });
+    }
+
+    case 'get_porting_guide': {
+      return handleGetPortingGuide({
+        name: (args?.name as string) || '',
+      });
+    }
+
     case 'search_docs': {
       return handleSearchDocs({
         query: (args?.query as string) || '',
@@ -379,17 +424,44 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// List available resources
+// List available resources — every cleanroom:// URI is enumerated concretely.
 server.setRequestHandler(ListResourcesRequestSchema, () => {
+  return { resources: listCleanroomResources() };
+});
+
+// No RFC-6570 resource templates are surfaced (no surveyed client uses them); registered
+// for spec-completeness so clients that probe it get an empty list rather than an error.
+server.setRequestHandler(ListResourceTemplatesRequestSchema, () => {
+  return { resourceTemplates: [] };
+});
+
+// Read resource — resolve template/guide bodies; unknown URI → spec code -32002.
+server.setRequestHandler(ReadResourceRequestSchema, (request) => {
+  const { uri } = request.params;
+  const body = readCleanroomResource(uri);
+  if (!body) {
+    throw new McpError(-32002, `Resource not found: ${uri}`);
+  }
   return {
-    resources: [],
+    contents: [{ uri, mimeType: body.mimeType, text: body.text }],
   };
 });
 
-// Read resource
-server.setRequestHandler(ReadResourceRequestSchema, (request) => {
-  const { uri } = request.params;
-  throw new Error(`Resource not found: ${uri}`);
+// List prompts (declared via the `prompts` capability above).
+server.setRequestHandler(ListPromptsRequestSchema, () => {
+  return {
+    prompts: PROMPT_DEFS.map((p) => ({
+      name: p.name,
+      description: p.description,
+      arguments: p.arguments,
+    })),
+  };
+});
+
+// Get a prompt — embeds the relevant resource + a tool plan. Bad name / missing arg → -32602.
+server.setRequestHandler(GetPromptRequestSchema, (request) => {
+  const { name, arguments: args } = request.params;
+  return getPromptResult(name, args);
 });
 
 // Start the server

@@ -1,0 +1,57 @@
+topic: item-block-settings
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "new Item(new FabricItemSettings().maxCount(16).group(ItemGroup.MISC))"
+      api_alt:
+        - "new Item(new Item.Settings().maxCount(16))"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "new Item().setMaxStackSize(16).setCreativeTab(CreativeTabs.MISC)"
+    kind: pattern-change
+    notes: |
+      Fabric's fluent Settings builder becomes constructor + setter calls. Creative-tab grouping
+      is CreativeTabs (a subclass instance), not ItemGroup. Register the item separately in
+      RegistryEvent.Register<Item>.
+    related:
+      - "cleanroom://guide/porting-from-fabric#item-block-settings"
+      - "registration/fabric/registry-register-registries-item-identifier-item"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/items/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "new Block(BlockBehaviour.Properties.of(Material.STONE).strength(3.0f))"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "new Block(Material.ROCK).setHardness(3.0f).setResistance(...).setHarvestLevel(\"pickaxe\", 1)"
+    kind: pattern-change
+    notes: |
+      The Properties builder becomes constructor(Material) + setters. Material constants use the
+      1.12.2 names (Material.ROCK, not STONE). Harvest level/tool are set via setHarvestLevel.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/blocks/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "FabricItemSettings().food(FoodComponents.APPLE)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "ItemFood subclass: new ItemFood(amount, saturation, isWolfFood)"
+    kind: analog
+    notes: |
+      Food is a dedicated ItemFood subclass in 1.12.2 rather than a settings component.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/items/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

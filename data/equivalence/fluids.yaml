@@ -1,0 +1,40 @@
+topic: fluids
+entries:
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "FluidType + ForgeFlowingFluid.Source/Flowing; DeferredRegister<Fluid>"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "new Fluid(name, still, flowing) then FluidRegistry.registerFluid(fluid); optional BlockFluidClassic"
+    kind: pattern-change
+    notes: |
+      1.12.2 uses the Forge FluidRegistry with a Fluid instance plus still/flowing texture
+      ResourceLocations, and a BlockFluidClassic (or BlockFluidFinite) for the in-world block.
+      There is no FluidType/registry-object split.
+    caveats:
+      - "Call FluidRegistry.enableUniversalBucket() in preInit if you want the universal bucket."
+    related:
+      - "cleanroom://guide/porting-from-neoforge"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "FlowableFluid subclass + FluidVariant (Fabric Transfer API)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "Forge Fluid + FluidRegistry; IFluidHandler capability for transfer"
+    kind: analog
+    notes: |
+      Fabric's FluidVariant/Transfer API becomes the Forge IFluidHandler capability and the
+      classic FluidRegistry/FluidStack model.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

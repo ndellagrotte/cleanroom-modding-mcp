@@ -1,0 +1,64 @@
+topic: registration
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "Registry.register(Registries.ITEM, Identifier, Item)"
+      api_alt:
+        - "Registry.register(Registry.ITEM, new Identifier(modid, name), item)"
+      versions: "1.16–1.20.4 (Yarn/Mojang named)"
+    to:
+      loader: cleanroom
+      api: "@SubscribeEvent onRegisterItems(RegistryEvent.Register<Item>) { event.getRegistry().register(item); } + @ObjectHolder for references"
+    kind: pattern-change
+    notes: |
+      1.12.2 has no free-floating registry call. Register inside RegistryEvent.Register<T>
+      (fired on the mod event bus during startup), set the registry name with
+      item.setRegistryName(modid, name), and read instances back through @ObjectHolder fields.
+    caveats:
+      - "setRegistryName must be called before registering; the domain is your mod id."
+      - "@ObjectHolder fields are injected after registration — do not read them earlier."
+    related:
+      - "cleanroom://guide/porting-from-fabric#registration"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/concepts/registries/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "DeferredRegister<Item> ITEMS = DeferredRegister.create(ForgeRegistries.ITEMS, MODID); ITEMS.register(name, () -> item)"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "RegistryEvent.Register<Item> handler + @ObjectHolder; item.setRegistryName(modid, name)"
+    kind: analog
+    notes: |
+      The DeferredRegister/RegistryObject indirection collapses to a single
+      RegistryEvent.Register<T> handler in 1.12.2. Replace RegistryObject.get() reads with
+      @ObjectHolder-injected fields.
+    related:
+      - "cleanroom://guide/porting-from-neoforge#registration"
+      - "registration/fabric/registry-register-registries-item-identifier-item"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/concepts/registries/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: modern-minecraft
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "GameRegistry-less registration via BuiltInRegistries / RegisterEvent"
+      versions: "1.19.3+"
+    to:
+      loader: forge
+      api: "GameRegistry.findRegistry(Item.class) / RegistryEvent.Register<Item>; @ObjectHolder"
+    kind: pattern-change
+    notes: |
+      Backporting registration: there is no data-driven or codec-based registry in 1.12.2.
+      Everything is registered in code during RegistryEvent.Register<T>.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/concepts/registries/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

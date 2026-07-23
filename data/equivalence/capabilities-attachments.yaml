@@ -1,0 +1,40 @@
+topic: capabilities-attachments
+entries:
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "getCapability(ForgeCapabilities.ITEM_HANDLER).ifPresent(...); LazyOptional<IItemHandler>"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "@CapabilityInject; ICapabilityProvider.getCapability(Capability<T>, EnumFacing); AttachCapabilitiesEvent"
+    kind: pattern-change
+    notes: |
+      1.12.2 capabilities have no LazyOptional. Attach via AttachCapabilitiesEvent<TileEntity/
+      Entity/ItemStack>, implement ICapabilityProvider (or ICapabilitySerializable for NBT),
+      and obtain the Capability<T> token from a @CapabilityInject-annotated static field.
+    caveats:
+      - "hasCapability(cap, side) and getCapability(cap, side) must both be overridden."
+    related:
+      - "cleanroom://guide/porting-from-neoforge#capabilities"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/datastorage/capabilities/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: fabric
+      era: yarn-<=1.21.11
+      api: "AttachmentType / Cardinal Components component attachment"
+      versions: "1.20+ (or Cardinal Components)"
+    to:
+      loader: cleanroom
+      api: "Forge Capability<T> + AttachCapabilitiesEvent + ICapabilitySerializable"
+    kind: analog
+    notes: |
+      Fabric attachments / Cardinal Components map onto the Forge capability system. Persistent
+      data uses ICapabilitySerializable<NBTBase> rather than a codec.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/datastorage/capabilities/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

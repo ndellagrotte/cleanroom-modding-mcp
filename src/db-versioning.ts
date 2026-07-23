@@ -184,14 +184,17 @@ export class DbVersioning {
         return true;
       }
 
-      // Schema forcing function: an installed DB whose schema_version doesn't
-      // match this build is unusable regardless of manifest versions — replace
-      // it with the remote asset even when the version comparison says "equal".
+      // Schema force-redownload: an installed DB whose schema_version doesn't
+      // match this build is unusable regardless of manifest versions — force a
+      // replacement with the remote asset even when the version comparison says
+      // "equal". This is the generic path that carries the docs.db 1->2 bump.
       if (fs.existsSync(this.dbPath)) {
         const dbSchema = readDbSchemaVersion(this.dbPath);
-        if (dbSchema !== null && dbSchema !== this.spec.schemaVersion) {
+        // null = present-but-unreadable/corrupt/pre-versioning — treat as a mismatch (the
+        // documented contract) and force a replacement rather than trusting a broken file.
+        if (dbSchema !== this.spec.schemaVersion) {
           console.error(
-            `[DbVersioning:${this.spec.id}] Installed DB has schema v${dbSchema} but this build ` +
+            `[DbVersioning:${this.spec.id}] Installed DB has schema v${dbSchema ?? 'unknown'} but this build ` +
               `expects v${this.spec.schemaVersion} — forcing update`
           );
           return true;
@@ -297,6 +300,46 @@ export class DbVersioning {
           );
         }
 
+        return false;
+      }
+
+      // Verify the downloaded DB actually carries the schema this build expects. A release
+      // asset that lags a schema bump (e.g. a carry-forward that never re-indexed) would
+      // otherwise re-trigger the force-redownload every startup — an infinite ~25MB loop.
+      // Reject it and mark it failed so we stop re-pulling the same broken schema.
+      // Only reject when the schema is READABLE and mismatches (a real stale carry-forward
+      // asset is a valid sqlite file with schema_version=1). A null read means unreadable —
+      // the hash already verified integrity, so don't second-guess it here.
+      const downloadedSchema = readDbSchemaVersion(tempPath);
+      if (downloadedSchema !== null && downloadedSchema !== this.spec.schemaVersion) {
+        console.error(
+          `[DbVersioning:${this.spec.id}] Downloaded DB has schema v${downloadedSchema} but this ` +
+            `build expects v${this.spec.schemaVersion} — rejecting the stale asset`
+        );
+        fs.unlinkSync(tempPath);
+        try {
+          fs.writeFileSync(
+            this.failedMarkerPath,
+            JSON.stringify(
+              {
+                version: manifest.version,
+                hash: manifest.hash,
+                failedAt: new Date().toISOString(),
+                reason: `Schema mismatch: downloaded v${downloadedSchema}, expected v${this.spec.schemaVersion}`,
+              },
+              null,
+              2
+            )
+          );
+          console.error(
+            `[DbVersioning:${this.spec.id}] Saved failed-download marker (version ${manifest.version}) to prevent re-download loops`
+          );
+        } catch (markerErr) {
+          console.error(
+            `[DbVersioning:${this.spec.id}] Could not save failed-download marker:`,
+            markerErr
+          );
+        }
         return false;
       }
 

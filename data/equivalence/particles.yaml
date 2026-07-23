@@ -1,0 +1,36 @@
+topic: particles
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "world.addParticle(ParticleTypes.FLAME, x, y, z, vx, vy, vz)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "world.spawnParticle(EnumParticleTypes.FLAME, x, y, z, vx, vy, vz)"
+    kind: analog
+    notes: |
+      Vanilla particles are an enum (EnumParticleTypes) in 1.12.2, spawned via
+      World.spawnParticle. Custom particles subclass Particle and are spawned through a
+      registered IParticleFactory on the client.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "ParticleType registration + ParticleProvider; level.addParticle(...)"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "EnumParticleTypes for vanilla; custom Particle + IParticleFactory registered on client"
+    kind: pattern-change
+    notes: |
+      The 1.16+ registered ParticleType system did not exist in 1.12.2; custom particles are
+      client-only Particle subclasses spawned by an IParticleFactory, not registry objects.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

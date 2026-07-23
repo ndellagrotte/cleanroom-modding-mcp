@@ -1,0 +1,10 @@
+{
+  "repo": "CleanroomMC/CleanroomModTemplate",
+  "note": "Per-branch commit SHAs the vendored src/templates/*.ts snapshots were taken from.",
+  "branches": {
+    "main": "26c67232575fa5979a94690c3fd7a1e008158b1a",
+    "mixin": "b6459b408306f51c5e36f9cebc3b7421b8bc2f42",
+    "kotlin": "45a1f9ef28b0c636bb312beba96ab04b762806ab",
+    "scala": "35be88aa74e842ecedb66f234a830aad2f05b0dd"
+  }
+}

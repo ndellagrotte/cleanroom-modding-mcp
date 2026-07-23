@@ -1,0 +1,36 @@
+topic: permissions
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "Permissions.check(source, \"mymod.command\", 2) (fabric-permissions-api)"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "sender.canUseCommand(int permLevel, String name) / ICommand.checkPermission; op-level checks"
+    kind: pattern-change
+    notes: |
+      1.12.2 has no permission-node system in vanilla/Forge. Gate commands with op permission
+      levels via ICommand.getRequiredPermissionLevel() and sender.canUseCommand(level, name).
+      For node-based permissions use a companion mod (e.g. Forge Essentials) at runtime.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "PermissionAPI.getPermission(player, node) / PermissionNode"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "net.minecraftforge.server.permission.PermissionAPI.hasPermission(player, node) (1.12.2 Forge)"
+    kind: analog
+    notes: |
+      Forge 1.12.2 shipped an early PermissionAPI with registerNode/hasPermission. It is simpler
+      than the 1.16+ PermissionNode API but covers string-node checks.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

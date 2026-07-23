@@ -1,0 +1,40 @@
+topic: resources-datagen
+entries:
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "FabricDataGenerator / FabricModelProvider (datagen)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: null
+    kind: missing
+    notes: |
+      1.12.2 has no data generation. Hand-write the JSON: item/block models under
+      assets/<modid>/models, blockstates under assets/<modid>/blockstates, recipes and
+      advancements as JSON, and lang files. There is no generator to run.
+    caveats:
+      - "Model/blockstate JSON format is the 1.12.2 format, not the modern flattened one."
+    related:
+      - "cleanroom://guide/porting-from-fabric#data-resources-no-direct-equivalent"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/models/introduction/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "GatherDataEvent / DataProvider (datagen)"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: null
+    kind: missing
+    notes: |
+      No 1.12.2 equivalent. Author models, blockstates, recipes, loot tables, and lang by hand
+      in the 1.12.2 resource layout.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/models/introduction/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

@@ -1,0 +1,40 @@
+topic: text-components
+entries:
+  - from:
+      vocab: modern-minecraft
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "Component.literal(\"hi\") / Component.translatable(\"key\")"
+      api_alt:
+        - "new TextComponent(\"hi\") / new TranslatableComponent(\"key\")"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "new TextComponentString(\"hi\") / new TextComponentTranslation(\"key\", args)"
+    kind: direct
+    notes: |
+      The text component tree is the same; only names changed. Component -> ITextComponent,
+      Component.literal -> TextComponentString, Component.translatable -> TextComponentTranslation.
+      Styling uses ITextComponent.getStyle().setColor(TextFormatting...).
+    related:
+      - "cleanroom://guide/backporting#text-ui"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "player.sendMessage(Text.literal(\"hi\"), false)"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "player.sendMessage(new TextComponentString(\"hi\"))"
+    kind: analog
+    notes: |
+      Fabric's Text becomes ITextComponent. EntityPlayer.sendMessage(ITextComponent) posts to
+      chat; for the actionbar use EntityPlayer.sendStatusMessage(ITextComponent, true).
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

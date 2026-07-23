@@ -11,6 +11,47 @@ import { getDefaultDbPath } from '../data-dir.js';
 import { DBS } from '../dbs.js';
 import { LOADERS, perspectiveToLoaders, type Loader } from '../loaders.js';
 import type { CONCEPT_CATEGORIES } from '../categories.js';
+import { equivalenceRowToMatch } from './equivalence-service.js';
+import type { EquivalenceMatch } from '../equivalence/types.js';
+
+/**
+ * Exact concept-id → corpus-topic map for cross-loader difference banners (DESIGN §4.3).
+ *
+ * This is an EXACT-KEY lookup only. It deliberately does NOT route through expandConcept's
+ * bidirectional-substring aliasing (which over-matches — RESEARCH R7): a banner is attached
+ * only when the requested concept id is a literal key here. Keys are normalized (lowercased)
+ * concept ids as passed to explainConcept.
+ */
+// Keys are CANONICAL KNOWN_CONCEPTS ids (the ids getSuggestedConcepts advertises and users
+// actually type). A few natural-language spellings are added for robustness. Do NOT rely on
+// topic-slug spellings like 'events'/'mixins'/'registration' alone: explain_concept receives
+// the canonical id ('event'/'mixin'/'registry'), so those would never fire on their own.
+export const CONCEPT_TO_TOPIC: Record<string, string> = {
+  // registration
+  registry: 'registration',
+  gameregistry: 'registration',
+  registration: 'registration',
+  // events
+  event: 'events',
+  events: 'events',
+  // networking
+  networking: 'networking',
+  // mixins & access transformers
+  mixin: 'mixins-access-transformers',
+  mixins: 'mixins-access-transformers',
+  mixinbooter: 'mixins-access-transformers',
+  coremods: 'mixins-access-transformers',
+  'access transformers': 'mixins-access-transformers',
+  // capabilities
+  capabilities: 'capabilities-attachments',
+  // item/block settings
+  item: 'item-block-settings',
+  block: 'item-block-settings',
+  creativetabs: 'item-block-settings',
+  oredictionary: 'item-block-settings',
+  // rendering
+  render: 'block-entity-renderer',
+};
 
 /**
  * Concept explanation result
@@ -33,6 +74,8 @@ export interface ConceptExplanation {
     url: string;
     relevance: number;
   }>;
+  /** Cross-loader difference rows, populated when the concept maps to a corpus topic (§4.3). */
+  equivalence?: EquivalenceMatch[];
   metadata: {
     loader: Loader;
     sourcesUsed: number;
@@ -407,6 +450,9 @@ export class ConceptService {
     const summary = this.generateSummary(aggregatedContent, normalizedConcept, keyPoints, loader);
     const details = this.generateDetails(aggregatedContent, scoredChunks);
 
+    // Cross-loader difference banner via EXACT topic map (never alias expansion — R7).
+    const crossLoader = this.lookupCrossLoaderDifferences(normalizedConcept);
+
     return {
       concept: normalizedConcept,
       summary,
@@ -415,6 +461,7 @@ export class ConceptService {
       codeExamples,
       relatedConcepts,
       resources,
+      equivalence: crossLoader.length > 0 ? crossLoader : undefined,
       metadata: {
         loader,
         sourcesUsed: new Set(scoredChunks.map((c) => c.documentUrl)).size,
@@ -913,6 +960,22 @@ export class ConceptService {
   /**
    * Format explanation for AI consumption
    */
+  /**
+   * Look up cross-loader difference rows for a concept via the EXACT CONCEPT_TO_TOPIC map.
+   * Returns [] unless the concept id is a literal key and the corpus (schema v2) is present.
+   */
+  private lookupCrossLoaderDifferences(conceptId: string): EquivalenceMatch[] {
+    const topic = CONCEPT_TO_TOPIC[conceptId];
+    if (!topic) return [];
+    try {
+      const v = this.store.getSchemaVersion();
+      if (v === null || v < 2) return [];
+      return this.store.equivalenceByTopic(topic, 8).map(equivalenceRowToMatch);
+    } catch {
+      return [];
+    }
+  }
+
   formatForAI(explanation: ConceptExplanation): string {
     let output = `# Understanding: ${explanation.concept}\n\n`;
 
@@ -962,6 +1025,22 @@ export class ConceptService {
         output += `- [${resource.title}](${resource.url})\n`;
       }
       output += '\n';
+    }
+
+    // Cross-loader differences (Phase 4 banner)
+    if (explanation.equivalence && explanation.equivalence.length > 0) {
+      output += `## Cross-loader differences\n`;
+      output +=
+        `How this concept maps from other loaders to Cleanroom/Forge 1.12.2 ` +
+        `(via \`find_equivalent\`):\n\n`;
+      for (const m of explanation.equivalence) {
+        const target =
+          m.kind === 'missing'
+            ? 'No 1.12.2 equivalent — hand-write the idiom'
+            : `\`${m.toApi ?? ''}\` (${m.toLoader})`;
+        output += `- **${m.fromVocab}** \`${m.fromApi}\` → ${target} _(${m.kind})_\n`;
+      }
+      output += `\nUse \`find_equivalent(query, from)\` for full details, code, and caveats.\n\n`;
     }
 
     // Metadata

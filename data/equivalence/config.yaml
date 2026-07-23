@@ -1,0 +1,40 @@
+topic: config
+entries:
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "ForgeConfigSpec.Builder + ModConfig.Type.COMMON; registerConfig"
+      versions: "Forge/NeoForge 1.16–1.20.1"
+    to:
+      loader: cleanroom
+      api: "@Config(modid = MODID) annotated class with public static fields; @Config.Comment; ConfigManager"
+    kind: pattern-change
+    notes: |
+      1.12.2 Forge uses the @Config annotation system: a class of public static fields annotated
+      with @Config.Comment/@Config.RangeInt, synced by ConfigManager.sync on
+      ConfigChangedEvent.OnConfigChangedEvent. No ForgeConfigSpec builder.
+    caveats:
+      - "Cleanroom also offers ConfigAnytime (com.cleanroommc.configanytime) for very-early config."
+    related:
+      - "cleanroom://guide/porting-from-neoforge"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: fabric
+      era: fabric-pre-1.20.5
+      api: "Cloth Config / midnightconfig annotated config"
+      versions: "1.16–1.20.4"
+    to:
+      loader: cleanroom
+      api: "@Config(modid = MODID) annotated class + GuiConfig for the in-game screen"
+    kind: analog
+    notes: |
+      Fabric config libraries map to the built-in Forge @Config system; the config screen is a
+      GuiConfig subclass wired through a IModGuiFactory.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

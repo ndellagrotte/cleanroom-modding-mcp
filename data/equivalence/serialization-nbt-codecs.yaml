@@ -1,0 +1,40 @@
+topic: serialization-nbt-codecs
+entries:
+  - from:
+      vocab: modern-minecraft
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "Codec<MyData> CODEC = RecordCodecBuilder.create(...)"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: null
+    kind: missing
+    notes: |
+      There is no Codec/DynamicOps in 1.12.2. Hand-roll NBT: implement writeToNBT(NBTTagCompound)
+      and readFromNBT(NBTTagCompound), using tag.setInteger / tag.getInteger / setTag / getTag and
+      NBTTagList for collections.
+    caveats:
+      - "NBT tag type ids matter for getTagList(name, type) — use Constants.NBT.TAG_COMPOUND etc."
+    related:
+      - "cleanroom://guide/backporting#serialization-codecdatacomponents-nbt-missing"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/datastorage/capabilities/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "CompoundTag.putInt(...) / tag.getInt(...) (Mojang-named NBT)"
+      versions: "1.17+"
+    to:
+      loader: cleanroom
+      api: "NBTTagCompound.setInteger(...) / getInteger(...) (MCP-named NBT)"
+    kind: direct
+    notes: |
+      The NBT API is the same shape; only the class and method names changed in the 1.17
+      renaming. CompoundTag -> NBTTagCompound, putInt -> setInteger, ListTag -> NBTTagList.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

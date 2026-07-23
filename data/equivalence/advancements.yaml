@@ -1,0 +1,40 @@
+topic: advancements
+entries:
+  - from:
+      vocab: neoforge
+      era: legacy-modern-forge-1.16-1.20.1
+      api: "AdvancementProvider / advancement datagen builders"
+      versions: "1.16+"
+    to:
+      loader: cleanroom
+      api: "Hand-written advancement JSON under assets/<modid>/advancements/*.json"
+    kind: pattern-change
+    notes: |
+      1.12.2 advancements are JSON files placed under assets/<modid>/advancements (note: assets,
+      not data, in 1.12.2). There is no builder/datagen; author the JSON directly with criteria
+      and rewards.
+    caveats:
+      - "Custom criteria triggers must be registered via CriteriaTriggers on both sides."
+    related:
+      - "resources-datagen/neoforge/gatherdataevent-dataprovider-datagen"
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"
+
+  - from:
+      vocab: modern-minecraft
+      era: yarn-<=1.21.11
+      api: "Advancement.Builder / AdvancementEntry (datapack)"
+      versions: "1.20+"
+    to:
+      loader: forge
+      api: "assets/<modid>/advancements/*.json (1.12.2 layout)"
+    kind: pattern-change
+    notes: |
+      Backporting advancements means relocating them from data/<ns>/advancement (modern) to
+      assets/<modid>/advancements (1.12.2) and adjusting the JSON schema to the 1.12.2 form.
+    sources:
+      - url: "https://docs.minecraftforge.net/en/1.12.x/"
+        license: "MIT-docs"
+    validated_against: "cleanroom 0.6.3-alpha"

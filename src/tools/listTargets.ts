@@ -11,6 +11,10 @@ import { DBS, DB_IDS, isInstalled } from '../dbs.js';
 import { CleanroomApiService } from '../services/cleanroom-api-service.js';
 import { ExampleService } from '../services/example-service.js';
 import { MappingsService } from '../services/mappings-service.js';
+import { EquivalenceService } from '../services/equivalence-service.js';
+import { TEMPLATE_COMPONENTS } from '../templates/index.js';
+import { GUIDE_NAMES } from '../guides/index.js';
+import { PROMPT_DEFS } from '../prompts.js';
 
 export function handleListTargets(): CallToolResult {
   try {
@@ -76,6 +80,33 @@ export function handleListTargets(): CallToolResult {
       }
       output += `- ${spec.icon} **${spec.name}** — ${status}\n`;
     }
+
+    // Phase 4 porting/scaffolding surfaces (prompts, resources, templates, equivalence).
+    let corpusPresent = false;
+    try {
+      const eq = new EquivalenceService();
+      corpusPresent = eq.isCorpusPresent();
+      eq.close();
+    } catch {
+      corpusPresent = false;
+    }
+
+    output += '\n## Porting & Scaffolding\n\n';
+    output += '**Prompts** (workflow openers): ';
+    output += PROMPT_DEFS.map((p) => `\`${p.name}\``).join(', ') + '\n\n';
+
+    output += '**Resources** (whole-file artifacts, each with a tool twin):\n';
+    output += `- \`cleanroom://template/{${TEMPLATE_COMPONENTS.join(', ')}}\` — mirrored by \`get_project_template\`\n`;
+    output += `- \`cleanroom://guide/{${GUIDE_NAMES.join(', ')}}\` — mirrored by \`get_porting_guide\`\n\n`;
+
+    output += `**Templates:** ${TEMPLATE_COMPONENTS.length} scaffolding files via \`get_project_template(component)\`.\n\n`;
+
+    output += '**Equivalence corpus:** ';
+    output += corpusPresent
+      ? '✅ present — query with `find_equivalent(query, from)`.\n'
+      : '⬜ not present in this docs.db yet (updates on startup; `find_equivalent` degrades gracefully).\n';
+    output += 'find_equivalent from-vocabulary: `fabric`, `neoforge`, `modern-minecraft` ';
+    output += '(a source vocabulary for translation — not a build target).\n';
 
     return {
       content: [{ type: 'text', text: output }],

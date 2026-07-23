@@ -148,5 +148,6 @@ vite.config.ts.timestamp-*
 # the hand-curated equivalence corpus, which is committed and PR-reviewed.
 data/*
 !data/equivalence/
+!data/templates-pins.json
 .DS_Store
 .claude
