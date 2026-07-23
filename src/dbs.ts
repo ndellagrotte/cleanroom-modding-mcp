@@ -78,7 +78,7 @@ export const DBS: Record<DbId, DbSpec> = {
     fileName: 'cleanroom-api.db',
     manifestName: 'cleanroom-api-manifest.json',
     required: false,
-    schemaVersion: 1,
+    schemaVersion: 2,
     description: 'Cleanroom/Forge framework API symbols: classes, events, annotations',
     icon: '🧬',
   },

@@ -271,15 +271,33 @@ export function resolveAll(files: ExtractedFile[]): ResolveResult {
     }
     return null;
   };
-  for (const entry of unique) {
-    const { resolved, ctx } = entry;
-    if (resolved.extendsRaw && !resolved.extendsFqn) {
-      resolved.extendsFqn = resolveInheritedMember(resolved.extendsRaw, ctx);
+  // Iterate to a fixpoint: one entry's second-chance edge can be the path by
+  // which another entry's clause resolves, and the ancestor cache freezes
+  // closures — repeat until stable so the result is iteration-order
+  // independent.
+  for (;;) {
+    let changed = false;
+    ancestorCache.clear();
+    for (const entry of unique) {
+      const { resolved, ctx } = entry;
+      if (resolved.extendsRaw && !resolved.extendsFqn) {
+        resolved.extendsFqn = resolveInheritedMember(resolved.extendsRaw, ctx);
+        if (resolved.extendsFqn) {
+          changed = true;
+        }
+      }
+      if (resolved.implementsRaw.length > resolved.implementsFqns.length) {
+        const before = resolved.implementsFqns.length;
+        resolved.implementsFqns = resolved.implementsRaw
+          .map((raw) => resolveName(raw, ctx, fqnSet) ?? resolveInheritedMember(raw, ctx))
+          .filter((f): f is string => f !== null);
+        if (resolved.implementsFqns.length > before) {
+          changed = true;
+        }
+      }
     }
-    if (resolved.implementsRaw.length > resolved.implementsFqns.length) {
-      resolved.implementsFqns = resolved.implementsRaw
-        .map((raw) => resolveName(raw, ctx, fqnSet) ?? resolveInheritedMember(raw, ctx))
-        .filter((f): f is string => f !== null);
+    if (!changed) {
+      break;
     }
   }
 

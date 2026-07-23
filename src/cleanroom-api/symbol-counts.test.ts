@@ -2,10 +2,15 @@
  * Symbol-count regression test for cleanroom-api.db (DESIGN.md §8, Phase 3).
  *
  * The mitigation for tree-sitter parser edge cases on modern Java syntax:
- * if extraction silently loses declarations, these lower bounds fail. Bounds
- * are floors only (measured on Cleanroom 0.6.3-alpha) so ordinary corpus
- * growth across Cleanroom releases never breaks them; sentinel symbols pin
- * the load-bearing API surface an agent relies on.
+ * if extraction silently loses declarations, these lower bounds fail. Floors
+ * are measured on Cleanroom 0.6.3-alpha with ~15-30% headroom, tight enough
+ * that a targeted loss (one namespace, one member kind, the deep event
+ * levels) trips them while ordinary corpus drift across Cleanroom releases
+ * does not; sentinel symbols pin the load-bearing API surface an agent
+ * relies on. Measured 0.6.3-alpha: 1643 types (forge 1219 / cleanroommc 413
+ * / zone.rong 11), 14105 members (7163 methods, 5127 fields, 1266 ctors),
+ * 315 events, 42 annotation types, 18 usage rows, 22 deprecated types,
+ * 571 javadoc'd types.
  *
  * Runs only when the real database is installed at the default data-dir path.
  */
@@ -38,16 +43,16 @@ describe.runIf(DB_OK)('cleanroom-api.db symbol counts', () => {
 
   // ── Corpus-size floors ──────────────────────────────────────────────────────
 
-  it('indexes the forked Forge API (>= 700 types)', () => {
+  it('indexes the forked Forge API (>= 1000 types)', () => {
     expect(
       count(`SELECT COUNT(*) c FROM types WHERE package_name LIKE 'net.minecraftforge%'`)
-    ).toBeGreaterThanOrEqual(700);
+    ).toBeGreaterThanOrEqual(1000);
   });
 
-  it('indexes the Cleanroom namespaces (>= 50 com.cleanroommc types)', () => {
+  it('indexes the Cleanroom namespaces (>= 300 com.cleanroommc types)', () => {
     expect(
       count(`SELECT COUNT(*) c FROM types WHERE package_name LIKE 'com.cleanroommc%'`)
-    ).toBeGreaterThanOrEqual(50);
+    ).toBeGreaterThanOrEqual(300);
   });
 
   it('indexes the MixinBooter API (>= 8 zone.rong types)', () => {
@@ -56,26 +61,37 @@ describe.runIf(DB_OK)('cleanroom-api.db symbol counts', () => {
     ).toBeGreaterThanOrEqual(8);
   });
 
-  it('indexes >= 850 types and >= 4000 members overall', () => {
-    expect(count(`SELECT COUNT(*) c FROM types`)).toBeGreaterThanOrEqual(850);
-    expect(count(`SELECT COUNT(*) c FROM members`)).toBeGreaterThanOrEqual(4000);
+  it('indexes >= 1500 types and >= 13000 members overall', () => {
+    expect(count(`SELECT COUNT(*) c FROM types`)).toBeGreaterThanOrEqual(1500);
+    expect(count(`SELECT COUNT(*) c FROM members`)).toBeGreaterThanOrEqual(13000);
   });
 
-  it('derives the events catalog (>= 150 events)', () => {
-    expect(count(`SELECT COUNT(*) c FROM types WHERE is_event = 1`)).toBeGreaterThanOrEqual(150);
-  });
-
-  it('derives the annotations catalog (>= 25 annotation types, with usage rows)', () => {
-    expect(count(`SELECT COUNT(*) c FROM types WHERE kind = 'annotation'`)).toBeGreaterThanOrEqual(
-      25
+  it('keeps every member kind populated (methods >= 6500, fields >= 4600)', () => {
+    expect(count(`SELECT COUNT(*) c FROM members WHERE kind = 'method'`)).toBeGreaterThanOrEqual(
+      6500
     );
-    expect(count(`SELECT COUNT(*) c FROM annotation_usage`)).toBeGreaterThanOrEqual(10);
+    expect(count(`SELECT COUNT(*) c FROM members WHERE kind = 'field'`)).toBeGreaterThanOrEqual(
+      4600
+    );
   });
 
-  it('captures deprecation (>= 4 deprecated types) and javadoc coverage', () => {
-    expect(count(`SELECT COUNT(*) c FROM types WHERE is_deprecated = 1`)).toBeGreaterThanOrEqual(4);
+  it('derives the events catalog (>= 250 events)', () => {
+    expect(count(`SELECT COUNT(*) c FROM types WHERE is_event = 1`)).toBeGreaterThanOrEqual(250);
+  });
+
+  it('derives the annotations catalog (>= 35 annotation types, with usage rows)', () => {
+    expect(count(`SELECT COUNT(*) c FROM types WHERE kind = 'annotation'`)).toBeGreaterThanOrEqual(
+      35
+    );
+    expect(count(`SELECT COUNT(*) c FROM annotation_usage`)).toBeGreaterThanOrEqual(14);
+  });
+
+  it('captures deprecation (>= 15 deprecated types) and javadoc coverage', () => {
+    expect(count(`SELECT COUNT(*) c FROM types WHERE is_deprecated = 1`)).toBeGreaterThanOrEqual(
+      15
+    );
     expect(count(`SELECT COUNT(*) c FROM types WHERE javadoc IS NOT NULL`)).toBeGreaterThanOrEqual(
-      100
+      400
     );
   });
 
@@ -155,7 +171,15 @@ describe.runIf(DB_OK)('cleanroom-api.db symbol counts', () => {
   });
 
   it('sentinel: GameRegistry (the registration workhorse)', () => {
-    expect(typeRow('net.minecraftforge.fml.common.registry.GameRegistry')).toBeDefined();
+    const row = typeRow('net.minecraftforge.fml.common.registry.GameRegistry');
+    expect(row).toBeDefined();
+    expect(row?.kind).toBe('class');
+    expect(
+      count(
+        `SELECT COUNT(*) c FROM members m JOIN types t ON t.id = m.type_id
+         WHERE t.fqn = 'net.minecraftforge.fml.common.registry.GameRegistry'`
+      )
+    ).toBeGreaterThanOrEqual(10);
   });
 
   // ── Structural invariants ───────────────────────────────────────────────────

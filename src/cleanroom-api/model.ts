@@ -35,7 +35,8 @@ export interface TsNode {
 
 /** Structural view of a parser bound to the Java language. */
 export interface JavaParser {
-  parse(source: string): { rootNode: TsNode } | null;
+  /** The returned tree owns WASM linear memory; call delete() when done. */
+  parse(source: string): { rootNode: TsNode; delete(): void } | null;
 }
 
 export interface JavadocInfo {

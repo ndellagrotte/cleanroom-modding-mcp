@@ -236,7 +236,10 @@ function readParams(parametersNode: TsNode | null): ExtractedParam[] {
       const type = child.childForFieldName('type')?.text ?? '?';
       const name = child.childForFieldName('name')?.text ?? '?';
       const dims = child.childForFieldName('dimensions')?.text ?? '';
-      params.push({ type: normalizeSignature(type + dims), name });
+      // An annotation WITH arguments before the ellipsis ('Type @A("x") ... n')
+      // parses as formal_parameter with the '...' buried inside — keep it.
+      const varargs = child.text.includes('...') ? '...' : '';
+      params.push({ type: normalizeSignature(type + dims + varargs), name });
     } else if (child.type === 'spread_parameter') {
       // Structure: (modifiers)? type '...' variable_declarator
       const declarator = childOfType(child, 'variable_declarator');
@@ -254,9 +257,14 @@ function readParams(parametersNode: TsNode | null): ExtractedParam[] {
       if (recovery) {
         const withoutAnnotations = (recovery[1] ?? '')
           .replace(/@(?:\w+\.)*\w+(?:\([^)]*\))?/g, ' ')
-          .replace(/^[\s,]+/, ''); // the ERROR node may swallow the preceding comma
+          .replace(/^[\s,]+/, '') // the ERROR node may swallow the preceding comma
+          .replace(/^(?:final\s+)+/, ''); // or a leading `final` modifier
         const type = normalizeSignature(withoutAnnotations) || '?';
-        params.push({ type: `${type}...`, name: recovery[2] ?? '?' });
+        // A top-level comma means the ERROR node swallowed more than this
+        // parameter — recovering would fabricate a bogus type; leave it lost.
+        if (!stripTypeArgs(type).includes(',')) {
+          params.push({ type: `${type}...`, name: recovery[2] ?? '?' });
+        }
       }
     }
     // receiver_parameter carries no name; irrelevant for an API index.
@@ -606,46 +614,51 @@ export function extractFile(
   if (!tree) {
     return null;
   }
-  const root = tree.rootNode;
+  try {
+    const root = tree.rootNode;
 
-  const packageNode = childOfType(root, 'package_declaration');
-  const packageName = packageNode?.namedChildren
-    .filter((c) => c.type === 'identifier' || c.type === 'scoped_identifier')
-    .pop()?.text;
-  if (!packageName) {
-    return null;
-  }
-
-  const imports: ImportMap = { explicit: {}, wildcards: [] };
-  for (const child of root.namedChildren) {
-    if (child.type !== 'import_declaration') {
-      continue;
-    }
-    const target = child.namedChildren
+    const packageNode = childOfType(root, 'package_declaration');
+    const packageName = packageNode?.namedChildren
       .filter((c) => c.type === 'identifier' || c.type === 'scoped_identifier')
       .pop()?.text;
-    if (!target) {
-      continue;
+    if (!packageName) {
+      return null;
     }
-    const isWildcard = child.children.some((c) => c.type === 'asterisk');
-    if (isWildcard) {
-      imports.wildcards.push(target);
-    } else {
-      const simple = target.split('.').pop();
-      if (simple) {
-        imports.explicit[simple] = target;
+
+    const imports: ImportMap = { explicit: {}, wildcards: [] };
+    for (const child of root.namedChildren) {
+      if (child.type !== 'import_declaration') {
+        continue;
+      }
+      const target = child.namedChildren
+        .filter((c) => c.type === 'identifier' || c.type === 'scoped_identifier')
+        .pop()?.text;
+      if (!target) {
+        continue;
+      }
+      const isWildcard = child.children.some((c) => c.type === 'asterisk');
+      if (isWildcard) {
+        imports.wildcards.push(target);
+      } else {
+        const simple = target.split('.').pop();
+        if (simple) {
+          imports.explicit[simple] = target;
+        }
       }
     }
+
+    const types: ExtractedType[] = [];
+    collectTypeDeclarations(root, [], packageName, types);
+
+    return {
+      path: sourceFile,
+      packageName,
+      imports,
+      types,
+      parseErrors: root.hasError,
+    };
+  } finally {
+    // Trees hold WASM linear memory (~80KB per file); free promptly.
+    tree.delete();
   }
-
-  const types: ExtractedType[] = [];
-  collectTypeDeclarations(root, [], packageName, types);
-
-  return {
-    path: sourceFile,
-    packageName,
-    imports,
-    types,
-    parseErrors: root.hasError,
-  };
 }

@@ -77,7 +77,14 @@ function fixtureFiles(): ExtractedFile[] {
         type({
           simpleName: 'Event',
           searchText: 'event',
-          members: [member({ name: 'isCanceled', returnType: 'boolean' })],
+          members: [
+            member({
+              name: 'isCanceled',
+              returnType: 'boolean',
+              // as the extractor builds it: name + declaring type + return type
+              searchText: 'iscanceled is canceled event boolean',
+            }),
+          ],
           children: [
             type({
               simpleName: 'HasResult',
@@ -110,7 +117,6 @@ function fixtureFiles(): ExtractedFile[] {
         type({
           simpleName: 'PlayerInteractEvent',
           extendsRaw: 'Event',
-          annotations: ['Cancelable'],
           searchText: 'playerinteractevent player interact event',
           javadoc: {
             body: 'Fired on player interaction.',
@@ -119,11 +125,26 @@ function fixtureFiles(): ExtractedFile[] {
             since: null,
           },
           children: [
+            // Mirrors the real corpus: PlayerInteractEvent is NOT @Cancelable;
+            // RightClickBlock carries the annotation directly.
             type({
               simpleName: 'RightClickBlock',
               nestedChain: ['PlayerInteractEvent', 'RightClickBlock'],
               extendsRaw: 'PlayerInteractEvent',
+              annotations: ['Cancelable'],
               searchText: 'rightclickblock right click block',
+              children: [
+                type({
+                  simpleName: 'RightClickBlockExtended',
+                  nestedChain: [
+                    'PlayerInteractEvent',
+                    'RightClickBlock',
+                    'RightClickBlockExtended',
+                  ],
+                  extendsRaw: 'RightClickBlock',
+                  searchText: 'rightclickblockextended right click block extended',
+                }),
+              ],
             }),
           ],
         }),
@@ -145,6 +166,18 @@ function fixtureFiles(): ExtractedFile[] {
               searchText: 'register configanytime config anytime',
             }),
           ],
+        }),
+      ],
+    },
+    {
+      path: 'com/example/Underscored.java',
+      packageName: 'com.example',
+      imports: { explicit: {}, wildcards: [] },
+      parseErrors: false,
+      types: [
+        type({
+          simpleName: 'Under_Scored',
+          searchText: 'under_scored under scored',
         }),
       ],
     },
@@ -228,13 +261,21 @@ describe('CleanroomApiService (fixture DB)', () => {
     const parent = results.find(
       (r) => r.resultKind === 'type' && r.simpleName === 'PlayerInteractEvent'
     );
-    expect(parent && parent.resultKind === 'type' && parent.isCancelable).toBe(true);
+    // Real corpus semantics: the parent is NOT cancelable, the child is.
+    expect(parent && parent.resultKind === 'type' && parent.isCancelable).toBe(false);
   });
 
-  it('inherited cancelable flag reaches nested subclass events', () => {
-    const results = service.search({ query: 'RightClickBlock', kind: 'event' });
-    const hit = results.find((r) => r.resultKind === 'type' && r.simpleName === 'RightClickBlock');
-    expect(hit && hit.resultKind === 'type' && hit.isCancelable).toBe(true);
+  it('direct and inherited cancelable flags reach nested subclass events', () => {
+    const results = service.search({ query: 'RightClickBlock', kind: 'event', limit: 25 });
+    const direct = results.find(
+      (r) => r.resultKind === 'type' && r.simpleName === 'RightClickBlock'
+    );
+    expect(direct && direct.resultKind === 'type' && direct.isCancelable).toBe(true);
+    // Inherited one level down from the directly-annotated event.
+    const inherited = results.find(
+      (r) => r.resultKind === 'type' && r.simpleName === 'RightClickBlockExtended'
+    );
+    expect(inherited && inherited.resultKind === 'type' && inherited.isCancelable).toBe(true);
   });
 
   it('browses by package_filter with an empty query', () => {
@@ -256,8 +297,46 @@ describe('CleanroomApiService (fixture DB)', () => {
     }
   });
 
-  it('survives FTS-hostile queries via the LIKE fallback', () => {
-    expect(() => service.search({ query: '"a(' })).not.toThrow();
+  it('reaches the LIKE fallback for FTS-hostile queries', () => {
+    // '(((' yields no alphanumerics, so buildFtsQuery returns null and the
+    // LIKE branch actually executes (a '"a(' query still goes through FTS).
+    for (const hostile of ['(((', '"a(']) {
+      let results: ReturnType<CleanroomApiService['search']> | null = null;
+      expect(() => {
+        results = service.search({ query: hostile });
+      }).not.toThrow();
+      expect(Array.isArray(results)).toBe(true);
+    }
+  });
+
+  it('counts corpus annotation usage (annotations catalog popularity)', () => {
+    const results = service.search({ query: 'Cancelable', kind: 'annotation' });
+    const hit = results.find((r) => r.resultKind === 'type' && r.fqn === `${EVENT_PKG}.Cancelable`);
+    expect(hit).toBeDefined();
+    expect(hit && hit.resultKind === 'type' && hit.usageCount).toBe(1);
+  });
+
+  it('browses members with an empty query and an explicit member kind', () => {
+    const results = service.search({ query: '', kind: 'method' });
+    expect(results.length).toBeGreaterThan(0);
+    for (const result of results) {
+      expect(result.resultKind).toBe('member');
+    }
+    expect(results.some((r) => r.resultKind === 'member' && r.name === 'register')).toBe(true);
+  });
+
+  it('normalizes wildcard-only queries to browse', () => {
+    const browse = service.search({ query: '', kind: 'class' });
+    const wildcard = service.search({ query: '%', kind: 'class' });
+    expect(wildcard.map((r) => (r.resultKind === 'type' ? r.fqn : r.name))).toEqual(
+      browse.map((r) => (r.resultKind === 'type' ? r.fqn : r.name))
+    );
+  });
+
+  it('kind "all" splits the limit between types and members', () => {
+    const results = service.search({ query: 'event', kind: 'all', limit: 15 });
+    expect(results.some((r) => r.resultKind === 'type')).toBe(true);
+    expect(results.some((r) => r.resultKind === 'member')).toBe(true);
   });
 
   it('reports deprecation with the note', () => {
@@ -285,6 +364,28 @@ describe('CleanroomApiService (fixture DB)', () => {
     expect(lookup.candidates).toEqual([]);
   });
 
+  it('getTypeByName escapes LIKE wildcards in the input', () => {
+    // '%' must not degenerate into a match-all candidate list.
+    const wildcard = service.getTypeByName('%');
+    expect(wildcard.match).toBeNull();
+    expect(wildcard.candidates).toEqual([]);
+    // Underscores in real names still resolve (not treated as wildcards).
+    expect(service.getTypeByName('Under_Scored').match?.fqn).toBe('com.example.Under_Scored');
+  });
+
+  it('reports direct-subclass totals alongside the capped list', () => {
+    const eventDetails = service.getTypeByName(`${EVENT_PKG}.Event`).match;
+    expect(eventDetails?.subclassCount).toBe(1);
+    expect(eventDetails?.knownSubclasses).toEqual([
+      'net.minecraftforge.event.entity.player.PlayerInteractEvent',
+    ]);
+    const block = service.getTypeByName(
+      'net.minecraftforge.event.entity.player.PlayerInteractEvent.RightClickBlock'
+    ).match;
+    expect(block?.subclassCount).toBe(1);
+    expect(block?.knownSubclasses[0]?.endsWith('RightClickBlockExtended')).toBe(true);
+  });
+
   it('getClassDetails walks the ancestor chain and lists nested types + subclasses', () => {
     const details = service.getTypeByName('RightClickBlock').match;
     expect(details).not.toBeNull();
@@ -304,7 +405,7 @@ describe('CleanroomApiService (fixture DB)', () => {
   it('getStats echoes counts and the indexed Cleanroom version', () => {
     const stats = service.getStats();
     expect(stats.totalTypes).toBeGreaterThan(0);
-    expect(stats.events).toBe(3); // Event, PlayerInteractEvent, RightClickBlock
+    expect(stats.events).toBe(4); // Event, PlayerInteractEvent, RightClickBlock, RightClickBlockExtended
     expect(stats.cleanroomVersion).toBe('0.0.0-test');
   });
 });

@@ -63,6 +63,7 @@ export interface ApiMemberResult {
   signature: string;
   javadocSummary: string | null;
   isDeprecated: boolean;
+  deprecationNote: string | null;
   since: string | null;
 }
 
@@ -74,6 +75,7 @@ export interface ApiMember {
   signature: string;
   javadocSummary: string | null;
   isDeprecated: boolean;
+  deprecationNote: string | null;
   since: string | null;
 }
 
@@ -240,9 +242,10 @@ export class CleanroomApiService {
 
     const typeHits = wantTypes ? this.searchTypes(query, kind, options.packageFilter, limit) : [];
     // Explicit member kinds browse with an empty query; kind 'all' browses
-    // types only (a whole-corpus member dump would be noise).
+    // types only (a whole-corpus member dump would be noise). The '*' browse
+    // wildcard counts as empty for this purpose.
     const memberHits =
-      wantMembers && (query || MEMBER_KINDS.has(kind))
+      wantMembers && ((query && query !== '*') || MEMBER_KINDS.has(kind))
         ? this.searchMembers(query, kind, options.packageFilter, limit)
         : [];
 
@@ -273,8 +276,8 @@ export class CleanroomApiService {
       params.push(kind);
     }
     if (packageFilter) {
-      sql += ` AND (t.package_name = ? OR t.package_name LIKE ? || '.%' OR t.fqn LIKE ? || '.%')`;
-      params.push(packageFilter, packageFilter, packageFilter);
+      sql += ` AND (t.package_name = ? OR t.package_name LIKE ? || '.%' OR t.fqn = ? OR t.fqn LIKE ? || '.%')`;
+      params.push(packageFilter, packageFilter, packageFilter, packageFilter);
     }
     return { sql, params };
   }
@@ -380,8 +383,8 @@ export class CleanroomApiService {
     let packageSql = '';
     const packageParams: unknown[] = [];
     if (packageFilter) {
-      packageSql = ` AND (t.package_name = ? OR t.package_name LIKE ? || '.%' OR t.fqn LIKE ? || '.%')`;
-      packageParams.push(packageFilter, packageFilter, packageFilter);
+      packageSql = ` AND (t.package_name = ? OR t.package_name LIKE ? || '.%' OR t.fqn = ? OR t.fqn LIKE ? || '.%')`;
+      packageParams.push(packageFilter, packageFilter, packageFilter, packageFilter);
     }
     const rank = `CASE
         WHEN m.name = ? COLLATE NOCASE THEN 0
@@ -395,6 +398,7 @@ export class CleanroomApiService {
       signature: string;
       javadoc_summary: string | null;
       is_deprecated: number;
+      deprecation_note: string | null;
       since: string | null;
     }): ApiMemberResult => ({
       resultKind: 'member',
@@ -404,6 +408,7 @@ export class CleanroomApiService {
       signature: row.signature,
       javadocSummary: row.javadoc_summary,
       isDeprecated: row.is_deprecated === 1,
+      deprecationNote: row.deprecation_note,
       since: row.since,
     });
 
@@ -411,7 +416,7 @@ export class CleanroomApiService {
     if (!query || query === '*') {
       const rows = this.db
         .prepare(
-          `SELECT m.kind, m.name, m.signature, m.javadoc_summary, m.is_deprecated, m.since, t.fqn
+          `SELECT m.kind, m.name, m.signature, m.javadoc_summary, m.is_deprecated, m.deprecation_note, m.since, t.fqn
            FROM members m
            JOIN types t ON t.id = m.type_id
            WHERE 1=1${kindSql}${packageSql}
@@ -425,6 +430,7 @@ export class CleanroomApiService {
         signature: string;
         javadoc_summary: string | null;
         is_deprecated: number;
+        deprecation_note: string | null;
         since: string | null;
       }>;
       return rows.map(mapRow);
@@ -435,7 +441,7 @@ export class CleanroomApiService {
       try {
         const rows = this.db
           .prepare(
-            `SELECT m.kind, m.name, m.signature, m.javadoc_summary, m.is_deprecated, m.since, t.fqn,
+            `SELECT m.kind, m.name, m.signature, m.javadoc_summary, m.is_deprecated, m.deprecation_note, m.since, t.fqn,
                     ${rank} AS name_rank
              FROM members_fts f
              JOIN members m ON m.id = f.rowid
@@ -451,6 +457,7 @@ export class CleanroomApiService {
           signature: string;
           javadoc_summary: string | null;
           is_deprecated: number;
+          deprecation_note: string | null;
           since: string | null;
         }>;
         return rows.map(mapRow);
@@ -464,7 +471,7 @@ export class CleanroomApiService {
     const like = `%${query.replace(/[%_]/g, '')}%`;
     const rows = this.db
       .prepare(
-        `SELECT m.kind, m.name, m.signature, m.javadoc_summary, m.is_deprecated, m.since, t.fqn,
+        `SELECT m.kind, m.name, m.signature, m.javadoc_summary, m.is_deprecated, m.deprecation_note, m.since, t.fqn,
                 ${rank} AS name_rank
          FROM members m
          JOIN types t ON t.id = m.type_id
@@ -487,6 +494,7 @@ export class CleanroomApiService {
       signature: string;
       javadoc_summary: string | null;
       is_deprecated: number;
+      deprecation_note: string | null;
       since: string | null;
     }>;
     return rows.map(mapRow);
@@ -570,7 +578,7 @@ export class CleanroomApiService {
     ).c;
     const members = this.db
       .prepare(
-        `SELECT kind, name, signature, javadoc_summary, is_deprecated, since
+        `SELECT kind, name, signature, javadoc_summary, is_deprecated, deprecation_note, since
          FROM members WHERE type_id = ?
          ORDER BY CASE kind
              WHEN 'constructor' THEN 0
@@ -587,6 +595,7 @@ export class CleanroomApiService {
       signature: string;
       javadoc_summary: string | null;
       is_deprecated: number;
+      deprecation_note: string | null;
       since: string | null;
     }>;
 
@@ -633,6 +642,7 @@ export class CleanroomApiService {
         signature: m.signature,
         javadocSummary: m.javadoc_summary,
         isDeprecated: m.is_deprecated === 1,
+        deprecationNote: m.deprecation_note,
         since: m.since,
       })),
       memberCount,

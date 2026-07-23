@@ -1,5 +1,7 @@
 /**
- * Cleanroom API database schema (v1) — the single source of truth for the DDL.
+ * Cleanroom API database schema (v2) — the single source of truth for the DDL.
+ *
+ * v2: members.deprecation_note added; idx_types_simple uses COLLATE NOCASE.
  *
  * Indexes the framework API surface an agent codes against (com.cleanroommc.*,
  * zone.rong.mixinbooter.*, net.minecraftforge.*) as extracted from the published
@@ -18,7 +20,7 @@ import Database from 'better-sqlite3';
 export { readDbSchemaVersion } from '../mappings/schema.js';
 
 /** Bump together with DBS['cleanroom-api'].schemaVersion in src/dbs.ts. */
-export const CLEANROOM_API_SCHEMA_VERSION = 1;
+export const CLEANROOM_API_SCHEMA_VERSION = 2;
 
 export const CLEANROOM_API_SCHEMA = `
 -- Metadata table for schema versioning and provenance
@@ -71,6 +73,7 @@ CREATE TABLE IF NOT EXISTS members (
   javadoc TEXT,
   javadoc_summary TEXT,
   is_deprecated INTEGER NOT NULL DEFAULT 0,
+  deprecation_note TEXT,             -- text of the @deprecated javadoc tag, if any
   since TEXT,
   search_text TEXT NOT NULL,
   FOREIGN KEY (type_id) REFERENCES types(id) ON DELETE CASCADE
@@ -84,7 +87,7 @@ CREATE TABLE IF NOT EXISTS annotation_usage (
 );
 
 -- Lookup indexes
-CREATE INDEX IF NOT EXISTS idx_types_simple    ON types(simple_name);
+CREATE INDEX IF NOT EXISTS idx_types_simple    ON types(simple_name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_types_package   ON types(package_name);
 CREATE INDEX IF NOT EXISTS idx_types_kind      ON types(kind);
 CREATE INDEX IF NOT EXISTS idx_types_outer     ON types(outer_fqn)   WHERE outer_fqn IS NOT NULL;

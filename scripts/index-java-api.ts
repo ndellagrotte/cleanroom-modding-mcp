@@ -31,6 +31,7 @@ import * as crypto from 'crypto';
 import AdmZip from 'adm-zip';
 import { createRequire } from 'module';
 import { DBS, USER_AGENT } from '../src/dbs.js';
+import { LOCAL_BUILD_SOURCE } from '../src/db-versioning.js';
 import {
   CLEANROOM_API_SCHEMA_VERSION,
   readDbMetadata,
@@ -145,7 +146,8 @@ interface CliOptions {
 function parseArgs(argv: string[]): CliOptions {
   const valueOf = (flag: string): string | null => {
     const idx = argv.indexOf(flag);
-    return idx !== -1 && argv[idx + 1] ? argv[idx + 1] : null;
+    const next = idx !== -1 ? argv[idx + 1] : undefined;
+    return next && !next.startsWith('--') ? next : null;
   };
   return {
     cleanroomVersion: valueOf('--cleanroom-version'),
@@ -196,10 +198,26 @@ async function main(): Promise<void> {
   }
 
   // ── Up-to-date check (drives the weekly job's no-op skip) ───────────────────
+  // With --sources-jar the jar hash joins the check: version 'local' must not
+  // let a different jar skip the rebuild.
+  let localJarSha256: string | null = null;
+  if (opts.sourcesJar) {
+    localJarSha256 = crypto
+      .createHash('sha256')
+      .update(fs.readFileSync(opts.sourcesJar))
+      .digest('hex');
+  }
   if (!opts.force && fs.existsSync(opts.dbPath)) {
     const existingVersion = readDbMetadata(opts.dbPath, 'cleanroom_version');
     const existingSchema = readDbSchemaVersion(opts.dbPath);
-    if (existingVersion === version && existingSchema === CLEANROOM_API_SCHEMA_VERSION) {
+    const existingJarSha = opts.sourcesJar
+      ? readDbMetadata(opts.dbPath, 'sources_jar_sha256')
+      : null;
+    if (
+      existingVersion === version &&
+      existingSchema === CLEANROOM_API_SCHEMA_VERSION &&
+      (!opts.sourcesJar || existingJarSha === localJarSha256)
+    ) {
       log(
         'success',
         `Database already indexes Cleanroom ${version} (schema v${existingSchema}) — nothing to do.`
@@ -302,11 +320,37 @@ async function main(): Promise<void> {
       sourcesJarSha256: jarSha256,
       parserInfo: parserInfo(),
     });
-    // Close-out above checkpoints WAL; move the single file into place.
-    for (const suffix of ['', '-wal', '-shm']) {
+    // Close-out above checkpoints WAL. rename(2) atomically replaces the
+    // destination on POSIX; on Windows the rename fails while the destination
+    // exists, so fall back to remove+rename (a small crash window there).
+    for (const suffix of ['-wal', '-shm']) {
       fs.rmSync(`${opts.dbPath}${suffix}`, { force: true });
     }
-    fs.renameSync(tmpDbPath, opts.dbPath);
+    try {
+      fs.renameSync(tmpDbPath, opts.dbPath);
+    } catch {
+      fs.rmSync(opts.dbPath, { force: true });
+      fs.renameSync(tmpDbPath, opts.dbPath);
+    }
+
+    // Mark the DB as locally built (next to it, same basename convention as
+    // manage's local-build manifest) so startup auto-update never silently
+    // replaces a maintainer-built DB with a release asset.
+    const stat = fs.statSync(opts.dbPath);
+    const localManifest = {
+      version: '0.0.0-local',
+      timestamp: new Date().toISOString(),
+      type: 'full',
+      hash: crypto.createHash('sha256').update(fs.readFileSync(opts.dbPath)).digest('hex'),
+      size: stat.size,
+      downloadUrl: '',
+      changelog: `Built locally by index-java-api.ts from Cleanroom ${version} (sources jar sha256 ${jarSha256})`,
+      source: LOCAL_BUILD_SOURCE,
+    };
+    fs.writeFileSync(
+      path.join(path.dirname(opts.dbPath), DBS['cleanroom-api'].manifestName),
+      JSON.stringify(localManifest, null, 2)
+    );
 
     // ── Summary ───────────────────────────────────────────────────────────────
     banner('Summary');

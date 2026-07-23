@@ -44,8 +44,9 @@ export function ingest(dbPath: string, result: ResolveResult, meta: IngestMeta):
     const insertMember = db.prepare(`
       INSERT INTO members (
         type_id, kind, name, signature, return_type, params, modifiers,
-        annotations, javadoc, javadoc_summary, is_deprecated, since, search_text
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        annotations, javadoc, javadoc_summary, is_deprecated, deprecation_note, since,
+        search_text
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertUsage = db.prepare(
       `INSERT OR REPLACE INTO annotation_usage (annotation_fqn, usage_count) VALUES (?, ?)`
@@ -61,8 +62,9 @@ export function ingest(dbPath: string, result: ResolveResult, meta: IngestMeta):
       byNamespace: {},
     };
 
-    // Parents before children (outer_fqn is informational, but deterministic
-    // order keeps rebuilt DBs byte-comparable), then stable by FQN.
+    // Parents before children (outer_fqn is informational; deterministic order
+    // keeps rebuilt DBs as close to byte-stable as the indexed_at timestamp
+    // allows), then stable by FQN.
     const ordered = [...result.types].sort(
       (a, b) => a.nestingDepth - b.nestingDepth || a.fqn.localeCompare(b.fqn)
     );
@@ -124,6 +126,7 @@ export function ingest(dbPath: string, result: ResolveResult, meta: IngestMeta):
             member.javadoc?.body || null,
             member.javadoc?.summary || null,
             member.isDeprecated ? 1 : 0,
+            member.javadoc?.deprecatedNote || null,
             member.since,
             member.searchText
           );

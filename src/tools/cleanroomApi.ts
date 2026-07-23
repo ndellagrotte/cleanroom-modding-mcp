@@ -99,7 +99,7 @@ const NOT_INSTALLED_MESSAGE =
 
 const OUTDATED_SCHEMA_MESSAGE =
   'The installed Cleanroom API database uses an outdated schema and has been disabled.\n\n' +
-  'It will be updated automatically on the next server startup, or update it now with: `npx cleanroom-modding-mcp manage`.';
+  'It is replaced automatically on startup once a release carries the updated database; you can also reinstall it with `npx cleanroom-modding-mcp manage`.';
 
 function notAvailableResult(): CallToolResult {
   const text = CleanroomApiService.isSchemaOutdated()
@@ -190,11 +190,12 @@ export function handleSearchCleanroomApi(params: SearchCleanroomApiParams): Call
 
     const service = new CleanroomApiService();
     try {
+      const limit = Math.min(Math.max(params.limit || 15, 1), 50);
       const results = service.search({
         query,
         packageFilter: params.package_filter,
         kind,
-        limit: Math.min(Math.max(params.limit || 15, 1), 50),
+        limit,
       });
 
       if (results.length === 0) {
@@ -218,6 +219,9 @@ export function handleSearchCleanroomApi(params: SearchCleanroomApiParams): Call
 
       let output = `Found ${results.length} framework API symbol${results.length > 1 ? 's' : ''}`;
       output += query ? ` for "${query}":\n\n` : ' (browse):\n\n';
+      if (results.length === limit) {
+        output += `_Showing the first ${limit} by rank — refine the query or raise \`limit\` for more._\n\n`;
+      }
 
       for (const result of results) {
         if (result.resultKind === 'type') {
@@ -233,7 +237,7 @@ export function handleSearchCleanroomApi(params: SearchCleanroomApiParams): Call
         } else {
           output += `### ${capitalize(result.memberKind)}: \`${result.declaringFqn}#${result.name}\`\n`;
           if (result.isDeprecated) {
-            output += `**DEPRECATED**\n`;
+            output += `**DEPRECATED**${result.deprecationNote ? ` — ${result.deprecationNote}` : ''}\n`;
           }
           if (result.since) {
             output += `since ${result.since}\n`;
@@ -308,7 +312,7 @@ function formatDetails(details: ApiClassDetails, includeMembers: boolean): strin
       for (const member of members) {
         output += `- \`${member.signature}\``;
         if (member.isDeprecated) {
-          output += ' **DEPRECATED**';
+          output += ` **DEPRECATED**${member.deprecationNote ? ` — ${member.deprecationNote}` : ''}`;
         }
         if (member.javadocSummary) {
           output += ` — ${member.javadocSummary}`;

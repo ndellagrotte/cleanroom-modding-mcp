@@ -156,7 +156,10 @@ jobs:
               echo "ERROR: could not carry the previous cleanroom-api manifest forward (download failed)."
               exit 1
             fi
-            gh release download "$PREV_TAG" --pattern "cleanroom-api.db" --output ./data/cleanroom-api.db --clobber
+            if ! gh release download "$PREV_TAG" --pattern "cleanroom-api.db" --output ./data/cleanroom-api.db --clobber; then
+              echo "ERROR: release $PREV_TAG carries the cleanroom-api manifest but the DB asset is missing — cannot carry forward."
+              exit 1
+            fi
           fi
 
           DB_HASH=$(sha256sum ./data/cleanroom-api.db | cut -d' ' -f1)

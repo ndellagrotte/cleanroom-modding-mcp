@@ -63,7 +63,7 @@ Databases live in a shared platform-standard data directory:
 
 ## Tools
 
-Four base tools are always available; mappings and mod-examples tool groups register automatically when their optional databases are installed.
+Four base tools are always available; the mappings, mod-examples, and Cleanroom API tool groups register automatically when their optional databases are installed (the table below groups them by database, not by registration order).
 
 | Tool | Purpose |
 | --- | --- |

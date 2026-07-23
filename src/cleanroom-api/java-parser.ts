@@ -28,6 +28,11 @@ async function loadJavaLanguage(): Promise<Language> {
       await Parser.init();
       return Language.load(javaWasmPath());
     })();
+    // Don't cache a rejection: a transient wasm-load failure must not poison
+    // every later createJavaParser() in this process.
+    languagePromise.catch(() => {
+      languagePromise = null;
+    });
   }
   return languagePromise;
 }
