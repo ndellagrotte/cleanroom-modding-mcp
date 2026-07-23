@@ -42,6 +42,30 @@ The documentation database downloads automatically on install (and self-updates 
 npx cleanroom-modding-mcp manage
 ```
 
+### Claude Code
+
+For [Claude Code](https://docs.anthropic.com/en/docs/claude-code), add this server via a project-scoped `.mcp.json` file at the repository root. This is an example `.mcp.json` config for Linux:
+
+```json
+{
+  "mcpServers": {
+    "cleanroom": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/home/ndellagrotte/IdeaProjects/mcmodding-mcp/dist/index.js"
+      ],
+      "env": {
+        "CLEANROOM_MCP_DATA_DIR": "/home/ndellagrotte/IdeaProjects/mcmodding-mcp/data",
+        "CLEANROOM_MCP_SKIP_AUTO_UPDATE": "1"
+      }
+    }
+  }
+}
+```
+
+(Adjust the absolute paths to your local checkout.)
+
 ## Databases
 
 All database assets are attached to this repository's `v{version}` GitHub Releases and verified by SHA256 manifest.
