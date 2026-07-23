@@ -11,6 +11,7 @@ import { DBS, DB_IDS, isInstalled } from '../dbs.js';
 import { CleanroomApiService } from '../services/cleanroom-api-service.js';
 import { ExampleService } from '../services/example-service.js';
 import { MappingsService } from '../services/mappings-service.js';
+import { ModExamplesService } from '../services/mod-examples-service.js';
 import { EquivalenceService } from '../services/equivalence-service.js';
 import { TEMPLATE_COMPONENTS } from '../templates/index.js';
 import { GUIDE_NAMES } from '../guides/index.js';
@@ -59,6 +60,12 @@ export function handleListTargets(): CallToolResult {
     } catch {
       cleanroomApiOutdated = false;
     }
+    let examplesOutdated = false;
+    try {
+      examplesOutdated = ModExamplesService.isSchemaOutdated();
+    } catch {
+      examplesOutdated = false;
+    }
 
     output += '\n## Installed Databases\n\n';
     for (const id of DB_IDS) {
@@ -71,6 +78,9 @@ export function handleListTargets(): CallToolResult {
       } else if (id === 'cleanroom-api' && cleanroomApiOutdated) {
         status =
           '⚠️ installed but schema-outdated (Cleanroom API tools disabled; updates on next startup, or run `npx cleanroom-modding-mcp manage`)';
+      } else if (id === 'examples' && examplesOutdated) {
+        status =
+          '⚠️ installed but schema-outdated (mod examples tools disabled; updates on next startup, or run `npx cleanroom-modding-mcp manage`)';
       } else if (isInstalled(id)) {
         status = '✅ installed';
       } else {

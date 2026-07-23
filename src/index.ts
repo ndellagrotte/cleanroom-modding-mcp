@@ -323,6 +323,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return handleSearchModExamples({
         query: args?.query as string | undefined,
         mod: args?.mod as string | undefined,
+        loader: args?.loader as string | undefined,
         category: args?.category as string | undefined,
         pattern_type: args?.pattern_type as string | undefined,
         complexity: args?.complexity as string | undefined,
@@ -333,8 +334,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case 'get_mod_example': {
+      // Pass the raw id through; the handler validates its presence and type so a
+      // missing id is a validation error, not a silent id=0 "not found".
       return handleGetModExample({
-        id: (args?.id as number) || 0,
+        id: args?.id as number,
         include_related: args?.include_related as boolean | undefined,
       });
     }

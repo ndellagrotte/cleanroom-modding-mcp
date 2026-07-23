@@ -71,7 +71,10 @@
     "index-mappings": "npx tsx scripts/index-mappings.ts",
     "index-mappings:force": "npx tsx scripts/index-mappings.ts --force",
     "index-cleanroom-api": "npx tsx scripts/index-java-api.ts",
-    "index-cleanroom-api:force": "npx tsx scripts/index-java-api.ts --force"
+    "index-cleanroom-api:force": "npx tsx scripts/index-java-api.ts --force",
+    "index-mod-examples": "npx tsx scripts/index-mod-examples.ts",
+    "index-mod-examples:force": "npx tsx scripts/index-mod-examples.ts --force",
+    "build:golden-db": "npx tsx scripts/build-golden-db.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

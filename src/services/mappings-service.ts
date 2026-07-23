@@ -1425,6 +1425,25 @@ export class MappingsService {
     };
   }
 
+  /**
+   * Batch form of {@link resolveSymbol}: resolve many symbols under this one held
+   * connection instead of opening/closing per name. Input is de-duplicated;
+   * the returned map is keyed by the original (untrimmed) symbol string.
+   *
+   * Used by the examples pipeline's index-time SRG cross-linking (Phase 5 §8.1);
+   * 1.12.2 rows carry minecraft_version='1.12.2', mapping_set='mcp'.
+   */
+  resolveSymbols(symbols: string[], minecraftVersion?: string): Map<string, ResolvedSymbol> {
+    const out = new Map<string, ResolvedSymbol>();
+    for (const symbol of symbols) {
+      if (out.has(symbol)) {
+        continue;
+      }
+      out.set(symbol, this.resolveSymbol(symbol, minecraftVersion));
+    }
+    return out;
+  }
+
   private resolveSymbolInVersion(
     symbol: string,
     kind: SymbolKind,
