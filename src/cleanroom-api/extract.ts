@@ -88,6 +88,54 @@ const INLINE_TAG_RE = /\{@(?:link|linkplain|code|literal|value)\s*([^}]*)\}/g;
 const HTML_TAG_RE =
   /<\/?(?:a|b|blockquote|br|code|dd|dl|dt|em|hr|i|li|ol|p|pre|strong|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s[^>]*)?\/?>/gi;
 
+// Block-level tags end the summary. Matching javadoc's first-sentence rule, the
+// summary stops at the first sentence terminator OR the first block tag (<p>,
+// <br>, <ul>, ...) that follows real content; inline tags (<code>, <b>) do not
+// break it. Without this, an author's <br>/<p> sentence boundary would collapse
+// to a space and run two sentences together. A leading block tag (a body that
+// opens with <p>) is skipped so it does not empty the summary.
+const BLOCK_TAG_RE =
+  /<\/?(?:blockquote|br|dd|dl|dt|h[1-6]|hr|li|ol|p|pre|table|tbody|td|tfoot|th|thead|tr|ul)(?:\s[^>]*)?\/?>/gi;
+
+// Common abbreviations whose trailing period is not a sentence terminator.
+// Kept lowercase; the last token before a candidate period is matched
+// case-insensitively so a summary is not cut off mid-sentence at 'e.g.'.
+const SENTENCE_ABBREVIATIONS = new Set([
+  'e.g',
+  'i.e',
+  'etc',
+  'cf',
+  'vs',
+  'al',
+  'resp',
+  'approx',
+  'incl',
+  'eq',
+]);
+
+/**
+ * The first sentence of a javadoc body: text up to the first '.', '!', or '?'
+ * that is followed by whitespace or end-of-text, skipping periods that merely
+ * end a known abbreviation (e.g. 'e.g.', 'i.e.', 'etc.').
+ */
+function firstSentence(text: string): string {
+  const terminator = /[.!?](?=\s|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = terminator.exec(text)) !== null) {
+    if (match[0] !== '.') {
+      return text.slice(0, match.index + 1);
+    }
+    // A '.' terminates unless the token it closes is a known abbreviation.
+    // The token is the trailing word, allowing internal dots so dotted
+    // initialisms ('e.g') match alongside plain words ('etc').
+    const lastToken = text.slice(0, match.index).match(/[A-Za-z]+(?:\.[A-Za-z]+)*$/)?.[0] ?? '';
+    if (!SENTENCE_ABBREVIATIONS.has(lastToken.toLowerCase())) {
+      return text.slice(0, match.index + 1);
+    }
+  }
+  return text;
+}
+
 /**
  * Parse a raw javadoc block comment into a cleaned body, first
  * sentence, and the @deprecated/@since tags. All other block tags are dropped.
@@ -132,12 +180,20 @@ export function parseJavadoc(raw: string): JavadocInfo | null {
   const clean = (s: string): string => normalizeSignature(s.replace(INLINE_TAG_RE, '$1'));
 
   const body = clean(bodyLines.join('\n'));
-  // The summary drops javadoc's HTML formatting tags (a known-tag list keeps
-  // generic-type text like 'List<T>' intact); the first sentence then ends at
-  // [.!?] followed by whitespace or end-of-text.
-  const summaryText = normalizeSignature(body.replace(HTML_TAG_RE, ' '));
-  const sentenceMatch = summaryText.match(/^(.*?[.!?])(?:\s|$)/);
-  const summary = sentenceMatch?.[1] ?? summaryText;
+  // The summary is the first sentence. Cut the body at the first block-level tag
+  // that has real content before it (a leading <p> is skipped), drop the
+  // remaining (inline) HTML formatting tags — a known-tag list keeps generic
+  // text like 'List<T>' intact — then take text up to the first terminator.
+  let summarySource = body;
+  for (const tag of body.matchAll(BLOCK_TAG_RE)) {
+    const before = body.slice(0, tag.index);
+    if (before.replace(HTML_TAG_RE, ' ').trim() !== '') {
+      summarySource = before;
+      break;
+    }
+  }
+  const summaryText = normalizeSignature(summarySource.replace(HTML_TAG_RE, ' '));
+  const summary = firstSentence(summaryText);
 
   return {
     body,
@@ -302,8 +358,16 @@ function makeMember(
   };
 }
 
-/** Extract the members declared directly in a type body node. */
-function extractMembers(bodyNode: TsNode, declaringTypeName: string): ExtractedMember[] {
+/**
+ * Extract the members declared directly in a type body node. For records,
+ * `recordParams` carries the canonical (header) components so a compact
+ * constructor renders with its real parameter list instead of an empty one.
+ */
+function extractMembers(
+  bodyNode: TsNode,
+  declaringTypeName: string,
+  recordParams: ExtractedParam[] | null = null
+): ExtractedMember[] {
   const members: ExtractedMember[] = [];
 
   const visitBodyChild = (child: TsNode): void => {
@@ -350,10 +414,12 @@ function extractMembers(bodyNode: TsNode, declaringTypeName: string): ExtractedM
         const javadoc = findJavadoc(child);
         const name = child.childForFieldName('name')?.text ?? '?';
         const typeParams = child.childForFieldName('type_parameters')?.text;
+        // A compact_constructor_declaration omits its parameter list in source;
+        // its true signature is the record's canonical constructor.
         const params =
           child.type === 'constructor_declaration'
             ? readParams(child.childForFieldName('parameters'))
-            : [];
+            : (recordParams ?? []);
         const throwsText = childOfType(child, 'throws')?.text;
         const signature = [
           modifiers.join(' '),
@@ -540,8 +606,10 @@ function extractType(
   }
   const signature = normalizeSignature(signatureParts.filter(Boolean).join(' '));
 
+  const recordComponentParams =
+    kind === 'record' ? readParams(node.childForFieldName('parameters')) : null;
   const bodyNode = node.childForFieldName('body');
-  const members = bodyNode ? extractMembers(bodyNode, simpleName) : [];
+  const members = bodyNode ? extractMembers(bodyNode, simpleName, recordComponentParams) : [];
   const children: ExtractedType[] = [];
   if (bodyNode) {
     collectTypeDeclarations(bodyNode, nestedChain, packageName, children);

@@ -410,6 +410,66 @@ describe('CleanroomApiService (fixture DB)', () => {
   });
 });
 
+describe('CleanroomApiService member-detail capping', () => {
+  let tempDir: string;
+  let service: CleanroomApiService;
+
+  beforeAll(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanroom-api-cap-'));
+    const dbPath = path.join(tempDir, 'cleanroom-api.db');
+    const ctors = [
+      member({ name: 'WideType', kind: 'constructor', signature: 'public WideType()' }),
+      member({ name: 'WideType', kind: 'constructor', signature: 'public WideType(int x)' }),
+    ];
+    const methods = Array.from({ length: 45 }, (_, i) => {
+      const n = String(i).padStart(2, '0');
+      return member({ name: `method${n}`, signature: `public void method${n}()` });
+    });
+    const fields = Array.from({ length: 3 }, (_, i) =>
+      member({
+        name: `field${i}`,
+        kind: 'field',
+        returnType: 'int',
+        signature: `private int field${i}`,
+      })
+    );
+    const files: ExtractedFile[] = [
+      {
+        path: 'com/example/WideType.java',
+        packageName: 'com.example',
+        imports: { explicit: {}, wildcards: [] },
+        parseErrors: false,
+        types: [type({ simpleName: 'WideType', members: [...ctors, ...methods, ...fields] })],
+      },
+    ];
+    ingest(dbPath, resolveAll(files), {
+      cleanroomVersion: '0.0.0-test',
+      sourcesJarUrl: null,
+      sourcesJarSha256: null,
+      parserInfo: 'fixtures',
+    });
+    service = new CleanroomApiService(dbPath);
+  });
+
+  afterAll(() => {
+    service.close();
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('caps each member kind independently so Fields are never starved by methods (regression)', () => {
+    // A flat "ORDER BY kind-priority LIMIT n" fills n with constructors+methods
+    // and drops the entire Fields section. The per-kind window must keep fields.
+    const details = service.getTypeByName('WideType', 10).match;
+    expect(details).not.toBeNull();
+    const kinds = (details?.members ?? []).map((m) => m.kind);
+    const count = (k: string): number => kinds.filter((x) => x === k).length;
+    expect(count('constructor')).toBe(2);
+    expect(count('method')).toBe(10); // capped at the per-kind limit
+    expect(count('field')).toBe(3); // all fields present — not starved out
+    expect(details?.memberCount).toBe(50); // true total (2 + 45 + 3)
+  });
+});
+
 describe('CleanroomApiService availability gate', () => {
   it('treats a schema-mismatched DB as unavailable via readDbSchemaVersion', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanroom-api-schema-'));

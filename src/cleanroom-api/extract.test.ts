@@ -92,6 +92,38 @@ describe('parseJavadoc', () => {
     expect(info?.since).toBe('0.5.0');
   });
 
+  it('does not cut the summary short at an abbreviation', () => {
+    const dotted = parseJavadoc(
+      '/**\n' +
+        ' * Fired when this player receives updates about an entity, e.g. its\n' +
+        ' * position. Not fired for other players.\n' +
+        ' */'
+    );
+    expect(dotted?.summary).toBe(
+      'Fired when this player receives updates about an entity, e.g. its position.'
+    );
+    // A plain-word abbreviation (no internal dots) must be protected too.
+    const plain = parseJavadoc('/** Supports A, B, etc. and more here. Second sentence. */');
+    expect(plain?.summary).toBe('Supports A, B, etc. and more here.');
+  });
+
+  it('ends the summary at the first block-level tag', () => {
+    // The author separates the first sentence from the body with <br>/<p>
+    // rather than a period; the summary must not run the two together.
+    const br = parseJavadoc(
+      '/** Unloads tickets, e.g. on chunk unload <br>Must not remove itself! */'
+    );
+    expect(br?.summary).toBe('Unloads tickets, e.g. on chunk unload');
+    const p = parseJavadoc('/** Registers a thing<p>Details about the thing follow. */');
+    expect(p?.summary).toBe('Registers a thing');
+    // Inline tags do not break the summary.
+    const inline = parseJavadoc('/** Wraps a <code>List</code> value. More text. */');
+    expect(inline?.summary).toBe('Wraps a List value.');
+    // A body that OPENS with a block tag must not yield an empty summary.
+    const leading = parseJavadoc('/** <p>A storage of several pages.</p> More detail here. */');
+    expect(leading?.summary).toBe('A storage of several pages.');
+  });
+
   it('returns null for non-javadoc comments', () => {
     expect(parseJavadoc('/* plain block comment */')).toBeNull();
   });
@@ -396,6 +428,26 @@ public record DiscoveredMod(String id, java.nio.file.Path path) {
     expect(type.kind).toBe('record');
     expect(type.signature).toContain('record DiscoveredMod(String id, java.nio.file.Path path)');
     expect(type.members.some((m) => m.name === 'valid')).toBe(true);
+  });
+
+  it('gives a record compact constructor the canonical component parameters', () => {
+    const file = extract(
+      `package com.example;
+public record DiscoveredMod(String id, java.nio.file.Path path) {
+  public DiscoveredMod {
+    java.util.Objects.requireNonNull(id);
+  }
+}
+`
+    );
+    const ctor = file.types[0].members.find((m) => m.kind === 'constructor');
+    expect(ctor).toBeDefined();
+    // Not the fabricated no-arg 'public DiscoveredMod()'.
+    expect(ctor?.signature).toBe('public DiscoveredMod(String id, java.nio.file.Path path)');
+    expect(ctor?.params).toEqual([
+      { type: 'String', name: 'id' },
+      { type: 'java.nio.file.Path', name: 'path' },
+    ]);
   });
 
   it('collects annotation names with arguments and qualified names', () => {

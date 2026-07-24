@@ -519,8 +519,12 @@ export class CleanroomApiService {
       return { match: this.buildDetails(exact, memberLimit), candidates: [] };
     }
 
+    // ORDER BY fqn for a stable, readable candidate list; LIMIT 25 comfortably
+    // exceeds the corpus's worst real ambiguity (e.g. simple name 'Pre'/'Post'
+    // → 17 types), so valid matches are not silently dropped from the "use the
+    // full name" list. An unordered LIMIT 10 previously omitted 7 of 17.
     const bySimple = this.db
-      .prepare(`SELECT * FROM types WHERE simple_name = ? COLLATE NOCASE LIMIT 10`)
+      .prepare(`SELECT * FROM types WHERE simple_name = ? COLLATE NOCASE ORDER BY fqn LIMIT 25`)
       .all(clean) as TypeRow[];
     const onlySimple = bySimple[0];
     if (bySimple.length === 1 && onlySimple) {
@@ -531,7 +535,7 @@ export class CleanroomApiService {
     }
 
     const bySuffix = this.db
-      .prepare(`SELECT * FROM types WHERE fqn LIKE '%.' || ? ESCAPE '\\' LIMIT 10`)
+      .prepare(`SELECT * FROM types WHERE fqn LIKE '%.' || ? ESCAPE '\\' ORDER BY fqn LIMIT 25`)
       .all(clean.replace(/[\\%_]/g, (m) => `\\${m}`)) as TypeRow[];
     const onlySuffix = bySuffix[0];
     if (bySuffix.length === 1 && onlySuffix) {
@@ -576,18 +580,27 @@ export class CleanroomApiService {
         c: number;
       }
     ).c;
+    // Cap each member KIND at memberLimit rather than applying one global LIMIT:
+    // a flat `ORDER BY kind-priority LIMIT 40` lets a type with 40+
+    // constructors+methods starve its Fields section out entirely (e.g.
+    // net.minecraftforge.common.config.Property renders with none of its 24
+    // fields). The window keeps every kind represented; memberCount still drives
+    // the "N more not shown" note.
     const members = this.db
       .prepare(
         `SELECT kind, name, signature, javadoc_summary, is_deprecated, deprecation_note, since
-         FROM members WHERE type_id = ?
+         FROM (
+           SELECT *, ROW_NUMBER() OVER (PARTITION BY kind ORDER BY name) AS rn
+           FROM members WHERE type_id = ?
+         )
+         WHERE rn <= ?
          ORDER BY CASE kind
              WHEN 'constructor' THEN 0
              WHEN 'annotation_element' THEN 1
              WHEN 'enum_constant' THEN 2
              WHEN 'method' THEN 3
              ELSE 4 END,
-           name
-         LIMIT ?`
+           name`
       )
       .all(row.id, memberLimit) as Array<{
       kind: string;

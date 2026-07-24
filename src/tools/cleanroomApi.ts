@@ -220,7 +220,9 @@ export function handleSearchCleanroomApi(params: SearchCleanroomApiParams): Call
       let output = `Found ${results.length} framework API symbol${results.length > 1 ? 's' : ''}`;
       output += query ? ` for "${query}":\n\n` : ' (browse):\n\n';
       if (results.length === limit) {
-        output += `_Showing the first ${limit} by rank — refine the query or raise \`limit\` for more._\n\n`;
+        output += query
+          ? `_Showing the first ${limit} by relevance — refine the query or raise \`limit\` for more._\n\n`
+          : `_Showing the first ${limit} alphabetically — add a query to rank by relevance, or raise \`limit\` for more._\n\n`;
       }
 
       for (const result of results) {
