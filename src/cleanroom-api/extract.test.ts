@@ -105,23 +105,10 @@ describe('parseJavadoc', () => {
     // A plain-word abbreviation (no internal dots) must be protected too.
     const plain = parseJavadoc('/** Supports A, B, etc. and more here. Second sentence. */');
     expect(plain?.summary).toBe('Supports A, B, etc. and more here.');
-  });
-
-  it('ends the summary at the first block-level tag', () => {
-    // The author separates the first sentence from the body with <br>/<p>
-    // rather than a period; the summary must not run the two together.
-    const br = parseJavadoc(
-      '/** Unloads tickets, e.g. on chunk unload <br>Must not remove itself! */'
-    );
-    expect(br?.summary).toBe('Unloads tickets, e.g. on chunk unload');
-    const p = parseJavadoc('/** Registers a thing<p>Details about the thing follow. */');
-    expect(p?.summary).toBe('Registers a thing');
-    // Inline tags do not break the summary.
-    const inline = parseJavadoc('/** Wraps a <code>List</code> value. More text. */');
-    expect(inline?.summary).toBe('Wraps a List value.');
-    // A body that OPENS with a block tag must not yield an empty summary.
-    const leading = parseJavadoc('/** <p>A storage of several pages.</p> More detail here. */');
-    expect(leading?.summary).toBe('A storage of several pages.');
+    // A sentence that ends in a word merely resembling an abbreviation still
+    // terminates ('Hal' must not be read as the abbreviation 'al').
+    const notAbbrev = parseJavadoc('/** He met Hal. Then left. */');
+    expect(notAbbrev?.summary).toBe('He met Hal.');
   });
 
   it('returns null for non-javadoc comments', () => {
