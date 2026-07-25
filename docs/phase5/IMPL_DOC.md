@@ -60,3 +60,70 @@ workflow invokes `index-mod-examples` or sets `CLEANROOM_MCP_LLM_*`. First manif
 `data/mappings.db` + `data/cleanroom-api.db` present for full enrichment, then
 `pnpm run manifest -- --db examples --bump minor --release-tag v<next>`. Recorded outcome in
 the finalization notes.
+
+## Revision 1 — maintainer-paid endpoint (see [PHASE_5_REVISION.md](PHASE_5_REVISION.md))
+
+Implemented per the revision's §5 module table; the frozen Phase 5 shape above stands except
+as listed there.
+
+- **New files:** `src/examples/cache.ts` (content-addressed analysis cache: `hashSnippet` over
+  the prompt-visible payload, `analysis_version`-gated reads, write-through), and the committed,
+  non-secret `data/examples-llm.json` (endpoint + declared list prices; the API key is never in
+  it). `data/examples-roster.json` is now committed too (`.gitignore` negations added; cache DB
+  and built DBs stay ignored).
+- **`model.ts`:** `LlmClient.complete` widened to `Promise<Completion>` (text + nullable usage);
+  `AnalyzeOutcome`, `LlmPricing`; `IngestMeta` gains optional `llmBaseHost`/`llmCost` (additive
+  metadata keys; absent in golden).
+- **`analyze.ts`:** `resolveEndpointConfig` accepts the config-file layer (flags → env → file,
+  gate text unchanged) — including an optional `temperature` (default 0; some endpoints reject
+  0 with HTTP 400); `createOpenAiClient` parses `usage` and takes `--llm-max-retries`;
+  `LlmHttpError` + `isTransientLlmError` (transient = network/429/5xx; permanent = other 4xx and
+  JSON-extraction failures — no double-pay); `analyzeSnippet` returns `AnalyzeOutcome`; exported
+  `buildPrompt` + `estimateTokens` (chars/4) for the estimate projection.
+- **`ingest.ts`:** two additive `insertMetadata.run` lines (`llm_base_host`, `llm_cost`) — no
+  DDL, no schema bump.
+- **`golden-fixture.ts`:** fake client returns fixed usage; the golden path stays cache-free.
+- **`index-mod-examples.ts`:** loads `data/examples-llm.json`; new flags `--estimate`,
+  `--llm-max-cost-usd`, `--llm-max-retries`, `--llm-concurrency`, `--llm-est-output-tokens`,
+  `--analysis-cache`, `--no-cache`; run ledger (tokens/calls/cache/tokens-saved); estimate mode
+  (real prompt bodies, zero calls/writes); budget cap (actual-usage gate, partial ingest, exit
+  2); ordered-slot worker pool (order-deterministic at any concurrency); cost-ledger summary.
+- **Tests:** `analyze.test.ts` (outcome shape, config precedence, retry classification, usage
+  parsing/backoff), new `cache.test.ts` (hit/miss, version invalidation, readonly mode), new
+  `indexer.orchestrator.test.ts` (spawned end-to-end against a fake endpoint: startup gates,
+  estimate purity, cache re-run/version-invalidation/`--no-cache`, cap exit 2 + partial ingest,
+  no-double-pay 400/429/unparsable, concurrency determinism); `golden.test.ts` locks the
+  Revision 1 keys absent in golden.
+- Explicitly untouched, as specified: `schema.ts`, `srg-link.ts`, `select.ts`, `acquire.ts`, all
+  runtime services/tools, all workflows (CI stays LLM-free; `release.yml` carry-forward only).
+
+### Revision 1 addendum — Moonshot endpoint (kimi-k2.6, non-thinking)
+
+The first maintainer-paid endpoint is Moonshot (`data/examples-llm.json`: `kimi-k2.6` with
+thinking disabled). Two config-file keys landed with it (PHASE_5_REVISION §4.1), both
+provider-agnostic in code (D1 — the quirk lives in the committed file):
+
+- `"temperature": null` omits the field from the request entirely (Moonshot rejects/ignores an
+  explicit temperature for kimi-k2.6); a number sends it; absent keeps the frozen default 0.
+  `EndpointConfig.temperature: number | null` — null = omit.
+- `"extraBody"` merges verbatim into every request body (Moonshot:
+  `"thinking": {"type": "disabled"}`); code-controlled keys win on conflict.
+- `computeAnalysisVersion` now also hashes the canonicalized effective request knobs
+  `{ temperature, extraBody }` — a thinking/temperature toggle re-bills the full corpus like a
+  model change and auto-invalidates the analysis cache.
+- `createOpenAiClient` warns once (injectable `onModelMismatch`, wired to the orchestrator's
+  logger) when the server echoes a different model id than the pinned one — surfaces silent
+  provider-side model aliasing. Provenance still records the *requested* id.
+- OQ2 resolved with the first successful paid build: `--llm-concurrency` default flipped from
+  1 (serial) to 4. Order-determinism is unchanged (index-addressed slots); the orchestrator
+  test's serial leg now pins `--llm-concurrency 1` explicitly.
+
+### Revision 1 addendum 2 — endpoint switch: OpenAI `gpt-5.4-nano`
+
+Moonshot was abandoned (billing opacity). `data/examples-llm.json` now points at OpenAI
+Chat Completions (`https://api.openai.com/v1`, `gpt-5.4-nano`) — no code change, D1 holds:
+the model page confirms Chat Completions + structured outputs support and reasoning effort
+defaulting to `none`, so no `extraBody` is needed; `"temperature": null` is kept (gpt-5.x
+rejects non-default temperature). Pricing 0.20/1.25 USD per 1M in/out per the OpenAI pricing
+page (2026-07-25); the ledger conservatively ignores the cheaper cached-input rate. New
+`analysis_version` — Moonshot-era cache rows are dead weight under their old version keys.

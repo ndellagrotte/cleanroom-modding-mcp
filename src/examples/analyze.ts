@@ -4,9 +4,11 @@
  * Each selected snippet is sent to a pluggable OpenAI-compatible endpoint with
  * the committed, versioned prompt (src/examples/prompts/); the model returns
  * strict JSON for the analysis columns. Determinism is the whole point of
- * Phase 5 (DESIGN §6.4): the model is pinned, temperature is 0, and
- * `analysis_version` is derived from (prompt_version + model + pipeline logic)
- * so any change invalidates prior analyses.
+ * Phase 5 (DESIGN §6.4): the model is pinned, temperature defaults to 0
+ * (overridable per endpoint — some endpoints reject 0, and some, e.g.
+ * Moonshot's kimi-k2.6, must not be sent a temperature at all), and
+ * `analysis_version` is derived from (prompt_version + model + pipeline logic
+ * + effective request knobs) so any change invalidates prior analyses.
  *
  * A configured endpoint is REQUIRED (Fixed Input 1): with none set the caller
  * exits with a clear error and touches nothing. There is no degraded build.
@@ -15,7 +17,14 @@
 import crypto from 'crypto';
 import { jsonrepair } from 'jsonrepair';
 import { EXAMPLE_CATEGORIES } from '../categories.js';
-import type { Analysis, LlmClient, RawApiReference, Snippet } from './model.js';
+import type {
+  Analysis,
+  AnalyzeOutcome,
+  CompletionUsage,
+  LlmClient,
+  RawApiReference,
+  Snippet,
+} from './model.js';
 
 /**
  * Revision of the pipeline's analysis logic. Bump when the prompt-independent
@@ -31,15 +40,39 @@ const CATEGORY_SET = new Set<string>(EXAMPLE_CATEGORIES);
 // analysis_version
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Stable id over (prompt version + model + pipeline logic). */
+/**
+ * Canonical JSON with stable key order (undefined values dropped), so the
+ * request-knob component of analysis_version never wobbles with object key
+ * insertion order.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === undefined || value === null) return 'null';
+  if (typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+/** Stable id over (prompt version + model + pipeline logic + request knobs). */
 export function computeAnalysisVersion(parts: {
   promptVersion: string;
   model: string;
   pipelineRev: string;
+  /**
+   * The effective request knobs that shape the completion (temperature,
+   * extraBody). Canonicalized before hashing — any change to them invalidates
+   * prior analyses and cache rows exactly like a model change does.
+   */
+  requestKnobs?: Record<string, unknown>;
 }): string {
   const h = crypto
     .createHash('sha256')
-    .update(`${parts.promptVersion}\n${parts.model}\n${parts.pipelineRev}`)
+    .update(
+      `${parts.promptVersion}\n${parts.model}\n${parts.pipelineRev}\n` +
+        canonicalJson(parts.requestKnobs ?? null)
+    )
     .digest('hex');
   return `av1-${h.slice(0, 16)}`;
 }
@@ -52,6 +85,22 @@ export interface EndpointConfig {
   baseUrl: string;
   apiKey: string | null;
   model: string;
+  /**
+   * Request temperature; null = omit the field entirely so the endpoint's own
+   * default applies (some endpoints, e.g. Moonshot's kimi-k2.6, reject or
+   * ignore an explicit temperature). resolveEndpointConfig materializes the
+   * frozen default 0 when nothing declares a value, so null only reaches the
+   * client from an explicit `"temperature": null` in the config file.
+   */
+  temperature: number | null;
+  /**
+   * Provider-specific request-body extensions merged verbatim into every
+   * chat-completions call (e.g. Moonshot's `"thinking": {"type": "disabled"}`).
+   * Comes only from the committed config file — the pipeline code stays
+   * provider-agnostic (Revision 1, D1). Code-controlled keys (model, messages,
+   * temperature-when-set) always win on conflict.
+   */
+  extraBody?: Record<string, unknown>;
 }
 
 export class EndpointNotConfiguredError extends Error {
@@ -68,17 +117,55 @@ function flagValue(argv: string[], flag: string): string | null {
 }
 
 /**
- * Resolve the endpoint from CLI flags (highest precedence) then environment.
- * Throws EndpointNotConfiguredError when base URL or model is missing — the
- * caller turns that into a clean non-zero exit that writes nothing.
+ * The non-secret committed config-file layer (data/examples-llm.json) — the
+ * lowest endpoint precedence tier (Phase 5 Revision 1, §4.1). The API key is
+ * NEVER in this file; it comes from CLEANROOM_MCP_LLM_API_KEY/--llm-api-key
+ * only.
+ */
+export interface EndpointFileConfig {
+  baseUrl?: string;
+  model?: string;
+  /**
+   * Number: the value the endpoint requires (some endpoints reject 0 with
+   * HTTP 400). Explicit null: omit the temperature field entirely. Absent:
+   * the frozen determinism default 0.
+   */
+  temperature?: number | null;
+  /**
+   * Provider-specific request-body extensions (see EndpointConfig.extraBody).
+   * File-only: there is deliberately no env/flag carrier for this — provider
+   * quirks live in the committed, PR-reviewed declaration.
+   */
+  extraBody?: Record<string, unknown>;
+}
+
+function parseTemperature(raw: string | null | undefined): number | null {
+  if (raw == null || raw.trim() === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Resolve the endpoint from CLI flags (highest precedence), then environment,
+ * then the committed config file. Throws EndpointNotConfiguredError when base
+ * URL or model is missing — the caller turns that into a clean non-zero exit
+ * that writes nothing.
  */
 export function resolveEndpointConfig(
   argv: string[],
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  file: EndpointFileConfig = {}
 ): EndpointConfig {
-  const baseUrl = flagValue(argv, '--llm-base-url') ?? env.CLEANROOM_MCP_LLM_BASE_URL ?? '';
+  const baseUrl =
+    flagValue(argv, '--llm-base-url') ?? env.CLEANROOM_MCP_LLM_BASE_URL ?? file.baseUrl ?? '';
   const apiKey = flagValue(argv, '--llm-api-key') ?? env.CLEANROOM_MCP_LLM_API_KEY ?? null;
-  const model = flagValue(argv, '--llm-model') ?? env.CLEANROOM_MCP_LLM_MODEL ?? '';
+  const model = flagValue(argv, '--llm-model') ?? env.CLEANROOM_MCP_LLM_MODEL ?? file.model ?? '';
+  const temperature =
+    parseTemperature(flagValue(argv, '--llm-temperature')) ??
+    parseTemperature(env.CLEANROOM_MCP_LLM_TEMPERATURE) ??
+    // File layer: number → that value; explicit null → omit the field;
+    // absent → the frozen determinism default 0.
+    (file.temperature !== undefined ? file.temperature : 0);
 
   if (!baseUrl.trim() || !model.trim()) {
     throw new EndpointNotConfiguredError(
@@ -90,30 +177,99 @@ export function resolveEndpointConfig(
         'CI never calls an endpoint; it carries the previous examples.db forward.'
     );
   }
-  return { baseUrl: baseUrl.trim().replace(/\/$/, ''), apiKey, model: model.trim() };
+  return {
+    baseUrl: baseUrl.trim().replace(/\/$/, ''),
+    apiKey,
+    model: model.trim(),
+    temperature,
+    extraBody: file.extraBody,
+  };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+/** An HTTP failure from the LLM endpoint; `status` drives retry classification. */
+export class LlmHttpError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'LlmHttpError';
+    this.status = status;
+  }
+}
+
 /**
- * An OpenAI-compatible chat client (LM Studio, vLLM, OpenAI, GitHub Models, …).
- * Analysis calls pin temperature 0. Rate-limit / transient responses (429/503)
- * are retried with backoff honoring `Retry-After` — important for GitHub Models,
- * whose free tier enforces tight per-minute request limits.
+ * Retry classification (Phase 5 Revision 1, §4.6 — no double-pay on permanent
+ * failures). Transient: network errors (fetch surfaces them as TypeError),
+ * 429, and 5xx — the orchestrator may make a single second attempt. Permanent:
+ * other 4xx (400/401/404/…) and JSON extraction failures — skip immediately.
  */
-export function createOpenAiClient(cfg: EndpointConfig): LlmClient {
-  const MAX_RETRIES = 5;
+export function isTransientLlmError(err: unknown): boolean {
+  if (err instanceof LlmHttpError) {
+    return err.status === 429 || (err.status >= 500 && err.status <= 599);
+  }
+  return err instanceof TypeError;
+}
+
+/** Parse an OpenAI-compatible `usage` block; local endpoints may omit it. */
+function parseUsage(raw: unknown): CompletionUsage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const u = raw as { prompt_tokens?: unknown; completion_tokens?: unknown; total_tokens?: unknown };
+  if (typeof u.prompt_tokens !== 'number' || typeof u.completion_tokens !== 'number') {
+    return null;
+  }
+  return {
+    promptTokens: u.prompt_tokens,
+    completionTokens: u.completion_tokens,
+    totalTokens:
+      typeof u.total_tokens === 'number' ? u.total_tokens : u.prompt_tokens + u.completion_tokens,
+  };
+}
+
+/**
+ * An OpenAI-compatible chat client (LM Studio, vLLM, OpenAI, GitHub Models,
+ * Moonshot, …). The request body is `{ ...cfg.extraBody, model, messages,
+ * temperature? }`: provider extensions come from the committed config file,
+ * code-controlled keys always win, and temperature is omitted entirely when
+ * `EndpointConfig.temperature` is null (some endpoints reject/ignore an
+ * explicit value). When the server echoes a different model id than the
+ * pinned one (silent provider-side aliasing), `onModelMismatch` fires once
+ * per client. Rate-limit / transient responses (429/503)
+ * are retried with backoff honoring `Retry-After` — important for GitHub Models,
+ * whose free tier enforces tight per-minute request limits. `maxRetries`
+ * (default 5) is the `--llm-max-retries` knob.
+ */
+export function createOpenAiClient(
+  cfg: EndpointConfig,
+  opts?: {
+    maxRetries?: number;
+    /** Fires once when the served model id differs from the requested one. */
+    onModelMismatch?: (served: string, requested: string) => void;
+  }
+): LlmClient {
+  const MAX_RETRIES = opts?.maxRetries ?? 5;
   const MAX_RETRY_AFTER_S = 90;
+  const onModelMismatch =
+    opts?.onModelMismatch ??
+    ((served: string, requested: string) =>
+      console.warn(
+        `LLM endpoint served model '${served}' but '${requested}' was requested — ` +
+          'the provider may be aliasing the model id.'
+      ));
+  let mismatchWarned = false;
   return {
     model: cfg.model,
-    async complete(prompt: string, opts?: { temperature?: number }): Promise<string> {
+    async complete(prompt: string, completeOpts?: { temperature?: number }) {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (cfg.apiKey) {
         headers.Authorization = `Bearer ${cfg.apiKey}`;
       }
+      // Per-call override → configured endpoint temperature → omitted (null).
+      const temperature = completeOpts?.temperature ?? cfg.temperature;
       const body = JSON.stringify({
+        // Provider extensions first so code-controlled keys always win.
+        ...cfg.extraBody,
         model: cfg.model,
-        temperature: opts?.temperature ?? 0,
         messages: [
           {
             role: 'system',
@@ -121,6 +277,7 @@ export function createOpenAiClient(cfg: EndpointConfig): LlmClient {
           },
           { role: 'user', content: prompt },
         ],
+        ...(temperature !== null ? { temperature } : {}),
       });
 
       for (let attempt = 0; ; attempt++) {
@@ -132,13 +289,19 @@ export function createOpenAiClient(cfg: EndpointConfig): LlmClient {
         });
         if (res.ok) {
           const data = (await res.json()) as {
+            model?: unknown;
             choices?: Array<{ message?: { content?: string } }>;
+            usage?: unknown;
           };
+          if (!mismatchWarned && typeof data.model === 'string' && data.model !== cfg.model) {
+            mismatchWarned = true;
+            onModelMismatch(data.model, cfg.model);
+          }
           const content = data.choices?.[0]?.message?.content;
           if (typeof content !== 'string') {
             throw new Error('LLM endpoint returned no message content');
           }
-          return content;
+          return { text: content, usage: parseUsage(data.usage) };
         }
         if ((res.status === 429 || res.status === 503) && attempt < MAX_RETRIES) {
           const retryAfter = Number(res.headers.get('retry-after'));
@@ -146,7 +309,8 @@ export function createOpenAiClient(cfg: EndpointConfig): LlmClient {
           // one is a daily/window limit — don't block for minutes on one snippet,
           // fail fast so the orchestrator skips it and moves on.
           if (Number.isFinite(retryAfter) && retryAfter > MAX_RETRY_AFTER_S) {
-            throw new Error(
+            throw new LlmHttpError(
+              res.status,
               `LLM endpoint rate-limited (Retry-After ${retryAfter}s exceeds ${MAX_RETRY_AFTER_S}s cap)`
             );
           }
@@ -157,7 +321,10 @@ export function createOpenAiClient(cfg: EndpointConfig): LlmClient {
           await sleep(waitMs);
           continue;
         }
-        throw new Error(`LLM endpoint HTTP ${res.status}: ${await res.text().catch(() => '')}`);
+        throw new LlmHttpError(
+          res.status,
+          `LLM endpoint HTTP ${res.status}: ${await res.text().catch(() => '')}`
+        );
       }
     },
   };
@@ -167,7 +334,12 @@ export function createOpenAiClient(cfg: EndpointConfig): LlmClient {
 // Analyze one snippet
 // ─────────────────────────────────────────────────────────────────────────────
 
-function buildPrompt(promptTemplate: string, snippet: Snippet): string {
+/**
+ * The exact prompt body sent to the endpoint for a snippet. Exported so
+ * `--estimate` can project input tokens over the REAL prompt bodies (the
+ * heuristic's input side is exact; Phase 5 Revision 1, §4.3).
+ */
+export function buildPrompt(promptTemplate: string, snippet: Snippet): string {
   return (
     `${promptTemplate}\n\n` +
     `## Snippet to analyze\n` +
@@ -270,12 +442,24 @@ export function parseAnalysis(raw: string, snippet: Snippet): Analysis {
   };
 }
 
-/** Send one snippet to the endpoint and return the normalized analysis. */
+/**
+ * Heuristic token estimate: 4 chars/token (Phase 5 Revision 1, §4.3). Used for
+ * the `--estimate` projection only — budget enforcement uses actual usage.
+ */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
+/**
+ * Send one snippet to the endpoint; return the normalized analysis + usage.
+ * Temperature is the client's configured endpoint default (0 unless the
+ * endpoint config says otherwise — some endpoints reject 0).
+ */
 export async function analyzeSnippet(
   snippet: Snippet,
   client: LlmClient,
   promptTemplate: string
-): Promise<Analysis> {
-  const raw = await client.complete(buildPrompt(promptTemplate, snippet), { temperature: 0 });
-  return parseAnalysis(raw, snippet);
+): Promise<AnalyzeOutcome> {
+  const completion = await client.complete(buildPrompt(promptTemplate, snippet));
+  return { analysis: parseAnalysis(completion.text, snippet), usage: completion.usage };
 }

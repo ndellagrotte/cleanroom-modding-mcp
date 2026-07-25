@@ -14,19 +14,47 @@
  * writes nothing. CI never runs this; it carries the previous examples.db
  * forward. This script is NOT shipped in the npm package (maintainer/CI only).
  *
+ * Phase 5 Revision 1 (maintainer-paid endpoint): spend is visible before it
+ * happens (--estimate), bounded during it (--llm-max-cost-usd, exit 2 on a
+ * budget-truncated corpus), never repeated (content-addressed analysis cache),
+ * and recorded in the shipped DB's provenance metadata (llm_base_host/llm_cost).
+ *
  * Usage:
  *   npx tsx scripts/index-mod-examples.ts [options]
  *
  * Options:
- *   --db-path <path>          Output path (default: data/examples.db)
- *   --roster <path>           Roster manifest (default: data/examples-roster.json)
- *   --mappings-db <path>      Build-machine mappings.db for SRG resolution (default: data/mappings.db)
- *   --cleanroom-api-db <path> Build-machine cleanroom-api.db for framework resolution (default: data/cleanroom-api.db)
- *   --repo-zip <path>         Offline: use this local zip for every roster repo (testing)
- *   --force                   Rebuild even when the DB is already up to date
- *   --llm-base-url <url>      LLM endpoint base URL (or CLEANROOM_MCP_LLM_BASE_URL)
- *   --llm-api-key <key>       LLM API key         (or CLEANROOM_MCP_LLM_API_KEY)
- *   --llm-model <id>          LLM model id        (or CLEANROOM_MCP_LLM_MODEL)
+ *   --db-path <path>            Output path (default: data/examples.db)
+ *   --roster <path>             Roster manifest (default: data/examples-roster.json)
+ *   --mappings-db <path>        Build-machine mappings.db for SRG resolution (default: data/mappings.db)
+ *   --cleanroom-api-db <path>   Build-machine cleanroom-api.db for framework resolution (default: data/cleanroom-api.db)
+ *   --repo-zip <path>           Offline: use this local zip for every roster repo (testing)
+ *   --force                     Rebuild even when the DB is already up to date
+ *   --llm-base-url <url>        LLM endpoint base URL (or CLEANROOM_MCP_LLM_BASE_URL)
+ *   --llm-api-key <key>         LLM API key         (or CLEANROOM_MCP_LLM_API_KEY)
+ *   --llm-model <id>            LLM model id        (or CLEANROOM_MCP_LLM_MODEL)
+ *   --llm-temperature <n>       Request temperature (or CLEANROOM_MCP_LLM_TEMPERATURE;
+ *                               default 0 — some endpoints reject 0 with HTTP 400; the
+ *                               config file may declare "temperature": null to omit the
+ *                               field entirely, e.g. for Moonshot's kimi-k2.6)
+ *   --estimate                  Dry run: project snippets/cache/tokens/cost, then exit 0.
+ *                               Zero LLM calls, zero writes (no DB, no manifest, no cache mutation).
+ *   --llm-max-cost-usd <n>      Hard budget cap (or CLEANROOM_MCP_LLM_MAX_COST_USD). Stops analysis
+ *                               before any call that would start at/over the cap, ingests the
+ *                               partial corpus, exits 2. Requires pricing in data/examples-llm.json.
+ *   --llm-max-retries <n>       429/503 retries inside the client (default: 5)
+ *   --llm-concurrency <n>       Concurrent analyses within a repo (default: 4; 1 = serial).
+ *                               Example ids/DB content stay order-deterministic at any n.
+ *   --llm-est-output-tokens <n> Fixed output-token allowance per snippet for --estimate (default: 350)
+ *   --analysis-cache <path>     Analysis cache DB (default: data/examples-analysis-cache.db)
+ *   --no-cache                  Bypass cache reads AND writes (a deliberate full re-spend)
+ *
+ * Endpoint/pricing precedence (highest first): CLI flag → env var → committed
+ * config file data/examples-llm.json (non-secret; the API key is never in it).
+ * The config file is also the only carrier of provider-specific request-body
+ * extensions ("extraBody", e.g. Moonshot's `"thinking": {"type": "disabled"}`)
+ * so the pipeline code stays provider-agnostic. analysis_version covers the
+ * effective request knobs (temperature + extraBody): changing them re-bills
+ * the full corpus, exactly like a model change.
  */
 
 import * as fs from 'fs';
@@ -46,25 +74,36 @@ import { acquireRepo } from '../src/examples/acquire.js';
 import { selectSnippets } from '../src/examples/select.js';
 import {
   analyzeSnippet,
+  buildPrompt,
   computeAnalysisVersion,
   createOpenAiClient,
+  estimateTokens,
+  isTransientLlmError,
   resolveEndpointConfig,
   EndpointNotConfiguredError,
   PIPELINE_REV,
 } from '../src/examples/analyze.js';
+import { openAnalysisCache, hashSnippet, type AnalysisCache } from '../src/examples/cache.js';
 import { resolveApiReferences, toExampleRecord } from '../src/examples/srg-link.js';
 import { runIngest, isUpToDate, type ModMeta } from '../src/examples/ingest.js';
 import type {
+  Analysis,
   AnalyzedSnippet,
+  AnalyzeOutcome,
   ExampleRecord,
   IngestMeta,
   LicenseReview,
+  LlmPricing,
+  RawFile,
   Roster,
   RosterRepo,
+  Snippet,
 } from '../src/examples/model.js';
 
 const PROMPT_FILE = path.join(process.cwd(), 'src/examples/prompts/analyze-snippet.v1.md');
 const PROMPT_VERSION = 'v1';
+/** Committed, non-secret endpoint + pricing declaration (Revision 1 §4.1). */
+const LLM_CONFIG_FILE = path.join(process.cwd(), 'data', 'examples-llm.json');
 
 const colors = {
   reset: '\x1b[0m',
@@ -101,6 +140,13 @@ interface CliOptions {
   cleanroomApiDb: string;
   repoZip: string | null;
   force: boolean;
+  estimate: boolean;
+  llmMaxCostUsd: number | null;
+  llmMaxRetries: number;
+  llmConcurrency: number;
+  llmEstOutputTokens: number;
+  analysisCachePath: string;
+  noCache: boolean;
 }
 
 function valueOf(argv: string[], flag: string, fallback: string): string {
@@ -109,8 +155,28 @@ function valueOf(argv: string[], flag: string, fallback: string): string {
   return next && !next.startsWith('--') ? next : fallback;
 }
 
+function intOf(argv: string[], flag: string, fallback: number, min: number): number {
+  const raw = valueOf(argv, flag, '');
+  if (raw === '') return fallback;
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, n);
+}
+
 function parseArgs(argv: string[]): CliOptions {
   const zip = argv.indexOf('--repo-zip');
+  const capRaw =
+    valueOf(argv, '--llm-max-cost-usd', '') || process.env.CLEANROOM_MCP_LLM_MAX_COST_USD || '';
+  let llmMaxCostUsd: number | null = null;
+  if (capRaw.trim() !== '') {
+    const n = Number(capRaw);
+    if (!Number.isFinite(n) || n < 0) {
+      throw new Error(
+        `Invalid --llm-max-cost-usd value '${capRaw}' (expected a non-negative number)`
+      );
+    }
+    llmMaxCostUsd = n;
+  }
   return {
     dbPath: valueOf(argv, '--db-path', path.join(process.cwd(), 'data', DBS.examples.fileName)),
     rosterPath: valueOf(argv, '--roster', path.join(process.cwd(), 'data', 'examples-roster.json')),
@@ -118,6 +184,17 @@ function parseArgs(argv: string[]): CliOptions {
     cleanroomApiDb: valueOf(argv, '--cleanroom-api-db', getDefaultBuildDb('cleanroom-api')),
     repoZip: zip !== -1 && argv[zip + 1] && !argv[zip + 1].startsWith('--') ? argv[zip + 1] : null,
     force: argv.includes('--force') || argv.includes('-f'),
+    estimate: argv.includes('--estimate'),
+    llmMaxCostUsd,
+    llmMaxRetries: intOf(argv, '--llm-max-retries', 5, 0),
+    llmConcurrency: intOf(argv, '--llm-concurrency', 4, 1),
+    llmEstOutputTokens: intOf(argv, '--llm-est-output-tokens', 350, 1),
+    analysisCachePath: valueOf(
+      argv,
+      '--analysis-cache',
+      path.join(process.cwd(), 'data', 'examples-analysis-cache.db')
+    ),
+    noCache: argv.includes('--no-cache'),
   };
 }
 
@@ -125,6 +202,123 @@ function parseArgs(argv: string[]): CliOptions {
 function getDefaultBuildDb(id: 'mappings' | 'cleanroom-api'): string {
   const local = path.join(process.cwd(), 'data', DBS[id].fileName);
   return fs.existsSync(local) ? local : getDefaultDbPath(DBS[id].fileName);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Config file + pricing (Revision 1 §4.1) — non-secret; the API key never lives here
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface LlmFileConfig {
+  baseUrl?: string;
+  model?: string;
+  /** Number → send it; explicit null → omit the field; absent → frozen default 0. */
+  temperature?: number | null;
+  /** Provider-specific request-body extensions (see EndpointConfig.extraBody). */
+  extraBody?: Record<string, unknown>;
+  pricing?: LlmPricing;
+}
+
+function loadLlmFileConfig(configPath: string): LlmFileConfig {
+  if (!fs.existsSync(configPath)) return {};
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+  } catch (e) {
+    throw new Error(`Could not parse ${configPath}: ${(e as Error).message}`);
+  }
+  const out: LlmFileConfig = {};
+  if (typeof parsed.baseUrl === 'string' && parsed.baseUrl.trim() !== '') {
+    out.baseUrl = parsed.baseUrl;
+  }
+  if (typeof parsed.model === 'string' && parsed.model.trim() !== '') {
+    out.model = parsed.model;
+  }
+  if (typeof parsed.temperature === 'number' && Number.isFinite(parsed.temperature)) {
+    out.temperature = parsed.temperature;
+  } else if (parsed.temperature === null) {
+    // Explicit null: omit the temperature field (the endpoint's default applies).
+    out.temperature = null;
+  }
+  if (
+    parsed.extraBody &&
+    typeof parsed.extraBody === 'object' &&
+    !Array.isArray(parsed.extraBody)
+  ) {
+    out.extraBody = parsed.extraBody as Record<string, unknown>;
+  }
+  const p = parsed.pricing as Record<string, unknown> | undefined;
+  if (
+    p &&
+    typeof p === 'object' &&
+    typeof p.inputPer1M === 'number' &&
+    typeof p.outputPer1M === 'number'
+  ) {
+    out.pricing = {
+      inputPer1M: p.inputPer1M,
+      outputPer1M: p.outputPer1M,
+      currency: typeof p.currency === 'string' ? p.currency : 'USD',
+    };
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Run ledger (Revision 1 §4.2) — accumulated across the whole run
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface RunLedger {
+  promptTokens: number;
+  completionTokens: number;
+  calls: number;
+  cacheHits: number;
+  cacheWrites: number;
+  tokensSaved: number;
+}
+
+function ledgerCostUsd(ledger: RunLedger, pricing: LlmPricing): number {
+  return (
+    (ledger.promptTokens * pricing.inputPer1M + ledger.completionTokens * pricing.outputPer1M) /
+    1_000_000
+  );
+}
+
+/** The llm_cost provenance row (Revision 1 §4.7). */
+function ledgerJson(ledger: RunLedger, pricing: LlmPricing | null): string {
+  return JSON.stringify({
+    prompt_tokens: ledger.promptTokens,
+    completion_tokens: ledger.completionTokens,
+    calls: ledger.calls,
+    cache_hits: ledger.cacheHits,
+    cache_writes: ledger.cacheWrites,
+    tokens_saved: ledger.tokensSaved,
+    estimated_usd: pricing ? Number(ledgerCostUsd(ledger, pricing).toFixed(6)) : null,
+    pricing,
+  });
+}
+
+/**
+ * Run `worker` over items with at most `concurrency` in flight. Workers write
+ * into index-addressed slots, so downstream order never depends on completion
+ * order (Revision 1 §4.6).
+ */
+async function runPool<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  // Index-addressed entries: an exhausted queue reads as `undefined`, so the
+  // lane needs no bounds assertion.
+  const queue = items.map((item, index) => ({ item, index }));
+  let next = 0;
+  const lanes = Math.max(1, Math.min(concurrency, items.length));
+  const runLane = async (): Promise<void> => {
+    let entry = queue[next++];
+    while (entry !== undefined) {
+      await worker(entry.item, entry.index);
+      entry = queue[next++];
+    }
+  };
+  await Promise.all(Array.from({ length: lanes }, runLane));
 }
 
 function openService<T>(
@@ -155,26 +349,233 @@ function openService<T>(
   }
 }
 
-async function main(): Promise<void> {
-  banner('Mod Examples Indexer');
-  const opts = parseArgs(process.argv.slice(2));
+function selectForRepo(repo: RosterRepo, roster: Roster, files: RawFile[]): Snippet[] {
+  return selectSnippets(
+    files,
+    {
+      repo: repo.repo,
+      modName: repo.name,
+      loader: repo.loader,
+      license: repo.license,
+      include: repo.include,
+      exclude: repo.exclude,
+      maxFileBytes: repo.maxFileBytes,
+      maxSnippetsPerRepo: repo.maxSnippetsPerRepo,
+      maxSnippetLines: roster.snippetLineCap,
+      ref: repo.sha || repo.ref,
+    },
+    { log: (m) => log('debug', m) }
+  );
+}
 
-  // ── Endpoint is REQUIRED and resolved FIRST — before touching any file. ─────
-  const endpoint = resolveEndpointConfig(process.argv.slice(2));
-  const client = createOpenAiClient(endpoint);
-  log('info', `LLM endpoint: ${endpoint.baseUrl} (model ${endpoint.model})`);
+// ─────────────────────────────────────────────────────────────────────────────
+// Estimate mode (Revision 1 §4.3) — dry run: zero LLM calls, zero writes
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function runEstimate(
+  opts: CliOptions,
+  roster: Roster,
+  prompt: string,
+  analysisVersion: string,
+  pricing: LlmPricing | null
+): Promise<void> {
+  banner('Estimate (dry run — zero LLM calls, zero writes)');
+
+  // Consult the cache read-only, and only when it already exists — opening a
+  // missing path with better-sqlite3 would CREATE the file (a cache mutation).
+  let cache: AnalysisCache | null = null;
+  if (!opts.noCache && fs.existsSync(opts.analysisCachePath)) {
+    try {
+      cache = openAnalysisCache(opts.analysisCachePath, { readonly: true });
+    } catch (e) {
+      log('warn', `Analysis cache unreadable (${(e as Error).message}) — projecting all misses.`);
+      cache = null;
+    }
+  }
+
+  const githubToken = process.env.GITHUB_TOKEN;
+  const rows: Array<{
+    name: string;
+    snippets: number;
+    hits: number;
+    misses: number;
+    inTokens: number;
+    outTokens: number;
+    cost: number | null;
+  }> = [];
+
+  try {
+    for (const repo of roster.repos) {
+      try {
+        log('info', `Scanning ${repo.repo} @ ${repo.sha || repo.ref}…`);
+        const files = await acquireRepo(repo, {
+          zipPath: opts.repoZip ?? undefined,
+          githubToken,
+        });
+        const snippets = selectForRepo(repo, roster, files);
+
+        let hits = 0;
+        let inTokens = 0;
+        for (const snippet of snippets) {
+          if (cache?.getCached(hashSnippet(snippet), analysisVersion)) {
+            hits++;
+            continue;
+          }
+          // Input side is exact: the real prompt bodies buildPrompt would emit.
+          inTokens += estimateTokens(buildPrompt(prompt, snippet));
+        }
+        const misses = snippets.length - hits;
+        // Output side is the only soft term: a fixed per-snippet allowance.
+        const outTokens = misses * opts.llmEstOutputTokens;
+        const cost = pricing
+          ? (inTokens * pricing.inputPer1M + outTokens * pricing.outputPer1M) / 1_000_000
+          : null;
+        rows.push({
+          name: repo.name,
+          snippets: snippets.length,
+          hits,
+          misses,
+          inTokens,
+          outTokens,
+          cost,
+        });
+      } catch (err) {
+        log(
+          'error',
+          `${repo.name}: scan failed, excluded from projection — ${(err as Error).message}`
+        );
+      }
+    }
+  } finally {
+    cache?.close();
+  }
+
+  const fmtCost = (c: number | null): string => (c === null ? '—' : `$${c.toFixed(4)}`);
+  const header = `  ${'Repo'.padEnd(26)}${'snips'.padStart(7)}${'hits'.padStart(7)}${'miss'.padStart(7)}${'in tok'.padStart(11)}${'out tok'.padStart(11)}${'est cost'.padStart(12)}`;
+  console.log(header);
+  console.log(`  ${'─'.repeat(78)}`);
+  for (const r of rows) {
+    console.log(
+      `  ${r.name.padEnd(26)}${String(r.snippets).padStart(7)}${String(r.hits).padStart(7)}` +
+        `${String(r.misses).padStart(7)}${String(r.inTokens).padStart(11)}` +
+        `${String(r.outTokens).padStart(11)}${fmtCost(r.cost).padStart(12)}`
+    );
+  }
+  const total = rows.reduce(
+    (acc, r) => ({
+      snippets: acc.snippets + r.snippets,
+      hits: acc.hits + r.hits,
+      misses: acc.misses + r.misses,
+      inTokens: acc.inTokens + r.inTokens,
+      outTokens: acc.outTokens + r.outTokens,
+      cost: r.cost === null ? acc.cost : acc.cost === null ? null : acc.cost + r.cost,
+    }),
+    // The assertion is load-bearing, despite what no-unnecessary-type-assertion
+    // thinks: this seed omits `name`, so reduce infers the accumulator from the
+    // literal rather than from the row type. A bare `0` pins cost to `number`,
+    // which the callback's `number | null` return then fails to satisfy.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+    { snippets: 0, hits: 0, misses: 0, inTokens: 0, outTokens: 0, cost: 0 as number | null }
+  );
+  console.log(`  ${'─'.repeat(78)}`);
+  console.log(
+    `  ${'TOTAL'.padEnd(26)}${String(total.snippets).padStart(7)}${String(total.hits).padStart(7)}` +
+      `${String(total.misses).padStart(7)}${String(total.inTokens).padStart(11)}` +
+      `${String(total.outTokens).padStart(11)}${fmtCost(total.cost).padStart(12)}`
+  );
+  console.log('');
+  log('info', `Target analysis_version: ${analysisVersion}`);
+  log(
+    'info',
+    `Input tokens are measured over the real prompt bodies (chars/4); output tokens are a fixed ` +
+      `${opts.llmEstOutputTokens}/snippet allowance — the only soft term.`
+  );
+  if (!pricing) {
+    log(
+      'warn',
+      'No pricing configured — cost column omitted. Set pricing in data/examples-llm.json.'
+    );
+  }
+  log('success', 'Estimate complete — zero LLM calls made, nothing written.');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface SlotResult {
+  snippet: Snippet;
+  outcome: 'ok' | 'failed' | 'budget';
+  record?: ExampleRecord;
+  error?: string;
+}
+
+async function main(): Promise<number> {
+  banner('Mod Examples Indexer');
+  const argv = process.argv.slice(2);
+  const opts = parseArgs(argv);
+
+  // ── Endpoint is REQUIRED and resolved FIRST — before touching any other file.
+  // The committed config file is a layer of endpoint resolution itself, so it
+  // is read here; with no endpoint anywhere this throws before any other I/O.
+  const fileConfig = loadLlmFileConfig(LLM_CONFIG_FILE);
+  const endpoint = resolveEndpointConfig(argv, process.env, fileConfig);
+  const pricing = fileConfig.pricing ?? null;
+
+  // ── A budget cap without resolvable pricing fails at startup, before any call.
+  if (opts.llmMaxCostUsd !== null && !pricing) {
+    log(
+      'error',
+      '--llm-max-cost-usd requires resolvable pricing, and none is configured.\n' +
+        'Declare the maintainer list prices in data/examples-llm.json, e.g.\n' +
+        '  "pricing": { "inputPer1M": 0.15, "outputPer1M": 0.60, "currency": "USD" }'
+    );
+    return 1;
+  }
+
+  const client = createOpenAiClient(endpoint, {
+    maxRetries: opts.llmMaxRetries,
+    onModelMismatch: (served, requested) =>
+      log(
+        'warn',
+        `Endpoint served model '${served}' but '${requested}' is pinned — ` +
+          'possible provider-side model aliasing. Provenance records the requested id.'
+      ),
+  });
+  log(
+    'info',
+    `LLM endpoint: ${endpoint.baseUrl} (model ${endpoint.model}, temperature ${
+      endpoint.temperature === null ? 'omitted (endpoint default)' : endpoint.temperature
+    })`
+  );
+  if (pricing) {
+    log(
+      'info',
+      `Pricing (declared): ${pricing.inputPer1M}/${pricing.outputPer1M} per 1M in/out (${pricing.currency})`
+    );
+  }
   log('info', `Database path: ${opts.dbPath}`);
 
   const prompt = fs.readFileSync(PROMPT_FILE, 'utf-8');
+  // The effective request knobs are part of the version: changing temperature
+  // or extraBody (e.g. toggling a provider's thinking mode) re-bills the full
+  // corpus exactly like a model change (DESIGN §6.4 invalidation semantics).
   const analysisVersion = computeAnalysisVersion({
     promptVersion: PROMPT_VERSION,
     model: endpoint.model,
     pipelineRev: PIPELINE_REV,
+    requestKnobs: { temperature: endpoint.temperature, extraBody: endpoint.extraBody ?? null },
   });
 
   const roster = JSON.parse(fs.readFileSync(opts.rosterPath, 'utf-8')) as Roster;
   const rosterPins: Record<string, string> = {};
   for (const r of roster.repos) rosterPins[r.repo] = r.sha;
+
+  // ── Estimate mode: project spend, then exit 0. Zero calls, zero writes. ────
+  if (opts.estimate) {
+    await runEstimate(opts, roster, prompt, analysisVersion, pricing);
+    return 0;
+  }
 
   // ── Up-to-date skip (roster SHAs ∧ analysis_version ∧ schema_version). ──────
   if (!opts.force && fs.existsSync(opts.dbPath)) {
@@ -194,7 +595,7 @@ async function main(): Promise<void> {
     if (isUpToDate(existing, target)) {
       log('success', `Database already up to date (analysis ${analysisVersion}) — nothing to do.`);
       log('info', 'Use --force to rebuild anyway.');
-      return;
+      return 0;
     }
   }
 
@@ -211,13 +612,46 @@ async function main(): Promise<void> {
     'cleanroom-api.db (framework resolution)'
   );
 
+  // ── Analysis cache (Revision 1 §4.5): hits cost nothing; --no-cache bypasses
+  // reads AND writes (a deliberate full re-spend). ─────────────────────────────
+  let cache: AnalysisCache | null = null;
+  if (!opts.noCache) {
+    try {
+      fs.mkdirSync(path.dirname(opts.analysisCachePath), { recursive: true });
+      cache = openAnalysisCache(opts.analysisCachePath);
+      log('info', `Analysis cache: ${opts.analysisCachePath}`);
+    } catch (e) {
+      log('warn', `Analysis cache unavailable (${(e as Error).message}) — running cache-disabled.`);
+      cache = null;
+    }
+  } else {
+    log('info', 'Analysis cache disabled (--no-cache) — a deliberate full re-spend.');
+  }
+
   const githubToken = process.env.GITHUB_TOKEN;
   const records: ExampleRecord[] = [];
   const mods: ModMeta[] = [];
   const licenseReview: Record<string, LicenseReview & { license: string }> = {};
+  const ledger: RunLedger = {
+    promptTokens: 0,
+    completionTokens: 0,
+    calls: 0,
+    cacheHits: 0,
+    cacheWrites: 0,
+    tokensSaved: 0,
+  };
+  let budgetTripped = false;
+
+  // Budget enforcement uses ACTUAL usage only (never estimates): no LLM call
+  // starts while the ledger is already at/over the cap.
+  const overCap = (): boolean =>
+    opts.llmMaxCostUsd !== null &&
+    pricing !== null &&
+    ledgerCostUsd(ledger, pricing) >= opts.llmMaxCostUsd;
 
   try {
     for (let repoIdx = 0; repoIdx < roster.repos.length; repoIdx++) {
+      if (budgetTripped) break;
       const repo: RosterRepo = roster.repos[repoIdx];
       banner(`${repo.name} (${repo.repo})`);
       licenseReview[repo.repo] = { ...repo.licenseReview, license: repo.license };
@@ -232,55 +666,107 @@ async function main(): Promise<void> {
         });
         log('info', `${files.length} .java files in the tree`);
 
-        const snippets = selectSnippets(
-          files,
-          {
-            repo: repo.repo,
-            modName: repo.name,
-            loader: repo.loader,
-            license: repo.license,
-            include: repo.include,
-            exclude: repo.exclude,
-            maxFileBytes: repo.maxFileBytes,
-            maxSnippetsPerRepo: repo.maxSnippetsPerRepo,
-            maxSnippetLines: roster.snippetLineCap,
-            ref: repo.sha || repo.ref,
-          },
-          { log: (m) => log('debug', m) }
+        const snippets = selectForRepo(repo, roster, files);
+        log(
+          'info',
+          `Selected ${snippets.length} snippets — analyzing (concurrency ${opts.llmConcurrency})…`
         );
-        log('info', `Selected ${snippets.length} snippets — analyzing…`);
 
-        let analyzedCount = 0;
-        let failedCount = 0;
-        for (const snippet of snippets) {
-          // Isolate each snippet end-to-end (analyze + enrich + record-build): a
-          // single bad completion OR an enrichment query error must not discard
-          // the whole run. Retry the LLM call once, then log and skip.
+        // Per-snippet isolation end-to-end (cache/analyze/enrich/record-build),
+        // with results written into index-addressed slots so records append
+        // strictly in selection order regardless of completion order.
+        const slots: Array<SlotResult | undefined> = new Array<SlotResult | undefined>(
+          snippets.length
+        );
+        let processed = 0;
+        await runPool(snippets, opts.llmConcurrency, async (snippet, i) => {
           try {
-            let analysis;
-            try {
-              analysis = await analyzeSnippet(snippet, client, prompt);
-            } catch {
-              analysis = await analyzeSnippet(snippet, client, prompt);
+            let analysis: Analysis | null = null;
+            let hash: string | null = null;
+
+            // Cache read (free — allowed even when the cap is already tripped).
+            if (cache) {
+              hash = hashSnippet(snippet);
+              const hit = cache.getCached(hash, analysisVersion);
+              if (hit) {
+                ledger.cacheHits++;
+                if (hit.usage) {
+                  ledger.tokensSaved += hit.usage.promptTokens + hit.usage.completionTokens;
+                }
+                analysis = hit.analysis;
+              }
             }
+
+            if (!analysis) {
+              // Budget gate: no LLM call starts at/over the cap.
+              if (budgetTripped || overCap()) {
+                budgetTripped = true;
+                slots[i] = { snippet, outcome: 'budget' };
+                return;
+              }
+              const callOnce = async (): Promise<AnalyzeOutcome> => {
+                ledger.calls++;
+                return analyzeSnippet(snippet, client, prompt);
+              };
+              let outcome: AnalyzeOutcome;
+              try {
+                outcome = await callOnce();
+              } catch (err) {
+                // No double-pay: permanent failures (other 4xx, unparsable
+                // completions) skip immediately; only transient ones (network,
+                // 429, 5xx) earn the single second attempt.
+                if (!isTransientLlmError(err)) throw err;
+                outcome = await callOnce();
+              }
+              ledger.promptTokens += outcome.usage?.promptTokens ?? 0;
+              ledger.completionTokens += outcome.usage?.completionTokens ?? 0;
+              if (cache && hash) {
+                cache.putCached(hash, analysisVersion, outcome.analysis, outcome.usage);
+                ledger.cacheWrites++;
+              }
+              analysis = outcome.analysis;
+            }
+
             const analyzed: AnalyzedSnippet = { snippet, analysis };
             const apiRefs = resolveApiReferences(analyzed, {
               mappings,
               api,
               minecraftVersion: '1.12.2',
             });
-            records.push(toExampleRecord(analyzed, apiRefs));
-            analyzedCount++;
-            if (analyzedCount % 10 === 0) {
-              log('debug', `  ${analyzedCount}/${snippets.length} analyzed`);
-            }
+            slots[i] = { snippet, outcome: 'ok', record: toExampleRecord(analyzed, apiRefs) };
           } catch (err) {
+            slots[i] = { snippet, outcome: 'failed', error: (err as Error).message };
+          } finally {
+            processed++;
+            if (processed % 10 === 0) {
+              log('debug', `  ${processed}/${snippets.length} processed`);
+            }
+          }
+        });
+
+        let analyzedCount = 0;
+        let failedCount = 0;
+        let budgetSkipped = 0;
+        for (const slot of slots) {
+          if (!slot) continue;
+          if (slot.outcome === 'ok' && slot.record) {
+            records.push(slot.record);
+            analyzedCount++;
+          } else if (slot.outcome === 'budget') {
+            budgetSkipped++;
+          } else {
             failedCount++;
             log(
               'warn',
-              `  skip ${snippet.filePath}:${snippet.startLine} — ${(err as Error).message}`
+              `  skip ${slot.snippet.filePath}:${slot.snippet.startLine} — ${slot.error}`
             );
           }
+        }
+        if (budgetSkipped > 0) {
+          log(
+            'warn',
+            `${repo.name}: ${budgetSkipped} snippet(s) not analyzed — budget cap reached`
+          );
         }
         if (failedCount > 0) {
           log('warn', `${repo.name}: ${failedCount} snippet(s) skipped after failure`);
@@ -304,16 +790,26 @@ async function main(): Promise<void> {
   } finally {
     mappings?.close();
     api?.close();
+    cache?.close();
   }
 
-  // ── Ingest (atomic tmp + rename). ───────────────────────────────────────────
+  // ── Ingest (atomic tmp + rename). Already-completed records are kept even
+  // when the budget cap truncated the run — the validated partial-corpus path.
   banner('Ingest');
+  let llmBaseHost = '';
+  try {
+    llmBaseHost = new URL(endpoint.baseUrl).host;
+  } catch {
+    llmBaseHost = ''; // provenance without topology; '' on parse failure
+  }
   const meta: IngestMeta = {
     analysisVersion,
     promptVersion: PROMPT_VERSION,
     llmModel: endpoint.model,
     rosterPins,
     licenseReview,
+    llmBaseHost,
+    llmCost: ledgerJson(ledger, pricing),
   };
   fs.mkdirSync(path.dirname(opts.dbPath), { recursive: true });
   const counts = runIngest({ dbPath: opts.dbPath, records, mods, meta });
@@ -351,14 +847,47 @@ async function main(): Promise<void> {
   }
   const sizeMb = fs.statSync(opts.dbPath).size / 1024 / 1024;
   log('info', `  Database size:    ${sizeMb.toFixed(1)} MB`);
+
+  // ── Cost ledger summary (Revision 1 §4.4) — always printed; loud on truncation.
+  log('info', `  LLM calls:        ${ledger.calls}`);
+  log(
+    'info',
+    `  Cache:            ${ledger.cacheHits} hits, ${ledger.cacheWrites} writes, ${ledger.tokensSaved} tokens saved`
+  );
+  log(
+    'info',
+    `  Tokens billed:    ${ledger.promptTokens} prompt + ${ledger.completionTokens} completion`
+  );
+  if (pricing) {
+    log(
+      'info',
+      `  Estimated cost:   $${ledgerCostUsd(ledger, pricing).toFixed(4)} ${pricing.currency} (declared list price)`
+    );
+  } else {
+    log('info', '  Estimated cost:   n/a — no pricing configured');
+  }
+
+  if (budgetTripped) {
+    log(
+      'error',
+      `BUDGET CAP REACHED (--llm-max-cost-usd ${opts.llmMaxCostUsd}) — the corpus above is ` +
+        `TRUNCATED (${counts.examples} examples ingested). Release automation must refuse to ship it.`
+    );
+    return 2;
+  }
+  return 0;
 }
 
-main().catch((error) => {
-  if (error instanceof EndpointNotConfiguredError) {
-    log('error', error.message);
+main()
+  .then((code) => {
+    if (code !== 0) process.exit(code);
+  })
+  .catch((error) => {
+    if (error instanceof EndpointNotConfiguredError) {
+      log('error', error.message);
+      process.exit(1);
+    }
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    log('error', `Indexing failed: ${message}`);
     process.exit(1);
-  }
-  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-  log('error', `Indexing failed: ${message}`);
-  process.exit(1);
-});
+  });

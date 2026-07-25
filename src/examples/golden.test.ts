@@ -57,6 +57,15 @@ describe('golden DB shape & content', () => {
     db.close();
   });
 
+  it('omits the Revision 1 cost keys in golden builds (absent-or-empty tolerated)', () => {
+    const db = new Database(goldenDb, { readonly: true });
+    // llm_base_host/llm_cost are real-build provenance; the frozen eight above
+    // are unaffected by their absence here (BLIND_SPEC §3 addendum).
+    expect(db.prepare("SELECT 1 FROM metadata WHERE key='llm_base_host'").get()).toBeUndefined();
+    expect(db.prepare("SELECT 1 FROM metadata WHERE key='llm_cost'").get()).toBeUndefined();
+    db.close();
+  });
+
   it('never stores an example whose mod has no license', () => {
     expect(
       sq<{ c: number }>(

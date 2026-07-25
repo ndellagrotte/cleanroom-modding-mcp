@@ -1,0 +1,10 @@
+{
+  "baseUrl": "https://api.openai.com/v1",
+  "model": "gpt-5.4-nano",
+  "temperature": null,
+  "pricing": {
+    "inputPer1M": 0.2,
+    "outputPer1M": 1.25,
+    "currency": "USD"
+  }
+}

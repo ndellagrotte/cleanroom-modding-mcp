@@ -1,0 +1,169 @@
+{
+  "schema": 1,
+  "snippetLineCap": 60,
+  "repos": [
+    {
+      "name": "MinecraftByExample",
+      "repo": "TheGreyGhost/MinecraftByExample",
+      "ref": "1-12-2-final",
+      "sha": "01ac397d2e900b5806e35ea63715de9fecb116e1",
+      "loader": "forge",
+      "license": "Unlicense",
+      "licenseReview": {
+        "verdict": "approved",
+        "by": "ndellagrotte",
+        "date": "2026-07-22",
+        "notes": "README §Licence Info declares Unlicense (public domain); root files are Forge MDK boilerplate."
+      },
+      "include": ["src/main/java/minecraftbyexample/**/*.java"],
+      "exclude": [],
+      "maxSnippetsPerRepo": null,
+      "maxFileBytes": 200000,
+      "description": "Purpose-built teaching corpus of small, well-commented 1.12.2 Forge examples (blocks, items, tile entities/TESR, containers, recipes, HUD, particles, networking, config GUI).",
+      "minecraftVersions": ["1.12.2"]
+    },
+    {
+      "name": "TinkersConstruct",
+      "repo": "SlimeKnights/TinkersConstruct",
+      "ref": "1.12",
+      "sha": "c01173c0408352c50a2e8c5017552323ce42f5b4",
+      "loader": "forge",
+      "license": "MIT",
+      "licenseReview": {
+        "verdict": "approved",
+        "by": "ndellagrotte",
+        "date": "2026-07-22",
+        "notes": "MIT licensed; the 1.12 branch is the 1.12.2 line (default branch is modern)."
+      },
+      "include": ["src/main/java/slimeknights/tconstruct/**/*.java"],
+      "exclude": ["**/test/**"],
+      "maxSnippetsPerRepo": 120,
+      "maxFileBytes": 150000,
+      "description": "Capabilities, TESR rendering, and networking patterns from a flagship 1.12.2 mod.",
+      "minecraftVersions": ["1.12.2"]
+    },
+    {
+      "name": "Applied Energistics 2",
+      "repo": "AppliedEnergistics/Applied-Energistics-2",
+      "ref": "rv6-1.12",
+      "sha": "5554ba903e74c2980b2e395c78555b40fc379e80",
+      "loader": "forge",
+      "license": "LGPL-3.0",
+      "licenseReview": {
+        "verdict": "approved",
+        "by": "ndellagrotte",
+        "date": "2026-07-22",
+        "notes": "LGPL-3.0; rv6-1.12 is the 1.12.2 line (rv6-1.12.2 404s; default main is modern)."
+      },
+      "include": ["src/main/java/appeng/**/*.java"],
+      "exclude": ["**/integration/**", "**/generated/**"],
+      "maxSnippetsPerRepo": 120,
+      "maxFileBytes": 150000,
+      "description": "Capabilities and networking patterns from a canonical 1.12.2 tech mod.",
+      "minecraftVersions": ["1.12.2"]
+    },
+    {
+      "name": "GregTech",
+      "repo": "GregTechCEu/GregTech",
+      "ref": "master",
+      "sha": "52c04cd7bf03e5749a653580c12ef5856cc12e31",
+      "loader": "forge",
+      "license": "LGPL-3.0",
+      "licenseReview": {
+        "verdict": "approved",
+        "by": "ndellagrotte",
+        "date": "2026-07-22",
+        "notes": "LGPL-3.0; master is the 1.12.2 line. Package-subset the ~160MB repo (not whole-repo)."
+      },
+      "include": [
+        "src/main/java/gregtech/api/**/*.java",
+        "src/main/java/gregtech/common/blocks/**/*.java"
+      ],
+      "exclude": ["**/integration/**", "**/generated/**"],
+      "maxSnippetsPerRepo": 120,
+      "maxFileBytes": 120000,
+      "description": "Flagship 1.12.2 ecosystem mod: API surfaces and block patterns (package-subset).",
+      "minecraftVersions": ["1.12.2"]
+    },
+    {
+      "name": "ModularUI",
+      "repo": "CleanroomMC/ModularUI",
+      "ref": "master",
+      "sha": "f2aa7210f42ffae4458c6777f723a55546a772bc",
+      "loader": "cleanroom",
+      "license": "LGPL-3.0",
+      "licenseReview": {
+        "verdict": "approved",
+        "by": "ndellagrotte",
+        "date": "2026-07-22",
+        "notes": "LGPL-3.0; CleanroomMC-native UI library for 1.12.2."
+      },
+      "include": ["src/main/java/com/cleanroommc/modularui/**/*.java"],
+      "exclude": [],
+      "maxSnippetsPerRepo": 100,
+      "maxFileBytes": 150000,
+      "description": "Canonical Cleanroom-native GUI/widget code.",
+      "minecraftVersions": ["1.12.2"]
+    },
+    {
+      "name": "GroovyScript",
+      "repo": "CleanroomMC/GroovyScript",
+      "ref": "master",
+      "sha": "7ece6b6213df66d50aa5df64a78e312946277bae",
+      "loader": "cleanroom",
+      "license": "LGPL-3.0",
+      "licenseReview": {
+        "verdict": "approved",
+        "by": "ndellagrotte",
+        "date": "2026-07-22",
+        "notes": "LGPL-3.0; CleanroomMC recipe/tweak DSL — Java + Groovy surface."
+      },
+      "include": ["src/main/java/com/cleanroommc/groovyscript/**/*.java"],
+      "exclude": ["**/compat/**"],
+      "maxSnippetsPerRepo": 100,
+      "maxFileBytes": 150000,
+      "description": "Java side of a canonical Cleanroom recipe/scripting DSL.",
+      "minecraftVersions": ["1.12.2"]
+    },
+    {
+      "name": "Fugue",
+      "repo": "CleanroomMC/Fugue",
+      "ref": "master",
+      "sha": "41059e52c4f5ea7ec3913615eb8bdc61b2dc3558",
+      "loader": "cleanroom",
+      "license": "GPL-3.0",
+      "licenseReview": {
+        "verdict": "approved",
+        "by": "ndellagrotte",
+        "date": "2026-07-22",
+        "notes": "GPL-3.0 (strongest copyleft in the roster) — included verbatim per maintainer decision with per-example GPL-3.0 attribution. Canonical real-world Cleanroom mixin consumer."
+      },
+      "include": ["src/main/java/**/*.java"],
+      "exclude": [],
+      "maxSnippetsPerRepo": 60,
+      "maxFileBytes": 120000,
+      "description": "Canonical real-world Cleanroom mixin consumer (compat patches).",
+      "minecraftVersions": ["1.12.2"]
+    },
+    {
+      "name": "UniversalTweaks",
+      "repo": "ACGaming/UniversalTweaks",
+      "ref": "main",
+      "sha": "dcd2a967cac865dd3edf953ad7637590c53c4758",
+      "loader": "forge",
+      "license": "LGPL-3.0",
+      "licenseReview": {
+        "verdict": "approved",
+        "by": "ndellagrotte",
+        "date": "2026-07-22",
+        "notes": "LGPL-3.0; mixin-heavy 1.12.2 compat mod — real-world mixin patterns."
+      },
+      "include": ["src/main/java/mod/acgaming/universaltweaks/**/*.java"],
+      "exclude": [],
+      "maxSnippetsPerRepo": 120,
+      "maxFileBytes": 150000,
+      "description": "Mixin-heavy compat mod demonstrating real-world 1.12.2 mixin patterns.",
+      "minecraftVersions": ["1.12.2"]
+    }
+  ]
+}

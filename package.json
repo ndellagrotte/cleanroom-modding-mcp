@@ -1,6 +1,6 @@
 {
   "name": "@ndellagrotte/cleanroom-modding-mcp",
-  "version": "1.1.2",
+  "version": "2.0",
   "description": "MCP server enabling AI agents to build Cleanroom (Minecraft 1.12.2) mods — docs, SRG mappings, and cross-loader porting knowledge",
   "keywords": [
     "minecraft",
@@ -47,8 +47,8 @@
     "test": "vitest",
     "test:coverage": "vitest --coverage",
     "test:ui": "vitest --ui",
-    "lint": "eslint src --ext .ts",
-    "lint:fix": "eslint src --ext .ts --fix",
+    "lint": "eslint src scripts --ext .ts",
+    "lint:fix": "eslint src scripts --ext .ts --fix",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit",

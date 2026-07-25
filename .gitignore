@@ -145,9 +145,14 @@ vite.config.ts.timestamp-*
 
 # Project-specific
 # Everything under data/ is generated (databases, manifests, temp files) except
-# the hand-curated equivalence corpus, which is committed and PR-reviewed.
+# the hand-curated equivalence corpus and the curated indexer inputs (the
+# examples roster — license-reviewed — and the non-secret LLM endpoint/pricing
+# declaration), which are committed and PR-reviewed. The analysis cache DB and
+# built DBs stay ignored.
 data/*
 !data/equivalence/
 !data/templates-pins.json
+!data/examples-roster.json
+!data/examples-llm.json
 .DS_Store
 .claude

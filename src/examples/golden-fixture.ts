@@ -151,17 +151,23 @@ const FIXTURE_RESPONSES: Record<string, string> = {
   }),
 };
 
+/** Fixed usage so any golden-side accounting stays deterministic (Revision 1). */
+const FAKE_USAGE = { promptTokens: 128, completionTokens: 64, totalTokens: 192 };
+
 /** A fake LlmClient that returns recorded JSON for a known snippet. */
 export function makeFakeClient(): LlmClient {
   return {
     model: FAKE_MODEL,
-    complete(prompt: string): Promise<string> {
+    complete(prompt: string) {
       for (const [needle, json] of Object.entries(FIXTURE_RESPONSES)) {
         if (prompt.includes(needle)) {
-          return Promise.resolve(json);
+          return Promise.resolve({ text: json, usage: FAKE_USAGE });
         }
       }
-      return Promise.resolve(JSON.stringify({ title: 'Unknown', quality_score: 0.3 }));
+      return Promise.resolve({
+        text: JSON.stringify({ title: 'Unknown', quality_score: 0.3 }),
+        usage: FAKE_USAGE,
+      });
     },
   };
 }
@@ -255,8 +261,10 @@ export async function buildGoldenDb(dbPath: string): Promise<IngestCounts> {
   const records: ExampleRecord[] = [];
 
   try {
+    // The golden path is deliberately cache-free (Revision 1 §4.5): no cache
+    // module is wired in here, so golden builds never touch a cache DB.
     for (const snippet of FIXTURE_SNIPPETS) {
-      const analysis = await analyzeSnippet(snippet, client, FIXTURE_PROMPT);
+      const { analysis } = await analyzeSnippet(snippet, client, FIXTURE_PROMPT);
       const analyzed: AnalyzedSnippet = { snippet, analysis };
       const refs = resolveApiReferences(analyzed, { mappings, api, minecraftVersion: '1.12.2' });
       records.push(toExampleRecord(analyzed, refs));

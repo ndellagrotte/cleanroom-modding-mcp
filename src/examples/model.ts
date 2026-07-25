@@ -176,11 +176,41 @@ export interface ExampleRecord {
 // LLM client (injectable so goldens run offline against a fake)
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Token usage from an OpenAI-compatible response's `usage` block (null when omitted). */
+export interface CompletionUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+/** A completion plus its usage block (local endpoints may omit usage → null). */
+export interface Completion {
+  text: string;
+  usage: CompletionUsage | null;
+}
+
 export interface LlmClient {
   /** Model identifier, recorded in metadata + analysis_version. */
   readonly model: string;
-  /** Return the raw completion text for a prompt. */
-  complete(prompt: string, opts?: { temperature?: number }): Promise<string>;
+  /** Return the completion (text + usage) for a prompt. */
+  complete(prompt: string, opts?: { temperature?: number }): Promise<Completion>;
+}
+
+/** analyzeSnippet's result: the normalized analysis plus the call's usage. */
+export interface AnalyzeOutcome {
+  analysis: Analysis;
+  usage: CompletionUsage | null;
+}
+
+/**
+ * Maintainer-declared list prices (per 1M tokens) from data/examples-llm.json.
+ * Used ONLY for estimation, budget enforcement, and provenance — the pipeline
+ * never fetches prices (Phase 5 Revision 1, §4.1).
+ */
+export interface LlmPricing {
+  inputPer1M: number;
+  outputPer1M: number;
+  currency: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -195,6 +225,18 @@ export interface IngestMeta {
   rosterPins: Record<string, string>;
   /** repo -> license review record. */
   licenseReview: Record<string, LicenseReview & { license: string }>;
+  /**
+   * Host of the LLM endpoint (`new URL(baseUrl).host`, '' on parse failure) —
+   * provenance without leaking internal network topology. Additive Revision 1
+   * key; absent in golden builds.
+   */
+  llmBaseHost?: string;
+  /**
+   * JSON-serialized run ledger ({ prompt_tokens, completion_tokens, calls,
+   * cache_hits, cache_writes, tokens_saved, estimated_usd, pricing }).
+   * Additive Revision 1 key; absent in golden builds.
+   */
+  llmCost?: string;
 }
 
 export interface IngestCounts {

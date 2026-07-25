@@ -219,6 +219,9 @@ export function ingest(
       insertMetadata.run('license_review', JSON.stringify(meta.licenseReview));
       insertMetadata.run('indexed_at', new Date().toISOString());
       insertMetadata.run('counts', JSON.stringify(counts));
+      // Additive Revision 1 provenance (real builds only; absent in golden).
+      if (meta.llmBaseHost !== undefined) insertMetadata.run('llm_base_host', meta.llmBaseHost);
+      if (meta.llmCost !== undefined) insertMetadata.run('llm_cost', meta.llmCost);
 
       return counts;
     });
