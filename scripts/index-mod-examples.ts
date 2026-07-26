@@ -168,7 +168,6 @@ function intOf(argv: string[], flag: string, fallback: number, min: number): num
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const zip = argv.indexOf('--repo-zip');
   const capRaw =
     valueOf(argv, '--llm-max-cost-usd', '') || process.env.CLEANROOM_MCP_LLM_MAX_COST_USD || '';
   let llmMaxCostUsd: number | null = null;
@@ -186,7 +185,7 @@ function parseArgs(argv: string[]): CliOptions {
     rosterPath: valueOf(argv, '--roster', path.join(process.cwd(), 'data', 'examples-roster.json')),
     mappingsDb: valueOf(argv, '--mappings-db', getDefaultBuildDb('mappings')),
     cleanroomApiDb: valueOf(argv, '--cleanroom-api-db', getDefaultBuildDb('cleanroom-api')),
-    repoZip: zip !== -1 && argv[zip + 1] && !argv[zip + 1].startsWith('--') ? argv[zip + 1] : null,
+    repoZip: valueOf(argv, '--repo-zip', '') || null,
     force: argv.includes('--force') || argv.includes('-f'),
     estimate: argv.includes('--estimate'),
     llmMaxCostUsd,
@@ -674,9 +673,8 @@ async function main(): Promise<number> {
     ledgerCostUsd(ledger, pricing) >= opts.llmMaxCostUsd;
 
   try {
-    for (let repoIdx = 0; repoIdx < roster.repos.length; repoIdx++) {
+    for (const [repoIdx, repo] of roster.repos.entries()) {
       if (budgetTripped) break;
-      const repo: RosterRepo = roster.repos[repoIdx];
       banner(`${repo.name} (${repo.repo})`);
       licenseReview[repo.repo] = { ...repo.licenseReview, license: repo.license };
 

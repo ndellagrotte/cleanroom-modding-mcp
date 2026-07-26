@@ -126,10 +126,11 @@ async function fetchBuffer(url: string): Promise<Buffer> {
 async function fetchLatestCleanroomVersion(): Promise<string> {
   const xml = await fetchText(CONFIG.metadataUrl);
   const match = xml.match(/<latest>([^<]+)<\/latest>/) ?? xml.match(/<release>([^<]+)<\/release>/);
-  if (!match) {
+  const version = match?.[1];
+  if (version === undefined) {
     throw new Error(`No <latest> version found in ${CONFIG.metadataUrl}`);
   }
-  return match[1].trim();
+  return version.trim();
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

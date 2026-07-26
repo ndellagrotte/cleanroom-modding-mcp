@@ -3,6 +3,10 @@
   "include": ["src/**/*", "scripts/**/*", "vitest.config.ts", "eslint.config.js"],
   "exclude": ["node_modules", "dist"],
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    /* Override the base's `./src` so `tsc -p tsconfig.eslint.json` runs real
+       type analysis instead of stopping at TS6059 for every non-src file.
+       eslint itself is unaffected — rootDir only drives output paths. */
+    "rootDir": "."
   }
 }

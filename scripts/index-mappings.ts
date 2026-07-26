@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+/* eslint-disable no-console */
 /**
  * Mappings Indexer — both eras into one mappings.db (schema v2).
  *
@@ -26,10 +27,17 @@ import {
   ingestMcpEra,
   MCP_MINECRAFT_VERSION,
 } from '../src/mappings/mcp-ingest.js';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import {
+  compareMinecraftVersions,
+  isPreRelease,
+  isSnapshot,
+} from '../src/mappings/mc-version-order.js';
+import {
+  parseMojangMappings,
+  type MojangMappings,
+  type MojangClassMapping,
+  type MojangMethodMapping,
+} from '../src/mappings/mojang-mappings.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION
@@ -140,31 +148,6 @@ interface MojangVersionDetails {
   };
 }
 
-/** Parsed Mojang ProGuard-style mappings */
-interface MojangMappings {
-  classes: Map<string, MojangClassMapping>;
-}
-
-interface MojangClassMapping {
-  deobfuscated: string; // e.g., "net.minecraft.world.entity.player.Player"
-  obfuscated: string; // e.g., "xyz"
-  methods: Map<string, MojangMethodMapping>;
-  fields: Map<string, MojangFieldMapping>;
-}
-
-interface MojangMethodMapping {
-  deobfuscated: string; // method name only
-  obfuscated: string;
-  args: string; // Java-style comma-separated argument types
-  returnType: string; // Java-style return type
-}
-
-interface MojangFieldMapping {
-  deobfuscated: string; // field name only
-  obfuscated: string;
-  type: string; // field type
-}
-
 /** Discovered Parchment version info */
 interface ParchmentVersionInfo {
   mcVersion: string;
@@ -199,14 +182,6 @@ function log(level: 'info' | 'warn' | 'error' | 'success' | 'debug', message: st
     debug: colors.dim,
   };
   console.log(`${colorMap[level]}${icons[level]} ${message}${colors.reset}`);
-}
-
-function _logProgress(current: number, total: number, label: string): void {
-  const percent = Math.round((current / total) * 100);
-  const barLength = 30;
-  const filled = Math.round((current / total) * barLength);
-  const bar = '█'.repeat(filled) + '░'.repeat(barLength - filled);
-  process.stdout.write(`\r${colors.cyan}[${bar}] ${percent}% ${label}${colors.reset}   `);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -320,29 +295,25 @@ async function discoverParchmentVersions(): Promise<ParchmentVersionInfo[]> {
     // Format: <a href="parchment-1.21.6/">parchment-1.21.6/</a>
     const versionRegex = /href="parchment-([^"/]+)\/"/g;
     const versions: ParchmentVersionInfo[] = [];
-    let match;
 
-    while ((match = versionRegex.exec(html)) !== null) {
+    for (const match of html.matchAll(versionRegex)) {
       const mcVersion = match[1];
-
-      // Detect pre-release and snapshot versions
-      const isPreRelease =
-        /pre\d*|rc\d*/i.test(mcVersion) || mcVersion.includes('-pre') || mcVersion.includes('-rc');
-      const isSnapshot =
-        /snapshot|w\d{2}[a-z]/i.test(mcVersion) ||
-        mcVersion.includes('snapshot') ||
-        /^\d{2}w\d{2}/.test(mcVersion);
+      if (mcVersion === undefined) {
+        throw new Error(
+          `Parchment version listing matched without a version capture: "${match[0] ?? ''}"`
+        );
+      }
 
       versions.push({
         mcVersion,
         parchmentVersion: '', // Will be filled later
-        isPreRelease,
-        isSnapshot,
+        isPreRelease: isPreRelease(mcVersion),
+        isSnapshot: isSnapshot(mcVersion),
       });
     }
 
     // Sort versions semantically (newest first)
-    versions.sort((a, b) => compareVersions(b.mcVersion, a.mcVersion));
+    versions.sort((a, b) => compareMinecraftVersions(b.mcVersion, a.mcVersion));
 
     log('success', `Found ${versions.length} Parchment versions`);
     return versions;
@@ -353,45 +324,6 @@ async function discoverParchmentVersions(): Promise<ParchmentVersionInfo[]> {
     );
     return [];
   }
-}
-
-/**
- * Compare Minecraft version strings semantically.
- * Handles versions like 1.21.11, 1.21.6-pre1, 24w10a etc.
- */
-function compareVersions(a: string, b: string): number {
-  // Extract main version parts (remove pre-release suffixes for comparison)
-  const cleanA = a
-    .replace(/-.*$/, '')
-    .replace(/pre.*$/i, '')
-    .replace(/rc.*$/i, '');
-  const cleanB = b
-    .replace(/-.*$/, '')
-    .replace(/pre.*$/i, '')
-    .replace(/rc.*$/i, '');
-
-  const partsA = cleanA.split('.').map((p) => parseInt(p, 10) || 0);
-  const partsB = cleanB.split('.').map((p) => parseInt(p, 10) || 0);
-
-  // Pad arrays to same length
-  const maxLen = Math.max(partsA.length, partsB.length);
-  while (partsA.length < maxLen) partsA.push(0);
-  while (partsB.length < maxLen) partsB.push(0);
-
-  // Compare each part
-  for (let i = 0; i < maxLen; i++) {
-    if (partsA[i] > partsB[i]) return 1;
-    if (partsA[i] < partsB[i]) return -1;
-  }
-
-  // If main versions are equal, pre-releases come before releases
-  const aIsPre = /pre|rc|-/i.test(a);
-  const bIsPre = /pre|rc|-/i.test(b);
-
-  if (aIsPre && !bIsPre) return -1;
-  if (!aIsPre && bIsPre) return 1;
-
-  return 0;
 }
 
 /**
@@ -484,7 +416,9 @@ async function downloadMojangMappings(mcVersion: string): Promise<MojangMappings
     const mappingsText = await fetchUrl(details.downloads.client_mappings.url);
 
     // Parse ProGuard format
-    return parseMojangMappings(mappingsText);
+    const parsed = parseMojangMappings(mappingsText);
+    log('success', `Parsed ${parsed.classes.size} classes with obfuscated mappings`);
+    return parsed;
   } catch (error) {
     log(
       'error',
@@ -492,91 +426,6 @@ async function downloadMojangMappings(mcVersion: string): Promise<MojangMappings
     );
     return null;
   }
-}
-
-/**
- * Parse Mojang ProGuard-style mappings.
- *
- * Format:
- * - Class: `fully.qualified.Name -> obf:`
- * - Field: `    type fieldName -> obf`
- * - Method: `    line:line:returnType methodName(args) -> obf`
- */
-function parseMojangMappings(text: string): MojangMappings {
-  const mappings: MojangMappings = {
-    classes: new Map(),
-  };
-
-  const lines = text.split('\n');
-  let currentClass: MojangClassMapping | null = null;
-
-  for (const line of lines) {
-    // Skip comments and empty lines
-    if (line.startsWith('#') || line.trim() === '') continue;
-
-    // Class mapping (no leading whitespace, ends with :)
-    if (!line.startsWith(' ') && line.includes(' -> ') && line.endsWith(':')) {
-      const match = line.match(/^(.+) -> (.+):$/);
-      if (match) {
-        const deobf = match[1].trim();
-        const obf = match[2].trim();
-
-        currentClass = {
-          deobfuscated: deobf,
-          obfuscated: obf,
-          methods: new Map(),
-          fields: new Map(),
-        };
-        mappings.classes.set(deobf, currentClass);
-      }
-      continue;
-    }
-
-    // Member mapping (has leading whitespace)
-    if (currentClass && line.startsWith('    ')) {
-      const memberLine = line.trim();
-
-      if (memberLine.includes('(')) {
-        // Method: line:line:returnType methodName(args) -> obf
-        // OR: returnType methodName(args) -> obf
-        const methodMatch = memberLine.match(
-          /^(?:\d+:\d+:)?(.+?) ([a-zA-Z_$][a-zA-Z0-9_$]*)\(([^)]*)\) -> (.+)$/
-        );
-        if (methodMatch) {
-          const returnType = methodMatch[1];
-          const methodName = methodMatch[2];
-          const args = methodMatch[3];
-          const obfName = methodMatch[4];
-
-          // Build a unique key for the method (name + args)
-          const key = `${methodName}(${args})`;
-          currentClass.methods.set(key, {
-            deobfuscated: methodName,
-            obfuscated: obfName,
-            args,
-            returnType,
-          });
-        }
-      } else {
-        // Field: type fieldName -> obf
-        const fieldMatch = memberLine.match(/^(.+?) ([a-zA-Z_$][a-zA-Z0-9_$]*) -> (.+)$/);
-        if (fieldMatch) {
-          const fieldType = fieldMatch[1];
-          const fieldName = fieldMatch[2];
-          const obfName = fieldMatch[3];
-
-          currentClass.fields.set(fieldName, {
-            deobfuscated: fieldName,
-            obfuscated: obfName,
-            type: fieldType,
-          });
-        }
-      }
-    }
-  }
-
-  log('success', `Parsed ${mappings.classes.size} classes with obfuscated mappings`);
-  return mappings;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -594,12 +443,18 @@ async function fetchMavenMetadata(mcVersion: string): Promise<MavenMetadata | nu
     const releaseMatch = xml.match(/<release>([^<]+)<\/release>/);
     const versionsMatch = xml.match(/<versions>([\s\S]*?)<\/versions>/);
 
-    if (!versionsMatch) return null;
+    // No <versions> block (or no body inside it) — the caller reports this as
+    // "No Parchment data available for <version>" and counts it as a failure.
+    const versionsBlock = versionsMatch?.[1];
+    if (versionsBlock === undefined) return null;
 
     const versions: string[] = [];
-    const versionMatches = versionsMatch[1].matchAll(/<version>([^<]+)<\/version>/g);
-    for (const match of versionMatches) {
-      versions.push(match[1]);
+    for (const match of versionsBlock.matchAll(/<version>([^<]+)<\/version>/g)) {
+      const version = match[1];
+      if (version === undefined) {
+        throw new Error(`maven-metadata <version> matched without a capture at ${metadataUrl}`);
+      }
+      versions.push(version);
     }
 
     return {
@@ -1043,8 +898,7 @@ async function main() {
     }
 
     // ── Modern (Parchment/Mojang) era ───────────────────────────────────────
-    for (let i = 0; i < targetVersions.length; i++) {
-      const versionInfo = targetVersions[i];
+    for (const [i, versionInfo] of targetVersions.entries()) {
       const mcVersion = versionInfo.mcVersion;
       const preReleaseLabel = versionInfo.isPreRelease ? ' [pre-release]' : '';
       const snapshotLabel = versionInfo.isSnapshot ? ' [snapshot]' : '';

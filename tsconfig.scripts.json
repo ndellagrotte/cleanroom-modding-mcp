@@ -1,0 +1,21 @@
+{
+  /*
+   * Typecheck-only config for the maintainer pipelines under scripts/.
+   *
+   * These scripts run via tsx and build the SQLite databases this package
+   * ships, but they sit outside the `rootDir: ./src` build and so were never
+   * covered by tsconfig.json's `include`. `npm run typecheck` runs this
+   * alongside the src pass so they can't drift back out of type safety.
+   *
+   * `rootDir: "."` is required: `noEmit` does NOT suppress TS6059
+   * ("not under rootDir"), which the inherited `./src` would raise for every
+   * file here. `exclude` is deliberately not redefined, so the base config's
+   * test-file exclusions stay in effect.
+   */
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["scripts/**/*"]
+}
