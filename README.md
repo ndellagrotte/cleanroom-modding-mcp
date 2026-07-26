@@ -23,23 +23,23 @@ _Docs, SRG mappings, and cross-loader porting knowledge for the Cleanroom / Forg
 
 ## Quick Start
 
+### Installation
+
+```bash
+# Install globally
+npm install -g @ndellagrotte/cleanroom-modding-mcp
+```
+
 Add to your MCP client configuration (e.g. `claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "cleanroom": {
-      "command": "npx",
-      "args": ["cleanroom-modding-mcp"]
+      "command": "cleanroom-modding-mcp"
     }
   }
 }
-```
-
-The documentation database downloads automatically on install (and self-updates on startup). Optional databases are installed with:
-
-```bash
-npx cleanroom-modding-mcp manage
 ```
 
 ### Claude Code
@@ -77,7 +77,7 @@ All database assets are attached to this repository's `v{version}` GitHub Releas
 | 🧩 Mod examples | `examples.db` | via `manage` | once installed |
 | 🧬 Cleanroom API | `cleanroom-api.db` | via `manage` | once installed |
 
-¹ The mappings database can also be **built on-device** — `npx cleanroom-modding-mcp manage --build-mappings` fetches the MCP sources (~730 KB from `maven.outlands.top` / `maven.minecraftforge.net`) and builds the 1.12.2 MCP/SRG data locally in under a minute (no modern reference versions). Locally built databases are never overwritten by auto-update; switch back to the prebuilt DB explicitly via `manage`.
+¹ The mappings database can also be **built on-device** — `cleanroom-modding-mcp manage --build-mappings` fetches the MCP sources (~730 KB from `maven.outlands.top` / `maven.minecraftforge.net`) and builds the 1.12.2 MCP/SRG data locally in under a minute (no modern reference versions). Locally built databases are never overwritten by auto-update; switch back to the prebuilt DB explicitly via `manage`.
 
 Databases live in a shared platform-standard data directory:
 
