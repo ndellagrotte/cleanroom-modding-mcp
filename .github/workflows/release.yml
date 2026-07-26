@@ -287,7 +287,7 @@ jobs:
             | `examples.db` | Curated mod examples database (optional) |
             | `examples-manifest.json` | Examples version manifest (optional) |
 
-            **Auto-Update:** the MCP updates the docs database automatically on startup; optional databases auto-update once installed via `npx cleanroom-modding-mcp manage`.
+            **Auto-Update:** the MCP updates the docs database automatically on startup; optional databases auto-update once installed via `cleanroom-modding-mcp manage`.
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

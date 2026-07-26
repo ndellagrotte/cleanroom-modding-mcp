@@ -172,12 +172,12 @@ export const MAPPINGS_TOOLS = [
 
 const NOT_INSTALLED_MESSAGE =
   'The mappings database is not installed. This optional database provides Minecraft class/method/field mappings — 1.12.2 MCP/SRG names (the Cleanroom target) plus modern Parchment/Mojang reference versions.\n\n' +
-  'To install it, run: `npx cleanroom-modding-mcp manage` (download prebuilt, or build the 1.12.2 data locally with `npx cleanroom-modding-mcp manage --build-mappings`).\n\n' +
+  'To install it, run: `cleanroom-modding-mcp manage` (download prebuilt, or build the 1.12.2 data locally with `cleanroom-modding-mcp manage --build-mappings`).\n\n' +
   'The standard documentation tools (search_docs, get_example) are still available for modding guidance.';
 
 const OUTDATED_SCHEMA_MESSAGE =
   'The installed mappings database uses an outdated schema and has been disabled.\n\n' +
-  'It will be updated automatically on the next server startup, or update it now with: `npx cleanroom-modding-mcp manage`.';
+  'It will be updated automatically on the next server startup, or update it now with: `cleanroom-modding-mcp manage`.';
 
 function notAvailableResult(): CallToolResult {
   const text = MappingsService.isSchemaOutdated() ? OUTDATED_SCHEMA_MESSAGE : NOT_INSTALLED_MESSAGE;

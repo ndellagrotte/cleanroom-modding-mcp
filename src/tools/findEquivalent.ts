@@ -66,7 +66,7 @@ export const FIND_EQUIVALENT_TOOLS = [
 const NOT_PRESENT_MESSAGE =
   "The porting corpus isn't present in this `docs.db` build yet. The equivalence data ships " +
   'inside the documentation database and arrives with the next update.\n\n' +
-  'Restart the server to auto-update, or run `npx cleanroom-modding-mcp manage` to refresh the ' +
+  'Restart the server to auto-update, or run `cleanroom-modding-mcp manage` to refresh the ' +
   'databases. The standard tools (search_docs, explain_concept, search_cleanroom_api) still work ' +
   'for 1.12.2 guidance in the meantime.';
 

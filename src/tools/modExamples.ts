@@ -17,13 +17,13 @@ const NOT_INSTALLED_MESSAGE =
   'The mod examples database is not installed. This optional database holds curated, ' +
   'AI-analyzed code examples from canonical open-source 1.12.2 mods (Forge and Cleanroom-native), ' +
   'with per-example source + license attribution and SRG cross-links.\n\n' +
-  'To install it, run: `npx cleanroom-modding-mcp manage`.\n\n' +
+  'To install it, run: `cleanroom-modding-mcp manage`.\n\n' +
   'The standard documentation tools (search_docs, get_example) are still available.';
 
 const OUTDATED_SCHEMA_MESSAGE =
   'The installed mod examples database uses an outdated schema and has been disabled.\n\n' +
   'It is replaced automatically on startup once a release carries the updated database; ' +
-  'you can also reinstall it with `npx cleanroom-modding-mcp manage`.';
+  'you can also reinstall it with `cleanroom-modding-mcp manage`.';
 
 function notAvailableResult(): CallToolResult {
   const text = ModExamplesService.isSchemaOutdated()

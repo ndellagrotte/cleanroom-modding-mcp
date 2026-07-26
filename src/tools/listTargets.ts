@@ -74,19 +74,19 @@ export function handleListTargets(): CallToolResult {
       if (id === 'mappings' && mappingsOutdated) {
         // File exists but the schema gate disabled it — "installed" would lie.
         status =
-          '⚠️ installed but schema-outdated (mappings tools disabled; updates on next startup, or run `npx cleanroom-modding-mcp manage`)';
+          '⚠️ installed but schema-outdated (mappings tools disabled; updates on next startup, or run `cleanroom-modding-mcp manage`)';
       } else if (id === 'cleanroom-api' && cleanroomApiOutdated) {
         status =
-          '⚠️ installed but schema-outdated (Cleanroom API tools disabled; updates on next startup, or run `npx cleanroom-modding-mcp manage`)';
+          '⚠️ installed but schema-outdated (Cleanroom API tools disabled; updates on next startup, or run `cleanroom-modding-mcp manage`)';
       } else if (id === 'examples' && examplesOutdated) {
         status =
-          '⚠️ installed but schema-outdated (mod examples tools disabled; updates on next startup, or run `npx cleanroom-modding-mcp manage`)';
+          '⚠️ installed but schema-outdated (mod examples tools disabled; updates on next startup, or run `cleanroom-modding-mcp manage`)';
       } else if (isInstalled(id)) {
         status = '✅ installed';
       } else {
         status = spec.required
           ? '⬜ not installed (downloads automatically on startup)'
-          : '⬜ not installed (`npx cleanroom-modding-mcp manage` to add)';
+          : '⬜ not installed (`cleanroom-modding-mcp manage` to add)';
       }
       output += `- ${spec.icon} **${spec.name}** — ${status}\n`;
     }

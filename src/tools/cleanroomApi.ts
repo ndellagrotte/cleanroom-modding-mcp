@@ -94,12 +94,12 @@ export const CLEANROOM_API_TOOLS = [
 
 const NOT_INSTALLED_MESSAGE =
   'The Cleanroom API database is not installed. This optional database indexes the Cleanroom/Forge framework API surface (com.cleanroommc.*, zone.rong.mixinbooter.*, net.minecraftforge.*) — classes, events, annotations, signatures, and Javadoc.\n\n' +
-  'To install it, run: `npx cleanroom-modding-mcp manage`.\n\n' +
+  'To install it, run: `cleanroom-modding-mcp manage`.\n\n' +
   'The standard documentation tools (search_docs, get_example) are still available for modding guidance.';
 
 const OUTDATED_SCHEMA_MESSAGE =
   'The installed Cleanroom API database uses an outdated schema and has been disabled.\n\n' +
-  'It is replaced automatically on startup once a release carries the updated database; you can also reinstall it with `npx cleanroom-modding-mcp manage`.';
+  'It is replaced automatically on startup once a release carries the updated database; you can also reinstall it with `cleanroom-modding-mcp manage`.';
 
 function notAvailableResult(): CallToolResult {
   const text = CleanroomApiService.isSchemaOutdated()

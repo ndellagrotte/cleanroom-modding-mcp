@@ -249,7 +249,7 @@ equivalence table arrives via the **schema bump 1 → 2** (§5). Because the doc
 `equivalence` table / `schema_version >= 2` on open. If absent (a user on an old docs.db that
 has not yet auto-updated, or an offline user), `find_equivalent` returns **normal guidance
 text** (not `isError`) — *"The porting corpus isn't present in this `docs.db` build; run
-`npx cleanroom-modding-mcp manage` / restart to update"* — mirroring the Phase 3
+`cleanroom-modding-mcp manage` / restart to update"* — mirroring the Phase 3
 `NOT_INSTALLED_MESSAGE`/`OUTDATED_SCHEMA_MESSAGE` convention
 ([cleanroomApi.ts:95-109](../../src/tools/cleanroomApi.ts:95)). The tool is **always listed**
 (not gated out of `ListTools`) since docs.db is required; only its data may be transiently
