@@ -2,14 +2,20 @@
  * Category taxonomy drift guards: the schema enums published by tools must
  * stay subsets of the central lists, and 1.12.2-era edits must hold.
  */
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { describe, it, expect } from 'vitest';
 import {
   DOC_CATEGORIES,
   DOC_CATEGORY_ENUM,
   EXAMPLE_CATEGORIES,
+  EXAMPLE_CATEGORY_INFO,
   CONCEPT_CATEGORIES,
+  buildCategoryPromptBlock,
   categorizeDocPath,
 } from './categories.js';
+import { CATEGORY_LIST_PLACEHOLDER, renderPromptTemplate } from './examples/analyze.js';
 import { getAvailableCategories } from './tools/searchDocs.js';
 
 describe('doc categories', () => {
@@ -71,5 +77,30 @@ describe('categorizeDocPath', () => {
   it('always returns a DOC_CATEGORIES value', () => {
     expect(DOC_CATEGORIES).toContain(categorizeDocPath(['end-user-guide', 'introduction']));
     expect(categorizeDocPath([])).toBe('general');
+  });
+});
+
+describe('buildCategoryPromptBlock', () => {
+  const block = buildCategoryPromptBlock();
+
+  it('renders every slug with its description', () => {
+    for (const slug of EXAMPLE_CATEGORIES) {
+      expect(block).toContain(`\`${slug}\``);
+      expect(block).toContain(EXAMPLE_CATEGORY_INFO[slug].description);
+    }
+    expect(block.split('\n')).toHaveLength(EXAMPLE_CATEGORIES.length);
+  });
+
+  it('is what the committed analysis prompt actually consumes', () => {
+    // The v1 prompt hand-copied the slug list as prose, so the taxonomy the
+    // model saw could drift from EXAMPLE_CATEGORIES with nothing failing.
+    // Substitution is now the only path — assert the placeholder is still there.
+    const promptPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      'examples/prompts/analyze-snippet.v2.md'
+    );
+    const template = fs.readFileSync(promptPath, 'utf-8');
+    expect(template).toContain(CATEGORY_LIST_PLACEHOLDER);
+    expect(renderPromptTemplate(template)).toContain(block);
   });
 });

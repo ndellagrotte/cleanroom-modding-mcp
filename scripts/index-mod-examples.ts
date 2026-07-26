@@ -71,6 +71,7 @@ import {
   readDbSchemaVersion,
 } from '../src/examples/schema.js';
 import { acquireRepo } from '../src/examples/acquire.js';
+import { EXAMPLE_CATEGORIES } from '../src/categories.js';
 import { selectSnippets } from '../src/examples/select.js';
 import {
   analyzeSnippet,
@@ -79,6 +80,7 @@ import {
   createOpenAiClient,
   estimateTokens,
   isTransientLlmError,
+  renderPromptTemplate,
   resolveEndpointConfig,
   EndpointNotConfiguredError,
   PIPELINE_REV,
@@ -100,8 +102,10 @@ import type {
   Snippet,
 } from '../src/examples/model.js';
 
-const PROMPT_FILE = path.join(process.cwd(), 'src/examples/prompts/analyze-snippet.v1.md');
-const PROMPT_VERSION = 'v1';
+const PROMPT_FILE = path.join(process.cwd(), 'src/examples/prompts/analyze-snippet.v2.md');
+const PROMPT_VERSION = 'v2';
+/** Uncategorized share above this (%) warns in the summary — a taxonomy smell. */
+const UNCATEGORIZED_WARN_PCT = 10;
 /** Committed, non-secret endpoint + pricing declaration (Revision 1 §4.1). */
 const LLM_CONFIG_FILE = path.join(process.cwd(), 'data', 'examples-llm.json');
 
@@ -557,11 +561,21 @@ async function main(): Promise<number> {
   log('info', `Database path: ${opts.dbPath}`);
 
   const prompt = fs.readFileSync(PROMPT_FILE, 'utf-8');
+  // Hash the RENDERED template (placeholders substituted) into the version, so
+  // editing the prompt text — or a category description that now gets rendered
+  // into it — invalidates the cache. PROMPT_VERSION alone is a hand-maintained
+  // literal: under v1 a prompt edit changed what the model saw while every
+  // cache row still hit and isUpToDate reported a no-op.
+  const promptFingerprint = crypto
+    .createHash('sha256')
+    .update(renderPromptTemplate(prompt))
+    .digest('hex')
+    .slice(0, 8);
   // The effective request knobs are part of the version: changing temperature
   // or extraBody (e.g. toggling a provider's thinking mode) re-bills the full
   // corpus exactly like a model change (DESIGN §6.4 invalidation semantics).
   const analysisVersion = computeAnalysisVersion({
-    promptVersion: PROMPT_VERSION,
+    promptVersion: `${PROMPT_VERSION}:${promptFingerprint}`,
     model: endpoint.model,
     pipelineRev: PIPELINE_REV,
     requestKnobs: { temperature: endpoint.temperature, extraBody: endpoint.extraBody ?? null },
@@ -632,6 +646,16 @@ async function main(): Promise<number> {
   const records: ExampleRecord[] = [];
   const mods: ModMeta[] = [];
   const licenseReview: Record<string, LicenseReview & { license: string }> = {};
+  /**
+   * Category labels the model emitted that no EXAMPLE_CATEGORIES slug (or
+   * alias) could absorb. Surfaced in the summary — under v1 these were coerced
+   * to NULL in silence, which is how 36% of the corpus lost its category
+   * without anything in the build output saying so.
+   */
+  const rejectedCategories = new Map<string, number>();
+  const noteRejectedCategory = (raw: string): void => {
+    rejectedCategories.set(raw, (rejectedCategories.get(raw) ?? 0) + 1);
+  };
   const ledger: RunLedger = {
     promptTokens: 0,
     completionTokens: 0,
@@ -706,7 +730,7 @@ async function main(): Promise<number> {
               }
               const callOnce = async (): Promise<AnalyzeOutcome> => {
                 ledger.calls++;
-                return analyzeSnippet(snippet, client, prompt);
+                return analyzeSnippet(snippet, client, prompt, noteRejectedCategory);
               };
               let outcome: AnalyzeOutcome;
               try {
@@ -804,7 +828,7 @@ async function main(): Promise<number> {
   }
   const meta: IngestMeta = {
     analysisVersion,
-    promptVersion: PROMPT_VERSION,
+    promptVersion: `${PROMPT_VERSION}:${promptFingerprint}`,
     llmModel: endpoint.model,
     rosterPins,
     licenseReview,
@@ -836,7 +860,37 @@ async function main(): Promise<number> {
     'success',
     `Indexed ${counts.examples} examples from ${counts.mods} mods into ${opts.dbPath}`
   );
-  log('info', `  Categories used:  ${counts.categories}`);
+  // Categorization coverage, not the seeded-category count the v1 summary
+  // printed under this label (it read a constant 21 while 36% of the corpus
+  // was landing with a NULL category).
+  const categorized = counts.examples - counts.uncategorized;
+  const uncatPct = counts.examples > 0 ? (counts.uncategorized / counts.examples) * 100 : 0;
+  log(
+    'info',
+    `  Categorized:      ${categorized}/${counts.examples} in ${Object.keys(counts.byCategory).length}/${counts.categories} categories`
+  );
+  const uncatLine = `  Uncategorized:    ${counts.uncategorized} (${uncatPct.toFixed(1)}%)`;
+  log(uncatPct > UNCATEGORIZED_WARN_PCT ? 'warn' : 'info', uncatLine);
+  if (uncatPct > UNCATEGORIZED_WARN_PCT) {
+    log(
+      'warn',
+      `  Over the ${UNCATEGORIZED_WARN_PCT}% threshold — check the prompt's category guidance before shipping this corpus.`
+    );
+  }
+  const emptyCategories = EXAMPLE_CATEGORIES.filter((slug) => !counts.byCategory[slug]);
+  if (emptyCategories.length > 0) {
+    log('warn', `  Categories with no examples: ${emptyCategories.join(', ')}`);
+  }
+  for (const [slug, n] of Object.entries(counts.byCategory).sort((a, b) => b[1] - a[1])) {
+    log('info', `    ${slug.padEnd(18)} ${n}`);
+  }
+  if (rejectedCategories.size > 0) {
+    const total = [...rejectedCategories.values()].reduce((a, b) => a + b, 0);
+    log('warn', `  Rejected category labels: ${total} across ${rejectedCategories.size} distinct`);
+    for (const [label, n] of [...rejectedCategories].sort((a, b) => b[1] - a[1]).slice(0, 10)) {
+      log('warn', `    ${JSON.stringify(label)} ×${n}`);
+    }
+  }
   log('info', `  Tags:             ${counts.tags}`);
   log('info', `  Imports:          ${counts.imports}`);
   log('info', `  API references:   ${counts.apiReferences}`);

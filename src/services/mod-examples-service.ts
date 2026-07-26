@@ -294,7 +294,12 @@ export class ModExamplesService {
     }));
   }
 
-  /** List all categories with example counts. */
+  /**
+   * List all categories with example counts, including empty ones. Empty
+   * categories are deliberately kept: the slug list is also the
+   * `search_mod_examples` schema enum, so hiding a zero-count category left a
+   * client able to pick a filter value that silently always returned nothing.
+   */
   listCategories(): CategoryInfo[] {
     return this.db
       .prepare(
@@ -308,11 +313,18 @@ export class ModExamplesService {
       FROM categories c
       LEFT JOIN examples e ON e.category_id = c.id
       GROUP BY c.id
-      HAVING exampleCount > 0
       ORDER BY c.sort_order ASC
     `
       )
       .all() as CategoryInfo[];
+  }
+
+  /** Examples with no category, so category counts can be reconciled to the total. */
+  countUncategorized(): number {
+    const row = this.db
+      .prepare(`SELECT COUNT(*) as n FROM examples WHERE category_id IS NULL`)
+      .get() as { n: number };
+    return row.n;
   }
 
   /** Search for mod examples. */
@@ -609,7 +621,7 @@ export class ModExamplesService {
     output += `**Source:** ${example.modName} (${example.modRepo}, ${example.license}) — `;
     output += `[${example.filePath}](${example.fileUrl}) lines ${example.startLine}–${example.endLine}\n`;
     output += `**Loader:** ${example.loader}\n`;
-    output += `**Category:** ${example.categoryName || example.category}\n`;
+    output += `**Category:** ${example.categoryName || example.category || 'Uncategorized'}\n`;
     output += `**Pattern:** ${example.patternType}\n`;
     output += `**Complexity:** ${example.complexity}\n`;
     output += `**Quality Score:** ${(example.qualityScore * 100).toFixed(0)}%\n`;

@@ -15,10 +15,10 @@ The pipeline mirrors the Phase 3 `cleanroom-api` structure module-for-module.
 | `src/examples/model.ts` | Pipeline interfaces: `Roster`/`RosterRepo`, `RawFile`, `Snippet`, `Analysis`, `AnalyzedSnippet`, `ResolvedApiReference`, `ExampleRecord`, `LlmClient`, `IngestMeta`. |
 | `src/examples/acquire.ts` | Per-repo zipball download (`codeload.github.com`, honours `GITHUB_TOKEN`) + AdmZip walk; offline `zipPath`. |
 | `src/examples/select.ts` | Pure `selectSnippets()` — glob include/exclude, `maxFileBytes`, `maxSnippetsPerRepo`, per-snippet line cap, brace-depth region extraction, import detection. **No silent caps** (every drop logged). |
-| `src/examples/analyze.ts` | `resolveEndpointConfig()` (env + flags, **required**), `createOpenAiClient()` (temperature 0), `parseAnalysis()`, `analyzeSnippet()`, `computeAnalysisVersion()`, `PIPELINE_REV`. |
+| `src/examples/analyze.ts` | `resolveEndpointConfig()` (env + flags, **required**), `createOpenAiClient()` (temperature 0), `parseAnalysis()`, `analyzeSnippet()`, `computeAnalysisVersion()`, `PIPELINE_REV`, `normalizeCategory()` / `normalizeTagSlug()`, `renderPromptTemplate()`. |
 | `src/examples/srg-link.ts` | Index-time SRG resolution (`MappingsService.resolveSymbols`) + framework resolution (`CleanroomApiService.getTypeByName`) → `api_references` enrichment; degrades to NULL. `toExampleRecord()`. |
 | `src/examples/ingest.ts` | `ingest()` (single transaction), `runIngest()` (tmp + atomic rename + cleanup), `isUpToDate()` (roster_pins ∧ analysis_version ∧ schema_version). `example_relations` empty (v1). |
-| `src/examples/prompts/analyze-snippet.v1.md` | Committed, versioned analysis prompt with the strict-JSON contract + `quality_score` rubric. |
+| `src/examples/prompts/analyze-snippet.v2.md` | Committed, versioned analysis prompt with the strict-JSON contract + `quality_score` rubric. The allowed-category block is a `{{CATEGORY_LIST}}` placeholder rendered from `EXAMPLE_CATEGORIES` at build time, not a hand-copied list. |
 | `src/examples/golden-fixture.ts` | Offline golden builder: fake `LlmClient`, fixture mappings/cleanroom-api DBs, `buildGoldenDb()`. |
 | `scripts/index-mod-examples.ts` | Maintainer/CI orchestrator (pnpm `index-mod-examples[:force]`); **not** in the npm tarball. |
 | `scripts/build-golden-db.ts` | pnpm `build:golden-db` — emits `$GOLDEN_DB` fully offline. |

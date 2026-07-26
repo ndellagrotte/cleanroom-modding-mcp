@@ -196,7 +196,7 @@ export function handleSearchModExamples(params: SearchModExamplesParams): CallTo
           output += `**ID:** ${ex.id} | **Mod:** ${ex.modName} (${ex.license}) | **Quality:** ${(ex.qualityScore * 100).toFixed(0)}%`;
           if (ex.isFeatured) output += ' | ⭐ Featured';
           output += '\n';
-          output += `**Loader:** ${ex.loader} | **Category:** ${ex.categoryName || ex.category} | **Pattern:** ${ex.patternType} | **Complexity:** ${ex.complexity}\n`;
+          output += `**Loader:** ${ex.loader} | **Category:** ${ex.categoryName || ex.category || 'Uncategorized'} | **Pattern:** ${ex.patternType} | **Complexity:** ${ex.complexity}\n`;
           output += `\n${ex.caption}\n\n`;
           output += `\`\`\`${ex.language}\n${ex.code.slice(0, 500)}${ex.code.length > 500 ? '\n// ... (truncated, use get_mod_example for full code)' : ''}\n\`\`\`\n\n`;
           output += `→ Use \`get_mod_example\` with ID ${ex.id} for full details\n\n---\n\n`;
@@ -375,6 +375,16 @@ export function handleListModCategories(): CallToolResult {
       categories.forEach((cat) => {
         output += `| ${cat.icon} \`${cat.slug}\` | ${cat.name} | ${cat.exampleCount} | ${cat.description} |\n`;
       });
+      // Reconcile to the corpus total: a category-filtered search can never
+      // reach these, so a table that silently omitted them read as complete
+      // when it wasn't.
+      const uncategorized = service.countUncategorized();
+      const categorized = categories.reduce((sum, cat) => sum + cat.exampleCount, 0);
+      output += `\n${categorized + uncategorized} examples total`;
+      if (uncategorized > 0) {
+        output += `, of which ${uncategorized} are uncategorized (reachable by search, not by the \`category\` filter)`;
+      }
+      output += '.\n';
       output += '\n**Usage:** `search_mod_examples` with `category` parameter\n';
       return { content: [{ type: 'text', text: output }] };
     } finally {

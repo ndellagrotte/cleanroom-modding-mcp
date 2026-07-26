@@ -25,7 +25,8 @@ const execFileP = promisify(execFile);
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const TSX_CLI = path.join(REPO_ROOT, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const SCRIPT = path.join(REPO_ROOT, 'scripts', 'index-mod-examples.ts');
-const PROMPT_SRC = path.join(REPO_ROOT, 'src', 'examples', 'prompts', 'analyze-snippet.v1.md');
+const PROMPT_FILENAME = 'analyze-snippet.v2.md';
+const PROMPT_SRC = path.join(REPO_ROOT, 'src', 'examples', 'prompts', PROMPT_FILENAME);
 
 const tmpDirs: string[] = [];
 const servers: http.Server[] = [];
@@ -72,7 +73,7 @@ function makeWorkspace(
   // The script resolves the committed prompt relative to cwd.
   const promptDir = path.join(dir, 'src', 'examples', 'prompts');
   fs.mkdirSync(promptDir, { recursive: true });
-  fs.copyFileSync(PROMPT_SRC, path.join(promptDir, 'analyze-snippet.v1.md'));
+  fs.copyFileSync(PROMPT_SRC, path.join(promptDir, PROMPT_FILENAME));
 
   const dataDir = path.join(dir, 'data');
   fs.mkdirSync(dataDir, { recursive: true });

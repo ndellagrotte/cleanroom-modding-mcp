@@ -128,6 +128,23 @@ export const EXAMPLE_CATEGORY_INFO: Record<
   config: { name: 'Config', description: '@Config and configuration handling', icon: '⚙️' },
 };
 
+/**
+ * Render the allowed-category block for the analysis prompt, one bullet per
+ * slug with its EXAMPLE_CATEGORY_INFO description.
+ *
+ * The prompt template carries a `{{CATEGORY_LIST}}` placeholder that
+ * `buildPrompt` (src/examples/analyze.ts) fills with this. Generating it is the
+ * point: the v1 prompt hand-copied the 21 slugs as prose with nothing enforcing
+ * sync, and it handed the model bare slugs with no descriptions — 36% of the
+ * corpus came back uncategorized as a result.
+ */
+export function buildCategoryPromptBlock(): string {
+  return EXAMPLE_CATEGORIES.map((slug) => {
+    const info = EXAMPLE_CATEGORY_INFO[slug];
+    return `- \`${slug}\` — ${info.description}`;
+  }).join('\n');
+}
+
 /** Tag vocabulary for concept explanations (superset of doc categories). */
 export const CONCEPT_CATEGORIES = [
   ...DOC_CATEGORIES,

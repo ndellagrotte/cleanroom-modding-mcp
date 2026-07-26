@@ -449,6 +449,10 @@ because its analysis was unrecoverable). The design pins:
 - **`analysis_version`** = a version string over (prompt_version + model + pipeline logic),
   recorded in metadata. Changing the prompt or model **bumps `analysis_version` and
   invalidates prior analyses** (full re-run policy) — the field the up-to-date skip keys on.
+  `prompt_version` is `<label>:<fingerprint>`, where the fingerprint is a sha256 prefix over
+  the *rendered* prompt template. Without it the label is hand-maintained, and an edit to the
+  prompt changes what the model sees while every cache row still hits — the invalidation
+  guarantee above silently would not hold.
 - **Up-to-date skip** (mirroring [index-java-api.ts](../../scripts/index-java-api.ts)'s
   metadata skip): the indexer no-ops when the existing DB's `roster_pins` (SHAs) **and**
   `analysis_version` **and** `schema_version` all match the target — the change-detection
@@ -468,7 +472,7 @@ offline `--repo-zip <path>` for testing without network.
 ## 7. Committed prompts and golden tests
 
 **Prompts** live as versioned files under `src/examples/prompts/` (e.g.
-`analyze-snippet.v1.md`), never inline in code — so a diff to a prompt is a reviewable,
+`analyze-snippet.v2.md`), never inline in code — so a diff to a prompt is a reviewable,
 version-bumping event (§6.4). The prompt instructs the model to return strict JSON for the
 analysis columns and to score `quality_score` against a committed rubric (§13).
 

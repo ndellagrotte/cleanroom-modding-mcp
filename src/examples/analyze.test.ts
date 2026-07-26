@@ -5,8 +5,12 @@ import {
   createOpenAiClient,
   estimateTokens,
   isTransientLlmError,
+  normalizeCategory,
+  normalizeTagSlug,
   parseAnalysis,
+  renderPromptTemplate,
   resolveEndpointConfig,
+  CATEGORY_LIST_PLACEHOLDER,
   EndpointNotConfiguredError,
   LlmHttpError,
 } from './analyze.js';
@@ -518,5 +522,97 @@ describe('parseAnalysis', () => {
     expect(a.complexity).toBe('intermediate');
     expect(a.qualityScore).toBe(1);
     expect(a.title).toBe(snippet.filePath); // falls back to file path
+  });
+});
+
+describe('normalizeCategory', () => {
+  it('accepts an exact slug unchanged', () => {
+    expect(normalizeCategory('tile-entities')).toEqual({ slug: 'tile-entities', rejected: null });
+  });
+
+  it('absorbs the formatting the model actually emits', () => {
+    // The prompt renders slugs in backticks, so models echo them back that way.
+    for (const raw of ['Blocks', ' blocks ', '`blocks`', '"blocks"', 'BLOCKS']) {
+      expect(normalizeCategory(raw).slug).toBe('blocks');
+    }
+    expect(normalizeCategory('tile entities').slug).toBe('tile-entities');
+    expect(normalizeCategory('tile_entities').slug).toBe('tile-entities');
+    expect(normalizeCategory('coremods/mixins').slug).toBe('coremods-mixins');
+  });
+
+  it('maps near-miss labels onto the closest slug', () => {
+    expect(normalizeCategory('mixin').slug).toBe('coremods-mixins');
+    expect(normalizeCategory('proxy').slug).toBe('cross-platform');
+    expect(normalizeCategory('capability').slug).toBe('capabilities');
+    expect(normalizeCategory('inventory').slug).toBe('storage-systems');
+    expect(normalizeCategory('widgets').slug).toBe('gui');
+    expect(normalizeCategory('api').slug).toBe('api-design');
+  });
+
+  it('distinguishes a decline from a failed label', () => {
+    // A decline: nothing to report, the model was allowed to say null.
+    for (const raw of [null, undefined, '', '   ', 'null', 'none']) {
+      expect(normalizeCategory(raw)).toEqual({ slug: null, rejected: null });
+    }
+    // A failed label: reported, so a taxonomy mismatch is visible in the build.
+    expect(normalizeCategory('quantum-widgets')).toEqual({
+      slug: null,
+      rejected: 'quantum-widgets',
+    });
+  });
+
+  it('reports the raw string, not the slugified one, so the tally is actionable', () => {
+    expect(normalizeCategory('Data Generation').rejected).toBe('Data Generation');
+  });
+});
+
+describe('normalizeTagSlug', () => {
+  it('converges the three spellings that split the v1 tags table', () => {
+    const slugs = ['forge-1.12.2', 'forge-1-12-2', 'forge 1.12.2'].map(normalizeTagSlug);
+    expect(new Set(slugs).size).toBe(1);
+    expect(slugs[0]).toBe('forge-1-12-2');
+  });
+
+  it('lowercases, collapses separators, and strips edge hyphens', () => {
+    expect(normalizeTagSlug('  Tile__Entity / NBT  ')).toBe('tile-entity-nbt');
+    expect(normalizeTagSlug('C++')).toBe('c++');
+  });
+});
+
+describe('parseAnalysis category handling', () => {
+  it('normalizes a near-miss instead of dropping it to null', () => {
+    const a = parseAnalysis(JSON.stringify({ category: 'Mixin' }), snippet);
+    expect(a.category).toBe('coremods-mixins');
+  });
+
+  it('reports unplaceable labels but stays silent on a genuine null', () => {
+    const rejected: string[] = [];
+    parseAnalysis(JSON.stringify({ category: 'not-a-category' }), snippet, (r) => rejected.push(r));
+    expect(rejected).toEqual(['not-a-category']);
+
+    rejected.length = 0;
+    parseAnalysis(JSON.stringify({ category: null }), snippet, (r) => rejected.push(r));
+    expect(rejected).toEqual([]);
+  });
+
+  it('de-duplicates tags after normalization', () => {
+    const a = parseAnalysis(
+      JSON.stringify({ tags: ['Forge 1.12.2', 'forge-1.12.2', 'mixin', ''] }),
+      snippet
+    );
+    expect(a.tags).toEqual(['forge-1-12-2', 'mixin']);
+  });
+});
+
+describe('renderPromptTemplate', () => {
+  it('substitutes the generated category block', () => {
+    const out = renderPromptTemplate(`before\n${CATEGORY_LIST_PLACEHOLDER}\nafter`);
+    expect(out).not.toContain(CATEGORY_LIST_PLACEHOLDER);
+    expect(out).toContain('`tile-entities`');
+    expect(out).toContain('`cross-platform`');
+  });
+
+  it('leaves a template without the placeholder untouched', () => {
+    expect(renderPromptTemplate('no placeholder here')).toBe('no placeholder here');
   });
 });

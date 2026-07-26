@@ -16,7 +16,7 @@
 
 import crypto from 'crypto';
 import { jsonrepair } from 'jsonrepair';
-import { EXAMPLE_CATEGORIES } from '../categories.js';
+import { EXAMPLE_CATEGORIES, buildCategoryPromptBlock } from '../categories.js';
 import type {
   Analysis,
   AnalyzeOutcome,
@@ -31,10 +31,147 @@ import type {
  * shape of the analysis changes (parsing, normalization, category mapping) so
  * `analysis_version` moves even if the prompt file text is unchanged.
  */
-export const PIPELINE_REV = '1';
+export const PIPELINE_REV = '2';
 
 const COMPLEXITIES = new Set(['beginner', 'intermediate', 'advanced', 'expert']);
 const CATEGORY_SET = new Set<string>(EXAMPLE_CATEGORIES);
+
+/**
+ * Near-miss labels the model reaches for that aren't EXAMPLE_CATEGORIES slugs.
+ * Applied only after slugification (lowercase, hyphen-separated) fails an exact
+ * match, so this table holds genuine synonyms and singular/plural variants —
+ * not casing or punctuation, which `slugifyCategory` already absorbs.
+ */
+const CATEGORY_ALIASES: Record<string, string> = {
+  // singular/plural
+  block: 'blocks',
+  item: 'items',
+  entity: 'entities',
+  'tile-entity': 'tile-entities',
+  tileentity: 'tile-entities',
+  tileentities: 'tile-entities',
+  event: 'events',
+  recipe: 'recipes',
+  command: 'commands',
+  sound: 'sounds',
+  particle: 'particles',
+  capability: 'capabilities',
+  // synonyms
+  render: 'rendering',
+  renderer: 'rendering',
+  model: 'rendering',
+  models: 'rendering',
+  ui: 'gui',
+  guis: 'gui',
+  container: 'gui',
+  containers: 'gui',
+  widget: 'gui',
+  widgets: 'gui',
+  net: 'networking',
+  network: 'networking',
+  packet: 'networking',
+  packets: 'networking',
+  'world-generation': 'worldgen',
+  'world-gen': 'worldgen',
+  worldgeneration: 'worldgen',
+  registration: 'registry',
+  registries: 'registry',
+  mixin: 'coremods-mixins',
+  mixins: 'coremods-mixins',
+  coremod: 'coremods-mixins',
+  coremods: 'coremods-mixins',
+  'coremod-mixins': 'coremods-mixins',
+  asm: 'coremods-mixins',
+  api: 'api-design',
+  'api-surface': 'api-design',
+  proxy: 'cross-platform',
+  proxies: 'cross-platform',
+  sided: 'cross-platform',
+  sidedness: 'cross-platform',
+  'client-server': 'cross-platform',
+  'sided-proxy': 'cross-platform',
+  crossplatform: 'cross-platform',
+  storage: 'storage-systems',
+  'storage-system': 'storage-systems',
+  inventory: 'storage-systems',
+  inventories: 'storage-systems',
+  fluid: 'storage-systems',
+  fluids: 'storage-systems',
+  energy: 'storage-systems',
+  animations: 'animation',
+  configuration: 'config',
+  configs: 'config',
+};
+
+/**
+ * Coerce a free-form label into slug shape: strip wrapping backticks/quotes
+ * (the prompt renders slugs in backticks, and models echo them), lowercase,
+ * and collapse whitespace/underscores/dots/slashes into single hyphens.
+ */
+function slugifyCategory(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^[`'"\s]+|[`'"\s.,;:]+$/g, '')
+    .toLowerCase()
+    .replace(/[\s._/\\]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
+ * Map the model's raw `category` onto an EXAMPLE_CATEGORIES slug.
+ *
+ * Returns `rejected` (the raw string) only when the model DID emit a label and
+ * it could not be placed — that's the signal worth counting. A non-string
+ * (absent, or an explicit JSON `null`) is the model legitimately declining, so
+ * both fields come back null and nothing is reported.
+ *
+ * v1 did a bare `CATEGORY_SET.has(raw)` with no normalization and discarded the
+ * raw value, which made every rejection indistinguishable from a decline.
+ */
+export function normalizeCategory(raw: unknown): { slug: string | null; rejected: string | null } {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return { slug: null, rejected: null };
+  }
+  const slug = slugifyCategory(raw);
+  if (CATEGORY_SET.has(slug)) return { slug, rejected: null };
+  // 'null'/'none' spelled as a string is a decline, not a failed label.
+  if (slug === 'null' || slug === 'none' || slug === 'n-a') {
+    return { slug: null, rejected: null };
+  }
+  const alias = CATEGORY_ALIASES[slug];
+  if (alias) return { slug: alias, rejected: null };
+  return { slug: null, rejected: raw };
+}
+
+/**
+ * Normalize a tag slug so one concept is one tag. The v1 corpus carried
+ * `forge-1.12.2`, `forge-1-12-2` and `forge 1.12.2` as three separate rows in
+ * the `tags` table; all three converge here.
+ */
+export function normalizeTagSlug(raw: string): string {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/[\s._/\\]+/g, '-')
+    .replace(/[^a-z0-9+#-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/** Normalize, drop empties, and de-duplicate a tag list, preserving order. */
+function normalizeTags(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const slug = normalizeTagSlug(value);
+    if (slug && !seen.has(slug)) {
+      seen.add(slug);
+      out.push(slug);
+    }
+  }
+  return out;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // analysis_version
@@ -334,6 +471,23 @@ export function createOpenAiClient(
 // Analyze one snippet
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** The `{{CATEGORY_LIST}}` placeholder the prompt template carries. */
+export const CATEGORY_LIST_PLACEHOLDER = '{{CATEGORY_LIST}}';
+
+/**
+ * Substitute the generated allowed-category block into the prompt template, so
+ * the taxonomy the model sees always comes from EXAMPLE_CATEGORIES rather than
+ * a hand-copied list in the markdown. A template without the placeholder is
+ * returned unchanged (the golden fixture's stub prompts don't carry one).
+ *
+ * Exported so the orchestrator can hash the RENDERED template into
+ * analysis_version — otherwise editing the prompt (or a category description)
+ * would change what the model sees without invalidating a single cache row.
+ */
+export function renderPromptTemplate(promptTemplate: string): string {
+  return promptTemplate.split(CATEGORY_LIST_PLACEHOLDER).join(buildCategoryPromptBlock());
+}
+
 /**
  * The exact prompt body sent to the endpoint for a snippet. Exported so
  * `--estimate` can project input tokens over the REAL prompt bodies (the
@@ -341,7 +495,7 @@ export function createOpenAiClient(
  */
 export function buildPrompt(promptTemplate: string, snippet: Snippet): string {
   return (
-    `${promptTemplate}\n\n` +
+    `${renderPromptTemplate(promptTemplate)}\n\n` +
     `## Snippet to analyze\n` +
     `Mod: ${snippet.modName} (${snippet.repo})\n` +
     `File: ${snippet.filePath} (lines ${snippet.startLine}-${snippet.endLine})\n\n` +
@@ -410,14 +564,28 @@ export function extractJsonObject(raw: string): Record<string, unknown> {
   return repaired as Record<string, unknown>;
 }
 
-/** Parse the model's raw completion into a normalized, validated Analysis. */
-export function parseAnalysis(raw: string, snippet: Snippet): Analysis {
+/**
+ * Parse the model's raw completion into a normalized, validated Analysis.
+ *
+ * `onRejectedCategory` fires when the model emitted a category label that could
+ * not be placed even after normalization — the orchestrator tallies these so a
+ * taxonomy mismatch shows up in the build summary instead of silently becoming
+ * a NULL column.
+ */
+export function parseAnalysis(
+  raw: string,
+  snippet: Snippet,
+  onRejectedCategory?: (rawCategory: string) => void
+): Analysis {
   const parsed = extractJsonObject(raw);
 
   const quality =
     typeof parsed.quality_score === 'number' ? Math.max(0, Math.min(1, parsed.quality_score)) : 0.5;
   const complexityRaw = typeof parsed.complexity === 'string' ? parsed.complexity : '';
-  const categoryRaw = typeof parsed.category === 'string' ? parsed.category : '';
+  const category = normalizeCategory(parsed.category);
+  if (category.rejected !== null) {
+    onRejectedCategory?.(category.rejected);
+  }
 
   return {
     title:
@@ -426,7 +594,7 @@ export function parseAnalysis(raw: string, snippet: Snippet): Analysis {
         : snippet.filePath,
     caption: typeof parsed.caption === 'string' ? parsed.caption : '',
     explanation: typeof parsed.explanation === 'string' ? parsed.explanation : '',
-    category: CATEGORY_SET.has(categoryRaw) ? categoryRaw : null,
+    category: category.slug,
     patternType: typeof parsed.pattern_type === 'string' ? parsed.pattern_type : 'general',
     complexity: (COMPLEXITIES.has(complexityRaw)
       ? complexityRaw
@@ -437,7 +605,7 @@ export function parseAnalysis(raw: string, snippet: Snippet): Analysis {
     useCases: asStringArray(parsed.use_cases),
     keywords: asStringArray(parsed.keywords),
     minecraftConcepts: asStringArray(parsed.minecraft_concepts),
-    tags: asStringArray(parsed.tags),
+    tags: normalizeTags(asStringArray(parsed.tags)),
     apiReferences: normalizeApiRefs(parsed.api_references),
   };
 }
@@ -458,8 +626,12 @@ export function estimateTokens(text: string): number {
 export async function analyzeSnippet(
   snippet: Snippet,
   client: LlmClient,
-  promptTemplate: string
+  promptTemplate: string,
+  onRejectedCategory?: (rawCategory: string) => void
 ): Promise<AnalyzeOutcome> {
   const completion = await client.complete(buildPrompt(promptTemplate, snippet));
-  return { analysis: parseAnalysis(completion.text, snippet), usage: completion.usage };
+  return {
+    analysis: parseAnalysis(completion.text, snippet, onRejectedCategory),
+    usage: completion.usage,
+  };
 }

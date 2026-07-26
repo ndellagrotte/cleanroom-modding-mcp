@@ -113,6 +113,8 @@ export function ingest(
       srgResolved: 0,
       apiResolved: 0,
       byLoader: {},
+      uncategorized: 0,
+      byCategory: {},
     };
 
     const run = db.transaction(() => {
@@ -161,7 +163,13 @@ export function ingest(
         if (mid === undefined) {
           throw new Error(`ingest: example references unknown mod repo '${rec.modRepo}'`);
         }
-        const cid = rec.categorySlug ? (categoryId.get(rec.categorySlug) ?? null) : null;
+        const slug = rec.categorySlug;
+        const cid = slug ? (categoryId.get(slug) ?? null) : null;
+        if (slug !== null && cid !== null) {
+          counts.byCategory[slug] = (counts.byCategory[slug] ?? 0) + 1;
+        } else {
+          counts.uncategorized++;
+        }
         const res = insertExample.run(
           mid,
           cid,

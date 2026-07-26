@@ -12,7 +12,7 @@ no prose, no markdown, no code fences.
   "title": string,               // short, specific (e.g. "Registering a block with a TileEntity")
   "caption": string,             // one–two sentence summary of what the snippet does
   "explanation": string,         // a paragraph explaining how it works and why it's idiomatic
-  "category": string,            // EXACTLY ONE slug from the allowed list below, or null
+  "category": string|null,       // EXACTLY ONE slug from the allowed list below (see the rules)
   "pattern_type": string,        // kebab-case pattern (e.g. "block-registration", "packet-handler")
   "complexity": string,          // one of: "beginner" | "intermediate" | "advanced" | "expert"
   "quality_score": number,       // 0.0–1.0, scored against the rubric below
@@ -28,11 +28,35 @@ no prose, no markdown, no code fences.
 }
 ```
 
-## Allowed `category` slugs (choose the single best fit, or `null` if none apply)
+## Allowed `category` slugs
 
-`blocks`, `items`, `entities`, `tile-entities`, `rendering`, `gui`, `networking`, `worldgen`,
-`recipes`, `events`, `registry`, `capabilities`, `coremods-mixins`, `api-design`,
-`cross-platform`, `storage-systems`, `animation`, `particles`, `sounds`, `commands`, `config`.
+{{CATEGORY_LIST}}
+
+### How to choose
+
+Emit the slug **exactly** as written above: lowercase, hyphenated, no backticks, no quotes,
+no prose. A value that isn't one of these strings is discarded.
+
+**Choosing a category is the default. `null` is the rare exception.** Use `null` only when the
+snippet is generic Java plumbing with no Minecraft or Forge/Cleanroom content at all — an empty
+lifecycle stub, a bare getter/setter on a plain value object, a utility with no game concepts.
+If the snippet touches *any* Minecraft, Forge, or Cleanroom concept, you must pick the closest
+category even when the fit is imperfect. Prefer the subject matter the code operates on over
+the Java idiom it happens to use: a fluent builder that configures a block is `blocks`, not
+`api-design`.
+
+Disambiguation for the cases most often mishandled:
+
+- Sided proxies, `@SideOnly`, `CommonProxy`/`ClientOnlyProxy`, client-vs-server separation,
+  client-only init hooks → `cross-platform`
+- `@Mixin`, `@Inject`, `@Redirect`, `@Shadow`, accessors/invokers, coremod or mixin config
+  plugins, raw ASM → `coremods-mixins`
+- `ICapabilityProvider`, `@CapabilityInject`, `hasCapability`/`getCapability` → `capabilities`
+- Widgets, containers, screens, slots, HUD overlays, ModularUI types → `gui`
+- Interpolation, easing, keyframes, per-tick animation state machines → `animation`
+- Inventories, item handlers, fluid tanks, energy storage and transfer → `storage-systems`
+- Public cross-mod API surfaces, addon hooks, default interface methods meant for third-party
+  implementors → `api-design`
 
 Note this is a **1.12.2** corpus: there is no data-generation (resources are hand-written
 JSON) and no modern registry/DeferredRegister — prefer `registry`, `events`, `capabilities`,

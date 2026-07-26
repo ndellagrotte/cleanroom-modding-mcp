@@ -242,6 +242,7 @@ export interface IngestMeta {
 export interface IngestCounts {
   mods: number;
   examples: number;
+  /** Category rows SEEDED (always EXAMPLE_CATEGORIES.length) — not usage. */
   categories: number;
   tags: number;
   imports: number;
@@ -249,6 +250,10 @@ export interface IngestCounts {
   srgResolved: number;
   apiResolved: number;
   byLoader: Record<string, number>;
+  /** Examples ingested with no category — the metric `categories` never was. */
+  uncategorized: number;
+  /** Examples per category slug; slugs with zero examples are omitted. */
+  byCategory: Record<string, number>;
 }
 
 /** Simple logger sink used across the pure pipeline stages. */
