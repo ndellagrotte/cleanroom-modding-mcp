@@ -342,18 +342,22 @@ export class ModExamplesService {
     const conditions: string[] = [];
     const params: unknown[] = [];
 
-    if (query && query.trim()) {
+    // Drives both the FTS JOIN and the ORDER BY below — bm25() is only a legal
+    // ordering term when the statement actually carries a MATCH.
+    const searchTerm = query?.trim() ?? '';
+
+    if (searchTerm) {
       sql += ` JOIN examples_fts fts ON fts.rowid = e.id`;
       conditions.push(`examples_fts MATCH ?`);
       // Strip `"` from tokens — it is FTS5's string delimiter, and an embedded
       // quote produces a malformed MATCH ("unterminated string").
-      const ftsQuery = query
+      const ftsQuery = searchTerm
         .split(/\s+/)
         .map((t) => t.replace(/"/g, ''))
         .filter((t) => t.length > 1)
         .map((t) => `"${t}"*`)
         .join(' OR ');
-      params.push(ftsQuery || `"${query.replace(/"/g, '')}"`);
+      params.push(ftsQuery || `"${searchTerm.replace(/"/g, '')}"`);
     }
 
     if (modName) {
@@ -407,7 +411,13 @@ export class ModExamplesService {
       sql += ` WHERE ${conditions.join(' AND ')}`;
     }
 
-    sql += ` ORDER BY e.quality_score DESC, e.is_featured DESC LIMIT ?`;
+    // With a text query, rank by FTS relevance first (bm25 is ascending — lower is
+    // a better match) and use quality only to break relevance ties. Ordering by
+    // quality alone lets a passing mention in a high-scoring example outrank an
+    // exact match in a lower-scoring one.
+    sql += searchTerm
+      ? ` ORDER BY bm25(examples_fts), e.quality_score DESC, e.is_featured DESC LIMIT ?`
+      : ` ORDER BY e.quality_score DESC, e.is_featured DESC LIMIT ?`;
     params.push(limit);
 
     const rows = this.db.prepare(sql).all(...params) as RawExampleRow[];
