@@ -79,7 +79,7 @@ jobs:
         if: ${{ github.event.inputs.skip_npm != 'true' }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          if npm view "cleanroom-modding-mcp@$VERSION" version 2>/dev/null | grep -q "$VERSION"; then
+          if npm view "@ndellagrotte/cleanroom-modding-mcp@$VERSION" version 2>/dev/null | grep -q "$VERSION"; then
             echo "⏭️  cleanroom-modding-mcp@$VERSION already published — skipping."
           else
             npm publish --provenance --access public
