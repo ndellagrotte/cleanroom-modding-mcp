@@ -116,9 +116,9 @@
     "yaml": "^2.6.1"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=24.18.0"
   },
-  "packageManager": "pnpm@10.30.0",
+  "packageManager": "pnpm@11.17.0",
   "lint-staged": {
     "*.ts": [
       "eslint --fix",
@@ -128,17 +128,6 @@
   "commitlint": {
     "extends": [
       "@commitlint/config-conventional"
-    ]
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "better-sqlite3",
-      "esbuild",
-      "protobufjs",
-      "sharp"
-    ],
-    "ignoredBuiltDependencies": [
-      "tree-sitter-java"
     ]
   },
   "publishConfig": {
