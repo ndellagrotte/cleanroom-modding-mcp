@@ -140,5 +140,8 @@
     "ignoredBuiltDependencies": [
       "tree-sitter-java"
     ]
+  },
+  "publishConfig": {
+  "@ndellagrotte:registry": "https://npm.pkg.github.com"
   }
 }
