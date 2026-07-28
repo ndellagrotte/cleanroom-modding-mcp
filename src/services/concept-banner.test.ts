@@ -16,7 +16,7 @@ function baseExplanation(overrides: Partial<ConceptExplanation> = {}): ConceptEx
 }
 
 describe('explain_concept cross-loader banner (§4.3)', () => {
-  const svc = new ConceptService();
+  const svc = new ConceptService(':memory:');
 
   it('renders the "Cross-loader differences" section when equivalence rows are present', () => {
     const out = svc.formatForAI(
