@@ -1,6 +1,6 @@
 {
   "name": "@ndellagrotte/cleanroom-modding-mcp",
-  "version": "2.1.2",
+  "version": "2.1.3",
   "description": "MCP server enabling AI agents to build Cleanroom (Minecraft 1.12.2) mods — docs, SRG mappings, and cross-loader porting knowledge",
   "keywords": [
     "minecraft",
