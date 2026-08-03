@@ -26,8 +26,8 @@ _Docs, SRG mappings, and cross-loader porting knowledge for the Cleanroom / Forg
 ### Installation
 
 ```bash
-# Install globally
-npm install -g @ndellagrotte/cleanroom-modding-mcp
+# Install
+npm i @ndellagrotte/cleanroom-modding-mcp
 ```
 
 Add to your MCP client configuration (e.g. `claude_desktop_config.json`):
