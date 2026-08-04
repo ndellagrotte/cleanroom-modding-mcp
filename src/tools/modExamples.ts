@@ -6,7 +6,12 @@
  */
 
 import { ModExamplesService } from '../services/mod-examples-service.js';
-import { EXAMPLE_CATEGORIES } from '../categories.js';
+import type { CategoryInfo } from '../services/mod-examples-service.js';
+import {
+  EXAMPLE_CATEGORIES,
+  THIN_CATEGORY_THRESHOLD,
+  auditCategoryCoverage,
+} from '../categories.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -148,6 +153,124 @@ export const MOD_EXAMPLES_TOOLS = [
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// COVERAGE DISCLOSURE (beta report N2)
+//
+// Every EXAMPLE_CATEGORIES slug is a filter value the schema offers, but the
+// corpus does not back all of them: `capabilities` holds 0 examples because the
+// snippet selector truncates each repo at maxSnippetsPerRepo in tree order and
+// never reaches TinkersConstruct's library/capability/**. Until that is fixed
+// corpus-side, both surfaces below say so out loud — an agent that filters,
+// gets nothing, and concludes the corpus has no capability examples has been
+// misled, which is worse than an empty result.
+//
+// The schema enum stays sourced from EXAMPLE_CATEGORIES: it is a compile-time
+// registry constant (the SSOT rule in CLAUDE.md), and making it DB-dependent
+// would trade a disclosed gap for a hidden one.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Slug→count map over the DB's category rows, for auditCategoryCoverage. */
+function countsBySlug(categories: CategoryInfo[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const cat of categories) {
+    counts[cat.slug] = cat.exampleCount;
+  }
+  return counts;
+}
+
+/** `icon \`slug\`` when the icon is known, bare slug otherwise. */
+function labelFor(categories: CategoryInfo[], slug: string): string {
+  const icon = categories.find((c) => c.slug === slug)?.icon;
+  return icon ? `${icon} \`${slug}\`` : `\`${slug}\``;
+}
+
+/** The `list_mod_categories` body: the table, the reconciliation, the caveats. */
+export function formatCategoryTable(categories: CategoryInfo[], uncategorized: number): string {
+  let output = '# Pattern Categories\n\n';
+  output += 'Available categories for filtering mod examples:\n\n';
+  output += '| Category | Name | Examples | Description |\n';
+  output += '|----------|------|----------|-------------|\n';
+  categories.forEach((cat) => {
+    output += `| ${cat.icon} \`${cat.slug}\` | ${cat.name} | ${cat.exampleCount} | ${cat.description} |\n`;
+  });
+
+  // Reconcile to the corpus total: a category-filtered search can never reach
+  // these, so a table that silently omitted them read as complete when it wasn't.
+  const categorized = categories.reduce((sum, cat) => sum + cat.exampleCount, 0);
+  output += `\n${categorized + uncategorized} examples total`;
+  if (uncategorized > 0) {
+    output += `, of which ${uncategorized} are uncategorized (reachable by search, not by the \`category\` filter)`;
+  }
+  output += '.\n';
+
+  const { empty, thin } = auditCategoryCoverage(countsBySlug(categories));
+  if (empty.length > 0) {
+    output += `\n⚠️ **Empty ${empty.length === 1 ? 'category' : 'categories'}** — accepted by the \`category\` filter but backed by 0 examples, `;
+    output += `so filtering by ${empty.length === 1 ? 'it' : 'them'} can never return results: `;
+    output += `${empty.map((slug) => labelFor(categories, slug)).join(', ')}.\n`;
+  }
+  if (thin.length > 0) {
+    const listed = [...thin]
+      .sort((a, b) => a.count - b.count)
+      .map((t) => `\`${t.slug}\` (${t.count})`)
+      .join(', ');
+    output += `\nThin categories (under ${THIN_CATEGORY_THRESHOLD} examples — a filter on these narrows hard): ${listed}.\n`;
+  }
+
+  output += '\n**Usage:** `search_mod_examples` with `category` parameter\n';
+  return output;
+}
+
+/**
+ * The `search_mod_examples` zero-result body. A category filter is the one
+ * argument that can make the result set empty no matter what else the agent
+ * does, so when one is set the message reports that category's true corpus
+ * count instead of the generic "try broader search terms".
+ */
+export function formatEmptyModExampleSearch(
+  params: SearchModExamplesParams,
+  categories: CategoryInfo[],
+  uncategorized: number
+): string {
+  let output = 'No mod examples found matching your criteria.\n\n';
+
+  const filtered = params.category ? categories.find((c) => c.slug === params.category) : undefined;
+  const total = categories.reduce((sum, cat) => sum + cat.exampleCount, 0) + uncategorized;
+  const minQuality = params.min_quality ?? 0.5;
+
+  if (params.category && (filtered === undefined || filtered.exampleCount === 0)) {
+    output += `⚠️ The \`${params.category}\` category holds **0 of the ${total} examples** in this corpus. `;
+    output +=
+      'Filtering by it can never return results, whatever the query — this is a gap in the ';
+    output +=
+      'corpus, not a failed search, so do not read it as "no such patterns exist in 1.12.2".\n\n';
+    output += '**Suggestions:**\n';
+    output += `- Re-run the same query without \`category\` — free-text search reaches the whole corpus, including the ${uncategorized} uncategorized examples\n`;
+    const populated = categories
+      .filter((c) => c.exampleCount > 0)
+      .sort((a, b) => b.exampleCount - a.exampleCount)
+      .slice(0, 5);
+    if (populated.length > 0) {
+      output += `- Best-populated categories: ${populated.map((c) => `\`${c.slug}\` (${c.exampleCount})`).join(', ')}\n`;
+    }
+    output += '- Use `list_mod_categories` to see every category with its true count\n';
+    return output;
+  }
+
+  if (filtered !== undefined) {
+    output += `The \`${filtered.slug}\` category holds ${filtered.exampleCount} examples, so another filter excluded them all `;
+    output += `(active: \`min_quality\` ≥ ${minQuality}${params.featured_only ? ', `featured_only`' : ''}${params.mod ? `, mod \`${params.mod}\`` : ''}${params.loader ? `, loader \`${params.loader}\`` : ''}${params.complexity ? `, complexity \`${params.complexity}\`` : ''}${params.pattern_type ? `, pattern \`${params.pattern_type}\`` : ''}).\n\n`;
+  }
+
+  output += '**Suggestions:**\n';
+  output += '- Try broader search terms\n';
+  output += '- Remove category, loader, or complexity filters\n';
+  output += `- Lower \`min_quality\` (currently ${minQuality}; the corpus mean is around 0.55)\n`;
+  output += '- Use `list_canonical_mods` to see available mods\n';
+  output += '- Use `list_mod_categories` to see available categories\n';
+  return output;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -185,12 +308,13 @@ export function handleSearchModExamples(params: SearchModExamplesParams): CallTo
 
       let output = '';
       if (examples.length === 0) {
-        output = 'No mod examples found matching your criteria.\n\n';
-        output += '**Suggestions:**\n';
-        output += '- Try broader search terms\n';
-        output += '- Remove category, loader, or complexity filters\n';
-        output += '- Use `list_canonical_mods` to see available mods\n';
-        output += '- Use `list_mod_categories` to see available categories\n';
+        // Only on the empty path — the category counts cost two extra queries
+        // and exist to explain WHY it is empty (N2), not to decorate hits.
+        output = formatEmptyModExampleSearch(
+          params,
+          service.listCategories(),
+          service.countUncategorized()
+        );
       } else {
         output = `Found ${examples.length} canonical mod example${examples.length > 1 ? 's' : ''}:\n\n`;
         examples.forEach((ex, i) => {
@@ -369,25 +493,7 @@ export function handleListModCategories(): CallToolResult {
 
     const service = new ModExamplesService();
     try {
-      const categories = service.listCategories();
-      let output = '# Pattern Categories\n\n';
-      output += 'Available categories for filtering mod examples:\n\n';
-      output += '| Category | Name | Examples | Description |\n';
-      output += '|----------|------|----------|-------------|\n';
-      categories.forEach((cat) => {
-        output += `| ${cat.icon} \`${cat.slug}\` | ${cat.name} | ${cat.exampleCount} | ${cat.description} |\n`;
-      });
-      // Reconcile to the corpus total: a category-filtered search can never
-      // reach these, so a table that silently omitted them read as complete
-      // when it wasn't.
-      const uncategorized = service.countUncategorized();
-      const categorized = categories.reduce((sum, cat) => sum + cat.exampleCount, 0);
-      output += `\n${categorized + uncategorized} examples total`;
-      if (uncategorized > 0) {
-        output += `, of which ${uncategorized} are uncategorized (reachable by search, not by the \`category\` filter)`;
-      }
-      output += '.\n';
-      output += '\n**Usage:** `search_mod_examples` with `category` parameter\n';
+      const output = formatCategoryTable(service.listCategories(), service.countUncategorized());
       return { content: [{ type: 'text', text: output }] };
     } finally {
       service.close();

@@ -129,6 +129,48 @@ export const EXAMPLE_CATEGORY_INFO: Record<
 };
 
 /**
+ * Below this count a category is "thin": it is advertised as a filter but backs
+ * so few examples that the filter is close to useless. Tuned to the shipped
+ * corpus, where it names exactly the set the beta report flagged (sounds 2,
+ * worldgen 4, commands/entities/recipes 5) and leaves particles 14 /
+ * storage-systems 18 alone.
+ */
+export const THIN_CATEGORY_THRESHOLD = 10;
+
+export interface CategoryCoverage {
+  /** Categories with zero examples — a `category` filter on these can never match. */
+  empty: ExampleCategory[];
+  /** Categories under THIN_CATEGORY_THRESHOLD (never zero — those are `empty`). */
+  thin: Array<{ slug: ExampleCategory; count: number }>;
+}
+
+/**
+ * Audit a slug→count map against the EXAMPLE_CATEGORIES taxonomy.
+ *
+ * Every category in the enum is a filter value the agent may pick, so one with
+ * no examples behind it is a promise the corpus cannot keep — an agent that
+ * filters, gets zero, and concludes the corpus holds nothing on the topic has
+ * been actively misled (beta report N2). Both the runtime tools and the
+ * maintainer indexer audit with this; it lives here, beside the taxonomy, so
+ * neither has to reimplement it and `src/` never imports pipeline code.
+ *
+ * Pure: a missing key counts as 0, and keys outside the taxonomy are ignored.
+ */
+export function auditCategoryCoverage(counts: Record<string, number>): CategoryCoverage {
+  const empty: ExampleCategory[] = [];
+  const thin: Array<{ slug: ExampleCategory; count: number }> = [];
+  for (const slug of EXAMPLE_CATEGORIES) {
+    const count = counts[slug] ?? 0;
+    if (count === 0) {
+      empty.push(slug);
+    } else if (count < THIN_CATEGORY_THRESHOLD) {
+      thin.push({ slug, count });
+    }
+  }
+  return { empty, thin };
+}
+
+/**
  * Render the allowed-category block for the analysis prompt, one bullet per
  * slug with its EXAMPLE_CATEGORY_INFO description.
  *

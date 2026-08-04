@@ -137,6 +137,11 @@ function makeWorkspace(
       path.join(dir, 'absent-mappings.db'),
       '--cleanroom-api-db',
       path.join(dir, 'absent-cleanroom.db'),
+      // This fixture is one 6-method class analyzed by a fake endpoint that
+      // answers with a single category — it can never cover all 21, so the
+      // coverage gate would mask every exit code these tests assert on. The
+      // gate itself is exercised by its own describe block below.
+      '--allow-empty-categories',
     ],
   };
 }
@@ -492,6 +497,40 @@ describe('budget cap', () => {
     });
     expect(res.code).toBe(2);
     expect(llm.total()).toBe(3);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Category coverage gate (beta report N2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('category coverage gate', () => {
+  /** baseArgs as a real release run would be invoked: without the override. */
+  const withoutOverride = (args: string[]): string[] =>
+    args.filter((a) => a !== '--allow-empty-categories');
+
+  it('exits 3 when a category slug ends up with no examples', async () => {
+    const llm = await startFakeLlm(); // every analysis comes back category 'blocks'
+    const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
+    const res = await runIndexer(ws.dir, withoutOverride(ws.baseArgs));
+
+    expect(res.code).toBe(3);
+    expect(res.out).toContain('EMPTY CATEGORIES');
+    expect(res.out).toContain('capabilities');
+    expect(res.out).toContain('--allow-empty-categories');
+    // The DB is still written — same partial-corpus semantics as the budget cap;
+    // it is the non-zero exit that release automation refuses to ship on.
+    expect(readExamples(ws.dbPath)).toHaveLength(SNIPPET_COUNT);
+  });
+
+  it('--allow-empty-categories ships the same corpus with exit 0', async () => {
+    const llm = await startFakeLlm();
+    const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
+    const res = await runIndexer(ws.dir, ws.baseArgs);
+
+    expect(res.code).toBe(0);
+    expect(res.out).toContain('Categories with no examples');
+    expect(readExamples(ws.dbPath)).toHaveLength(SNIPPET_COUNT);
   });
 });
 

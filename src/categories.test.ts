@@ -12,6 +12,8 @@ import {
   EXAMPLE_CATEGORIES,
   EXAMPLE_CATEGORY_INFO,
   CONCEPT_CATEGORIES,
+  THIN_CATEGORY_THRESHOLD,
+  auditCategoryCoverage,
   buildCategoryPromptBlock,
   categorizeDocPath,
 } from './categories.js';
@@ -48,6 +50,89 @@ describe('example categories (1.12.2 edits)', () => {
 
   it('has no duplicates', () => {
     expect(new Set(EXAMPLE_CATEGORIES).size).toBe(EXAMPLE_CATEGORIES.length);
+  });
+});
+
+describe('auditCategoryCoverage', () => {
+  /** Every category populated well past the thin threshold. */
+  const healthy = (): Record<string, number> =>
+    Object.fromEntries(EXAMPLE_CATEGORIES.map((slug) => [slug, 100]));
+
+  it('reports nothing for a corpus that populates every category', () => {
+    expect(auditCategoryCoverage(healthy())).toEqual({ empty: [], thin: [] });
+  });
+
+  it('treats an absent key as zero, not as unknown', () => {
+    const counts = healthy();
+    delete counts.capabilities;
+    expect(auditCategoryCoverage(counts).empty).toEqual(['capabilities']);
+  });
+
+  it('counts an explicit zero as empty, never as thin', () => {
+    const { empty, thin } = auditCategoryCoverage({ ...healthy(), capabilities: 0 });
+    expect(empty).toEqual(['capabilities']);
+    expect(thin).toEqual([]);
+  });
+
+  it('places the thin boundary just under THIN_CATEGORY_THRESHOLD', () => {
+    const { thin } = auditCategoryCoverage({
+      ...healthy(),
+      sounds: THIN_CATEGORY_THRESHOLD - 1,
+      commands: THIN_CATEGORY_THRESHOLD,
+    });
+    expect(thin).toEqual([{ slug: 'sounds', count: THIN_CATEGORY_THRESHOLD - 1 }]);
+  });
+
+  it('returns empties in EXAMPLE_CATEGORIES order, not insertion order', () => {
+    // 'items' precedes 'capabilities' in the registry; the map lists it last.
+    expect(auditCategoryCoverage({ ...healthy(), capabilities: 0, items: 0 }).empty).toEqual([
+      'items',
+      'capabilities',
+    ]);
+  });
+
+  it('ignores counts for slugs outside the taxonomy', () => {
+    // 'data-generation' is a DOC category, deliberately absent from the example
+    // taxonomy — a zero there must not be reported against the example corpus.
+    expect(auditCategoryCoverage({ ...healthy(), 'data-generation': 0, nonsense: 3 })).toEqual({
+      empty: [],
+      thin: [],
+    });
+  });
+
+  it('reproduces the shipped corpus verdict (beta report N2)', () => {
+    // byCategory as recorded in examples.db metadata for av1-661190e3a39cb7c4.
+    const shipped: Record<string, number> = {
+      blocks: 238,
+      rendering: 157,
+      'tile-entities': 137,
+      'coremods-mixins': 123,
+      'cross-platform': 99,
+      events: 99,
+      items: 78,
+      registry: 64,
+      'api-design': 48,
+      animation: 45,
+      networking: 42,
+      config: 33,
+      gui: 29,
+      'storage-systems': 18,
+      particles: 14,
+      commands: 5,
+      entities: 5,
+      recipes: 5,
+      worldgen: 4,
+      sounds: 2,
+    };
+    const { empty, thin } = auditCategoryCoverage(shipped);
+    expect(empty).toEqual(['capabilities']);
+    expect([...thin].map((t) => t.slug).sort()).toEqual([
+      'commands',
+      'entities',
+      'recipes',
+      'sounds',
+      'worldgen',
+    ]);
   });
 });
 

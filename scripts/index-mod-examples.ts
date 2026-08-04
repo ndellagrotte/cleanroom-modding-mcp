@@ -19,6 +19,11 @@
  * budget-truncated corpus), never repeated (content-addressed analysis cache),
  * and recorded in the shipped DB's provenance metadata (llm_base_host/llm_cost).
  *
+ * Coverage gate: a corpus that leaves an EXAMPLE_CATEGORIES slug at zero exits 3.
+ * The taxonomy is also the `search_mod_examples` filter enum, so an empty
+ * category is a filter value the shipped server offers and can never satisfy
+ * (beta report N2). --allow-empty-categories is the deliberate override.
+ *
  * Usage:
  *   npx tsx scripts/index-mod-examples.ts [options]
  *
@@ -47,6 +52,8 @@
  *   --llm-est-output-tokens <n> Fixed output-token allowance per snippet for --estimate (default: 350)
  *   --analysis-cache <path>     Analysis cache DB (default: data/examples-analysis-cache.db)
  *   --no-cache                  Bypass cache reads AND writes (a deliberate full re-spend)
+ *   --allow-empty-categories    Ship a corpus that leaves an EXAMPLE_CATEGORIES slug at zero
+ *                               examples. Without it such a build exits 3 (see below).
  *
  * Endpoint/pricing precedence (highest first): CLI flag → env var → committed
  * config file data/examples-llm.json (non-secret; the API key is never in it).
@@ -71,7 +78,7 @@ import {
   readDbSchemaVersion,
 } from '../src/examples/schema.js';
 import { acquireRepo } from '../src/examples/acquire.js';
-import { EXAMPLE_CATEGORIES } from '../src/categories.js';
+import { THIN_CATEGORY_THRESHOLD, auditCategoryCoverage } from '../src/categories.js';
 import { selectSnippets } from '../src/examples/select.js';
 import {
   analyzeSnippet,
@@ -151,6 +158,7 @@ interface CliOptions {
   llmEstOutputTokens: number;
   analysisCachePath: string;
   noCache: boolean;
+  allowEmptyCategories: boolean;
 }
 
 function valueOf(argv: string[], flag: string, fallback: string): string {
@@ -198,6 +206,7 @@ function parseArgs(argv: string[]): CliOptions {
       path.join(process.cwd(), 'data', 'examples-analysis-cache.db')
     ),
     noCache: argv.includes('--no-cache'),
+    allowEmptyCategories: argv.includes('--allow-empty-categories'),
   };
 }
 
@@ -875,9 +884,16 @@ async function main(): Promise<number> {
       `  Over the ${UNCATEGORIZED_WARN_PCT}% threshold — check the prompt's category guidance before shipping this corpus.`
     );
   }
-  const emptyCategories = EXAMPLE_CATEGORIES.filter((slug) => !counts.byCategory[slug]);
-  if (emptyCategories.length > 0) {
-    log('warn', `  Categories with no examples: ${emptyCategories.join(', ')}`);
+  const coverage = auditCategoryCoverage(counts.byCategory);
+  if (coverage.empty.length > 0) {
+    log('warn', `  Categories with no examples: ${coverage.empty.join(', ')}`);
+  }
+  if (coverage.thin.length > 0) {
+    const thin = [...coverage.thin]
+      .sort((a, b) => a.count - b.count)
+      .map((t) => `${t.slug} (${t.count})`)
+      .join(', ');
+    log('warn', `  Thin categories (<${THIN_CATEGORY_THRESHOLD}): ${thin}`);
   }
   for (const [slug, n] of Object.entries(counts.byCategory).sort((a, b) => b[1] - a[1])) {
     log('info', `    ${slug.padEnd(18)} ${n}`);
@@ -926,6 +942,30 @@ async function main(): Promise<number> {
         `TRUNCATED (${counts.examples} examples ingested). Release automation must refuse to ship it.`
     );
     return 2;
+  }
+
+  // Coverage gate (beta report N2). EXAMPLE_CATEGORIES is the `search_mod_examples`
+  // filter enum, so a category with zero examples is a filter value the shipped
+  // server accepts and can never satisfy — the agent reads the empty result as
+  // "the corpus has no such patterns" rather than "this slice was never indexed".
+  // A warn was already printed for this before the corpus shipped anyway; it is
+  // a gate now.
+  if (coverage.empty.length > 0 && !opts.allowEmptyCategories) {
+    log(
+      'error',
+      `EMPTY CATEGORIES (${coverage.empty.length}): ${coverage.empty.join(', ')} — the corpus above ` +
+        `offers these as \`category\` filter values with nothing behind them. Release automation ` +
+        `must refuse to ship it.`
+    );
+    log(
+      'error',
+      '  Usual cause: selectSnippets truncates each repo at maxSnippetsPerRepo in tree order ' +
+        '(src/examples/select.ts), so late-sorting packages never reach the corpus — DESIGN §6.2 ' +
+        'asks selection to prefer category-bearing units instead. Widen the roster include globs, ' +
+        'raise the cap, or spread the selection.'
+    );
+    log('error', '  Pass --allow-empty-categories to ship a knowingly-incomplete corpus anyway.');
+    return 3;
   }
   return 0;
 }
