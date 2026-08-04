@@ -1,6 +1,9 @@
 # cleanroom source dir
 cleanroom-src
 
+#/.idea
+.idea
+
 # Logs
 logs
 *.log
