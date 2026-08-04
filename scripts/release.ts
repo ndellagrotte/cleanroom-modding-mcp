@@ -204,7 +204,9 @@ if (missingUploads.length > 0) {
 console.log(`GitHub release ${tag} has all ${artifactPaths.length} prepared database assets.`);
 
 if (!assetsOnly) {
-  run('npm', ['publish', '--provenance', '--access', 'public']);
+  // No --provenance: npm can only generate it from a supported CI provider's OIDC token, and
+  // this script releases from a maintainer workstation, where the provider is always null.
+  run('npm', ['publish', '--access', 'public']);
   console.log(`Published ${packageJson.name}@${version}.`);
 } else {
   console.log('Assets-only repair complete; npm publication skipped.');
