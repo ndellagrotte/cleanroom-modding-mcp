@@ -26,8 +26,8 @@ _Docs, SRG mappings, and cross-loader porting knowledge for the Cleanroom / Forg
 ### Installation
 
 ```bash
-# Install
-npm i @ndellagrotte/cleanroom-modding-mcp
+# Install globally
+npm install -g @ndellagrotte/cleanroom-modding-mcp
 ```
 
 Add to your MCP client configuration (e.g. `claude_desktop_config.json`):
@@ -44,21 +44,14 @@ Add to your MCP client configuration (e.g. `claude_desktop_config.json`):
 
 ### Claude Code
 
-For [Claude Code](https://docs.anthropic.com/en/docs/claude-code), add this server via a project-scoped `.mcp.json` file at the repository root. This is an example `.mcp.json` config for Linux:
+For [Claude Code](https://docs.anthropic.com/en/docs/claude-code), add this server via a project-scoped `.mcp.json` file at the repository root. This is an example `.mcp.json` config:
 
 ```json
 {
   "mcpServers": {
     "cleanroom": {
       "type": "stdio",
-      "command": "node",
-      "args": [
-        "/home/ndellagrotte/IdeaProjects/mcmodding-mcp/dist/index.js"
-      ],
-      "env": {
-        "CLEANROOM_MCP_DATA_DIR": "/home/ndellagrotte/IdeaProjects/mcmodding-mcp/data",
-        "CLEANROOM_MCP_SKIP_AUTO_UPDATE": "1"
-      }
+      "command": "cleanroom-modding-mcp"
     }
   }
 }
