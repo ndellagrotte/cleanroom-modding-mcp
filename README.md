@@ -123,6 +123,16 @@ pnpm run index-mappings     # build data/mappings.db
 pnpm run manifest -- --db docs --release-tag v0.5.0   # generate a release manifest
 ```
 
+### Publishing
+
+Releases are published locally to the public npm registry. After validation, bump the version and publish it:
+
+```bash
+pnpm run validate
+pnpm version patch       # or minor / major / an explicit version
+pnpm run release         # runs npm publish; prepublishOnly revalidates and builds
+```
+
 ### Distribution convention
 
 Every database and its `<id>-manifest.json` are uploaded to the main `v{version}` release — there are no per-database release tags. The manifest generator (`scripts/generate-manifest.ts`), the installer (`manage`), postinstall, and the startup auto-updater all read the single registry in [`src/dbs.ts`](src/dbs.ts); no other file may hardcode a database filename or the repository slug.

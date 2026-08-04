@@ -64,8 +64,8 @@
     "prebuild": "pnpm run clean",
     "prebuild:prod": "pnpm run clean",
     "postinstall": "node scripts/postinstall.js",
-    "prepublishOnly": "",
-    "release": "pnpm run build:prod && pnpm version",
+    "prepublishOnly": "pnpm run typecheck && pnpm run lint && pnpm run test -- --run && pnpm run build:prod",
+    "release": "npm publish",
     "validate": "pnpm run typecheck && pnpm run lint && pnpm run test",
     "validate:equivalence": "npx tsx scripts/validate-equivalence.ts",
     "manage": "npx tsx src/index.ts manage",
@@ -131,6 +131,7 @@
     ]
   },
   "publishConfig": {
-  "@ndellagrotte:registry": "https://npm.pkg.github.com"
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   }
 }
