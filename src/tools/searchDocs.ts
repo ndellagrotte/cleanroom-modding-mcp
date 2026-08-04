@@ -201,7 +201,7 @@ function buildMetadata(
     metadata += '- Use synonyms (e.g., "register" instead of "create")\n';
   } else if (results.length < 3) {
     metadata += '\n**Note:** Few results found. Consider:\n';
-    metadata += '- Using `get_example` for specific code examples\n';
+    metadata += '- Using `get_doc_snippet` for code blocks from these pages\n';
     metadata += '- Trying related terms or concepts\n';
   }
 

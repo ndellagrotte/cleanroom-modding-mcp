@@ -9,6 +9,7 @@ import {
   tokenizeQuery,
   calculateRelevanceScore,
   deduplicateAndRank,
+  languageMatches,
   type TokenizedQuery,
   type ScoredResult,
 } from './search-utils.js';
@@ -76,6 +77,39 @@ interface CodeBlockResult {
   minecraft_version: string | null;
 }
 
+/**
+ * At most one snippet per source document in the first ranking pass. The docs corpus routinely
+ * puts 4-6 code blocks on one page (Forge's items/loot_tables/ has 6 java blocks), and without a
+ * cap that single page eats the caller's whole `limit`. Extras still backfill when distinct
+ * documents cannot fill the request.
+ */
+const MAX_EXAMPLES_PER_DOCUMENT = 1;
+
+/**
+ * Relevance floor on the pooled score: a result must match the query somehow, not merely exist.
+ *
+ * `calculateRelevanceScore` awards a flat +10 for "has substantial code" (>50 chars) with zero
+ * term matches, and `fallbackSearch` admits anything scoring >= 10 from an unfiltered scan. So
+ * 10 is exactly the score of pure padding — before this floor existed, a nonsense query
+ * returned a full page of results all scoring precisely 10.
+ *
+ * 20 was picked by measuring the corpus rather than by reasoning about the formula. Across
+ * well-supported topics (register item, tile entity, mixin, block, gui, event handler,
+ * capability, networking, loot table) the result count is identical at 15 and at 20, while the
+ * 15-20 band contains only padding: it is the entire content of queries the corpus cannot
+ * answer, such as "creative tab" (top score 16.3, no creative-tab content indexed at all).
+ * Raising it further to 25 or 30 buys nothing and starts costing real hits.
+ *
+ * On the semantic side 20 corresponds to cosine >= 0.44, comfortably above the MiniLM baseline
+ * where unrelated text pairs sit (the beta test was served a 0.358-similarity loot-table block,
+ * score 8.297, as an answer).
+ *
+ * CAUTION: the lexical strategies (0-200+) and the semantic strategy (0-100) are pooled
+ * un-normalized, and `searchViaCodePatterns` adds a flat +30. Re-derive this constant if those
+ * scores are ever put on a common scale.
+ */
+const MIN_EXAMPLE_SCORE = 20;
+
 export class ExampleService {
   private store: DocumentStore;
 
@@ -111,6 +145,7 @@ export class ExampleService {
     // Strategy 0: Semantic Search (Embeddings)
     try {
       const semanticResults = await this.searchViaEmbeddings(topic, {
+        language,
         loader,
         minecraftVersion,
         category,
@@ -164,9 +199,17 @@ export class ExampleService {
       console.error(`[ExampleService] Strategy 4 (fallback): ${fallbackResults.length} results`);
     }
 
-    // Deduplicate and rank
-    const ranked = deduplicateAndRank(allResults, limit);
-    console.error(`[ExampleService] After dedup/rank: ${ranked.length} results`);
+    // Deduplicate, apply the relevance floor, and enforce per-document diversity
+    const ranked = deduplicateAndRank(allResults, limit, {
+      minScore: MIN_EXAMPLE_SCORE,
+      maxPerDocument: MAX_EXAMPLES_PER_DOCUMENT,
+    });
+    const bestScore = allResults.reduce((max, r) => Math.max(max, r.score), 0);
+    console.error(
+      `[ExampleService] After dedup/rank: ${ranked.length} results ` +
+        `(pooled ${allResults.length}, best ${bestScore.toFixed(2)}, ` +
+        `floor ${MIN_EXAMPLE_SCORE}, max ${MAX_EXAMPLES_PER_DOCUMENT}/document)`
+    );
 
     // Convert to CodeExample format
     const examples = ranked.map((r) => this.toCodeExample(r.item, r.score, r.matchReasons));
@@ -205,6 +248,7 @@ export class ExampleService {
   private async searchViaEmbeddings(
     topic: string,
     options: {
+      language?: string;
       loader?: string | string[];
       minecraftVersion?: string;
       category?: string;
@@ -234,6 +278,10 @@ export class ExampleService {
       const codeBlocks = this.store.getCodeBlocksForDocument(chunk.document_id);
 
       for (const block of codeBlocks) {
+        // The same language gate the lexical strategies apply. Without it, a semantically near
+        // document contributes its JSON/text blocks to a `java` query.
+        if (!languageMatches(block.language, options.language)) continue;
+
         // Calculate a score based on semantic similarity of the parent chunk
         // We use the similarity score from the embedding search
 
@@ -311,7 +359,7 @@ export class ExampleService {
 
       for (const block of codeBlocks) {
         // Filter by language if specified
-        if (options.language && block.language !== options.language) continue;
+        if (!languageMatches(block.language, options.language)) continue;
 
         const { score, reasons } = calculateRelevanceScore(
           {
@@ -412,7 +460,7 @@ export class ExampleService {
 
       for (const block of codeBlocks) {
         // Filter by language if specified
-        if (options.language && block.language !== options.language) continue;
+        if (!languageMatches(block.language, options.language)) continue;
 
         const { score, reasons } = calculateRelevanceScore(
           {

@@ -24,6 +24,13 @@ describe('tool copy', () => {
   });
 });
 
+describe('cross-tool routing', () => {
+  it('points back at get_doc_snippet and never at the old get_example name', () => {
+    expect(searchModExamplesTool.description).toContain('get_doc_snippet');
+    expect(searchModExamplesTool.description).not.toContain('get_example');
+  });
+});
+
 describe('get_mod_example dispatch validation', () => {
   it('treats a missing id as a validation error, not id=0', () => {
     const res = handleGetModExample({} as { id: number });

@@ -85,7 +85,7 @@ Four base tools are always available; the mappings, mod-examples, and Cleanroom 
 | Tool | Purpose |
 | --- | --- |
 | `search_docs` | Hybrid full-text + semantic search. Scope `target` (Cleanroom/Forge 1.12.2, default), `reference` (Fabric/NeoForge porting material), or `all` |
-| `get_example` | Code examples for modding topics, filterable by scope/loader/version |
+| `get_doc_snippet` | Code blocks from the scraped documentation, filterable by scope/loader/version. For real-mod implementations use `search_mod_examples` |
 | `explain_concept` | Concept explanations from a loader's perspective (default: Cleanroom) — capabilities, SRG names, mixins, `mcmod.info`, … |
 | `list_targets` | Orientation: the loader/version matrix, indexed versions, installed databases |
 | `resolve_symbol` | Crash-log workhorse: resolve any symbol (SRG `func_/field_/p_`, obfuscated notch tokens, readable names) to all mapping layers (requires `mappings.db`) |

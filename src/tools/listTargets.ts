@@ -31,7 +31,7 @@ export function handleListTargets(): CallToolResult {
       output += `| ${info.displayName} (\`${id}\`) | ${info.role} | ${version} |\n`;
     }
 
-    output += '\n**Scopes** (accepted by `search_docs` / `get_example`):\n';
+    output += '\n**Scopes** (accepted by `search_docs` / `get_doc_snippet`):\n';
     output += `- \`target\` (default) — Cleanroom + Forge + loader-agnostic content at ${TARGET_VERSION}\n`;
     output += '- `reference` — Fabric + NeoForge porting material\n';
     output += '- `all` — everything, for comparative work\n';

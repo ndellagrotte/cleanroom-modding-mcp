@@ -117,6 +117,30 @@ describe.runIf(DIST_OK)('MCP server protocol (spawned stdio)', () => {
     await transport.close();
   });
 
+  it('lists get_doc_snippet, not get_example, and cross-links search_mod_examples', async () => {
+    const { client, transport } = await connect(v2Db);
+    const tools = (await client.listTools()).tools;
+    const names = tools.map((t) => t.name);
+
+    expect(names).toContain('get_doc_snippet');
+    expect(names).not.toContain('get_example');
+
+    // The description is what routes an agent to the curated corpus (red-team finding N1),
+    // so it is part of the contract, not decoration.
+    const snippet = tools.find((t) => t.name === 'get_doc_snippet')!;
+    expect(snippet.description).toMatch(/documentation/i);
+    expect(snippet.description).toMatch(/search_mod_examples/);
+
+    // The pre-2.2.0 name stays dispatchable as an unlisted alias. Asserting it *resolves* is
+    // the routing check: an unknown tool rejects (index.ts throws), whereas a handler with no
+    // usable database resolves with isError — which of those happens here depends on the host.
+    await expect(
+      client.callTool({ name: 'get_example', arguments: { topic: 'test' } })
+    ).resolves.toBeDefined();
+
+    await transport.close();
+  });
+
   it('enumerates concrete resources and returns -32002 for unknown', async () => {
     const { client, transport } = await connect(v2Db);
     const uris = (await client.listResources()).resources.map((r) => r.uri);

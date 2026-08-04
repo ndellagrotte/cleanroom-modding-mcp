@@ -512,7 +512,7 @@ function printWelcomeScreen(databaseAvailable = true) {
 
   const tools = [
     [`${c.brightCyan}search_docs${c.reset}`, 'Search modding docs (Cleanroom/Forge 1.12.2 first)'],
-    [`${c.brightCyan}get_example${c.reset}`, 'Get working code examples for modding topics'],
+    [`${c.brightCyan}get_doc_snippet${c.reset}`, 'Code snippets from the scraped modding docs'],
     [`${c.brightCyan}explain_concept${c.reset}`, 'Explain modding concepts and patterns'],
     [`${c.brightCyan}list_targets${c.reset}`, 'Show target/reference loaders and installed DBs'],
   ];

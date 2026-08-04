@@ -415,37 +415,122 @@ export function calculateRelevanceScore(
 }
 
 /**
- * Deduplicate and rank results
+ * Language-filter comparison for code blocks. Deliberately case-insensitive: the docs corpus
+ * carries `java`, `Java` and `JAVA` for the same language (forge alone has 32/19/10), so a
+ * `!==` comparison silently hides roughly a third of one loader's Java snippets.
  */
-export function deduplicateAndRank<
-  T extends { code?: string; url?: string; section_heading?: string | null },
->(results: ScoredResult<T>[], limit: number): ScoredResult<T>[] {
-  // Sort by score descending
-  const sorted = [...results].sort((a, b) => b.score - a.score);
+export function languageMatches(
+  blockLanguage: string | null | undefined,
+  wanted?: string
+): boolean {
+  if (!wanted) return true;
+  return (blockLanguage ?? '').toLowerCase() === wanted.toLowerCase();
+}
 
-  // Deduplicate by code content (or URL + heading if no code)
+/**
+ * Identity of a documentation page independent of the version segment in its path:
+ * /1.21.4/develop/blocks/first-block -> /develop/blocks/first-block. Shared by SearchService's
+ * URL dedup and the example diversity cap so the same page indexed at two doc versions counts
+ * as one document in both.
+ */
+export function urlPathKey(url: string): string {
+  return url.replace(/\/\d+\.\d+(?:\.\d+)?\//, '/');
+}
+
+export interface DeduplicateOptions {
+  /**
+   * Relevance floor. Results scoring strictly below this are dropped before ranking.
+   * NOTE: this applies to the POOLED, un-normalized scores — the lexical strategies run 0-200+
+   * via calculateRelevanceScore while the semantic strategy runs 0-100 via
+   * (cosine - 0.3) * (100/0.7). Re-derive this constant if the strategies are ever put on one
+   * scale.
+   */
+  minScore?: number;
+  /**
+   * Diversity cap: at most this many results per source document in the first pass. Overflow is
+   * NOT discarded — it backfills, in score order, only when distinct documents cannot fill
+   * `limit`.
+   */
+  maxPerDocument?: number;
+}
+
+/** Marks a result that only made the cut because distinct documents ran out. */
+export const BACKFILL_REASON = 'additional snippet from an already-listed page';
+
+interface DeduplicableItem {
+  code?: string;
+  url?: string;
+  document_url?: string;
+  document_id?: number;
+  section_heading?: string | null;
+}
+
+/** Exact-content key: identical code is one result regardless of where it came from. */
+function contentKey(item: DeduplicableItem): string {
+  if (item.code) {
+    // Use first 200 chars of code as key
+    return item.code.substring(0, 200).replace(/\s+/g, ' ');
+  }
+  // This previously read `item.url`, which code-block results never carry (they have
+  // `document_url`), collapsing every code-less item to "::<heading>".
+  return `${item.url ?? item.document_url ?? ''}::${item.section_heading ?? ''}`;
+}
+
+/** Source-document key for the diversity cap; '' means "no identity, do not cap". */
+function documentKey(item: DeduplicableItem): string {
+  const url = item.url ?? item.document_url;
+  if (url) return urlPathKey(url);
+  return item.document_id !== undefined ? `doc:${item.document_id}` : '';
+}
+
+/**
+ * Deduplicate and rank results.
+ *
+ * With `maxPerDocument` set, the output is intentionally NOT in strict score order: a second
+ * snippet from an already-represented page is held back and appended only if distinct pages
+ * cannot fill `limit`. The cap never costs the caller results — it only reorders them.
+ */
+export function deduplicateAndRank<T extends DeduplicableItem>(
+  results: ScoredResult<T>[],
+  limit: number,
+  options: DeduplicateOptions = {}
+): ScoredResult<T>[] {
+  const { minScore = 0, maxPerDocument } = options;
+
+  // .filter() already copies, so the caller's array is never mutated by the sort
+  const sorted = results
+    .filter((result) => result.score >= minScore)
+    .sort((a, b) => b.score - a.score);
+
   const seen = new Set<string>();
-  const deduplicated: ScoredResult<T>[] = [];
+  const perDocument = new Map<string, number>();
+  const primary: ScoredResult<T>[] = [];
+  const overflow: ScoredResult<T>[] = [];
 
   for (const result of sorted) {
-    // Create a dedup key
-    let key: string;
-    if (result.item.code) {
-      // Use first 200 chars of code as key
-      key = result.item.code.substring(0, 200).replace(/\s+/g, ' ');
-    } else {
-      key = `${result.item.url || ''}::${result.item.section_heading || ''}`;
-    }
+    const key = contentKey(result.item);
+    if (seen.has(key)) continue;
+    seen.add(key);
 
-    if (!seen.has(key)) {
-      seen.add(key);
-      deduplicated.push(result);
+    const docKey = documentKey(result.item);
+    const used = perDocument.get(docKey) ?? 0;
+    if (maxPerDocument !== undefined && docKey !== '' && used >= maxPerDocument) {
+      overflow.push(result);
+      continue;
     }
+    if (docKey !== '') perDocument.set(docKey, used + 1);
 
-    if (deduplicated.length >= limit) break;
+    primary.push(result);
+    if (primary.length >= limit) return primary;
   }
 
-  return deduplicated;
+  // Label the backfilled entries so a repeated page reads as "the corpus had nothing else"
+  // rather than as breadth. Build new objects — never mutate the caller's results.
+  const backfilled = overflow
+    .slice(0, Math.max(0, limit - primary.length))
+    .map((result) => ({ ...result, matchReasons: [...result.matchReasons, BACKFILL_REASON] }));
+
+  return [...primary, ...backfilled];
 }
 
 /**

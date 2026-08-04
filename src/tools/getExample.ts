@@ -1,6 +1,11 @@
 /**
- * Get code examples tool - Retrieves code examples from indexed documentation
- * Optimized for AI consumption with rich context and metadata
+ * get_doc_snippet tool - Retrieves code snippets from the indexed documentation corpus
+ * (docs.db). Optimized for AI consumption with rich context and metadata.
+ *
+ * Renamed from `get_example` in 2.2.0 because agents confused it with `search_mod_examples`
+ * (see src/tools/modExamples.ts), which searches the curated real-mod corpus and is the better
+ * source for idiomatic implementations. The file and its `handleGetExample` export keep the old
+ * name to limit the rename's blast radius; only the MCP-visible tool name changed.
  */
 
 import { ExampleService } from '../services/example-service.js';
@@ -16,17 +21,26 @@ export interface GetExampleParams {
   minecraftVersion?: string;
   category?: string;
   limit?: number;
+  /** Tool name the request arrived under; drives the deprecation notice on the old alias. */
+  invokedAs?: string;
 }
 
 const SCOPES: Scope[] = ['target', 'reference', 'all'];
 
+/** Prepended to the output when the caller used the pre-2.2.0 `get_example` name. */
+const DEPRECATION_NOTICE =
+  '> **Note:** `get_example` was renamed to `get_doc_snippet` — it searches the scraped ' +
+  'documentation corpus. For implementations taken from real 1.12.2 mods, use ' +
+  '`search_mod_examples`. The old name still works but will be removed.\n\n';
+
 /**
- * Handle get_example tool request
- * Returns formatted code examples with full context for AI
+ * Handle get_doc_snippet tool request (also reachable under the deprecated `get_example` name)
+ * Returns formatted code snippets with full context for AI
  */
 export async function handleGetExample(params: GetExampleParams): Promise<CallToolResult> {
   try {
-    const { topic, language = 'java', loader, category, limit = 5 } = params;
+    const { topic, language = 'java', loader, category, limit = 5, invokedAs } = params;
+    const deprecationNotice = invokedAs === 'get_example' ? DEPRECATION_NOTICE : '';
     let { minecraftVersion } = params;
 
     // Scope defaults to 'target' (Cleanroom/Forge 1.12.2)
@@ -57,7 +71,9 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
     // Validate and clamp limit
     const finalLimit = Math.min(Math.max(limit, 1), 10);
 
-    console.error(`[get_example] Searching for: "${topic}" (${language}, limit: ${finalLimit})`);
+    console.error(
+      `[get_doc_snippet] Searching for: "${topic}" (${language}, limit: ${finalLimit})`
+    );
 
     // Get examples (synchronous - uses SQLite)
     const examples = await exampleService.getExamples({
@@ -94,14 +110,20 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
       message += '- Remove version or loader filters\n';
       message += "- Try `scope: 'all'` to include the Fabric/NeoForge reference corpus\n";
       message += '- Try searching with the `search_docs` tool first\n';
+      message +=
+        "- Try `language: 'json'` or `'groovy'` — this tool defaults to `java` and the docs " +
+        'corpus tags resource files separately\n';
+      message +=
+        '- For a real-mod implementation of this pattern, try `search_mod_examples` (curated ' +
+        'mod-examples corpus; run `cleanroom-modding-mcp manage` if that tool is not listed)\n';
 
-      console.error(`[get_example] No results found for "${topic}"`);
+      console.error(`[get_doc_snippet] No results found for "${topic}"`);
 
       return {
         content: [
           {
             type: 'text',
-            text: message,
+            text: deprecationNotice + message,
           },
         ],
       };
@@ -113,18 +135,18 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
     // Close after formatting
     exampleService.close();
 
-    console.error(`[get_example] Returning ${examples.length} example(s) for "${topic}"`);
+    console.error(`[get_doc_snippet] Returning ${examples.length} example(s) for "${topic}"`);
 
     return {
       content: [
         {
           type: 'text',
-          text: formattedOutput,
+          text: deprecationNotice + formattedOutput,
         },
       ],
     };
   } catch (error) {
-    console.error('[get_example] Error:', error);
+    console.error('[get_doc_snippet] Error:', error);
 
     return {
       content: [

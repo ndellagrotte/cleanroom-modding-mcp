@@ -8,6 +8,7 @@ import { EmbeddingGenerator } from '../indexer/embeddings.js';
 import {
   tokenizeQuery,
   calculateRelevanceScore,
+  urlPathKey,
   type TokenizedQuery,
   type ScoredResult,
 } from './search-utils.js';
@@ -356,17 +357,11 @@ export class SearchService {
     preferredVersion: string | undefined,
     limit: number
   ): ScoredResult<DocumentResult>[] {
-    // Extract URL path without version for grouping
-    const getUrlPathKey = (url: string): string => {
-      // Remove version from URL path: /1.21.4/develop/blocks/first-block -> /develop/blocks/first-block
-      return url.replace(/\/\d+\.\d+(?:\.\d+)?\//, '/');
-    };
-
-    // Group by URL path
+    // Group by URL path (version-stripped — see urlPathKey in search-utils)
     const urlGroups = new Map<string, ScoredResult<DocumentResult>[]>();
 
     for (const result of results) {
-      const pathKey = getUrlPathKey(result.item.url);
+      const pathKey = urlPathKey(result.item.url);
       const existing = urlGroups.get(pathKey) || [];
       existing.push(result);
       urlGroups.set(pathKey, existing);
@@ -874,7 +869,7 @@ export class SearchService {
       output += '---\n\n';
     }
 
-    output += `\n**Tip:** Use \`get_example\` tool with specific topics to get code examples from these pages.\n`;
+    output += `\n**Tip:** Use \`get_doc_snippet\` for code blocks from these pages, or \`search_mod_examples\` for real-mod implementations of the same pattern.\n`;
 
     return output;
   }

@@ -18,7 +18,7 @@ const NOT_INSTALLED_MESSAGE =
   'AI-analyzed code examples from canonical open-source 1.12.2 mods (Forge and Cleanroom-native), ' +
   'with per-example source + license attribution and SRG cross-links.\n\n' +
   'To install it, run: `cleanroom-modding-mcp manage`.\n\n' +
-  'The standard documentation tools (search_docs, get_example) are still available.';
+  'The standard documentation tools (search_docs, get_doc_snippet) are still available.';
 
 const OUTDATED_SCHEMA_MESSAGE =
   'The installed mod examples database uses an outdated schema and has been disabled.\n\n' +
@@ -42,7 +42,9 @@ export const searchModExamplesTool = {
     'Search curated, AI-analyzed code examples from canonical open-source Minecraft 1.12.2 ' +
     'mods (Forge and Cleanroom-native). These are real-world, idiomatic implementations with ' +
     'explanations, best practices, and SRG cross-links. Use this when you need a proven 1.12.2 ' +
-    'pattern (blocks, tile entities, capabilities, networking, mixins, GUIs, …).',
+    'pattern (blocks, tile entities, capabilities, networking, mixins, GUIs, …). ' +
+    'See also `get_doc_snippet` for code blocks quoted from the scraped tutorial/wiki ' +
+    'documentation, and `search_docs` for prose documentation.',
   inputSchema: {
     type: 'object' as const,
     properties: {

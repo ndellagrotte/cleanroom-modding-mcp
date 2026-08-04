@@ -142,9 +142,16 @@ const BASE_TOOLS = [
     },
   },
   {
-    name: 'get_example',
+    name: 'get_doc_snippet',
     description:
-      'Get code examples for Minecraft modding topics. Returns complete, working code snippets with full context including explanations, source documentation, and metadata. Defaults to the target scope (Cleanroom/Forge 1.12.2).',
+      'Get code snippets out of the scraped modding documentation corpus (docs.db): code ' +
+      'blocks lifted from tutorials and wikis, returned with their surrounding section text, ' +
+      'source URL, loader, and Minecraft version. Defaults to the target scope ' +
+      '(Cleanroom/Forge 1.12.2). This tool only ever returns what the documentation shows — ' +
+      'for idiomatic, production-tested implementations taken from real 1.12.2 mods, prefer ' +
+      '`search_mod_examples` (curated mod-examples corpus; listed only when the optional ' +
+      'examples database is installed — run `cleanroom-modding-mcp manage` to add it). ' +
+      'See also `search_docs` for prose documentation rather than code.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -295,7 +302,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       });
     }
 
-    case 'get_example': {
+    // `get_example` is the pre-2.2.0 name, kept as an UNLISTED dispatch alias so hardcoded
+    // prompts and configs don't hard-fail on the `default:` throw below. Only `get_doc_snippet`
+    // is returned by ListTools. Remove the alias in 3.0.0.
+    case 'get_example':
+    case 'get_doc_snippet': {
       return await handleGetExample({
         topic: (args?.topic as string) || '',
         language: args?.language as string | undefined,
@@ -304,6 +315,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         minecraftVersion: args?.minecraft_version as string | undefined,
         category: args?.category as string | undefined,
         limit: args?.limit as number | undefined,
+        invokedAs: name,
       });
     }
 
