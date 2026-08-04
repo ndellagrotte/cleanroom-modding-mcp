@@ -153,13 +153,33 @@ const artifactPaths = includedIds.flatMap((id) => [dbFile(id), manifestFile(id)]
 run('gh', ['auth', 'status']);
 const existingAssets = releaseAssets();
 if (existingAssets === null) {
+  // gh forwards --target verbatim as the API's target_commitish, which only accepts a branch
+  // name or a full SHA. Targeting the branch means GitHub tags the remote tip, so require it
+  // to be the commit that was just validated.
+  const branch = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], true);
+  if (branch === 'HEAD') {
+    fail(`detached HEAD; check out a branch before releasing ${tag}`);
+  }
+  const lsRemote = run('git', ['ls-remote', 'origin', `refs/heads/${branch}`], true);
+  if (!lsRemote) {
+    fail(`origin has no branch ${branch}; push it before releasing ${tag}`);
+  }
+  const remoteSha = lsRemote.split('\t')[0] ?? '';
+  const localSha = run('git', ['rev-parse', 'HEAD'], true);
+  if (remoteSha !== localSha) {
+    fail(
+      `origin/${branch} is at ${remoteSha.slice(0, 7)} but HEAD is ${localSha.slice(0, 7)}; ` +
+        `push before releasing ${tag}`
+    );
+  }
+  console.log(`Creating ${tag} on ${branch} (${localSha.slice(0, 7)}).`);
   run('gh', [
     'release',
     'create',
     tag,
     ...artifactPaths,
     '--target',
-    'HEAD',
+    branch,
     '--title',
     tag,
     '--generate-notes',
