@@ -9,6 +9,7 @@ import { SearchService } from '../services/search-service.js';
 import type { SearchResult, SearchOptions } from '../services/search-service.js';
 import { isLoader, TARGET_VERSION, type Scope } from '../loaders.js';
 import { DOC_CATEGORIES } from '../categories.js';
+import { REPO_URL } from '../dbs.js';
 
 export interface SearchDocsParams {
   query: string;
@@ -147,7 +148,10 @@ export async function handleSearchDocs(params: SearchDocsParams): Promise<CallTo
       content: [
         {
           type: 'text',
-          text: `Error searching documentation: ${errorMessage}\n\nPlease ensure the documentation database has been indexed. Run 'npm run index' to build the database.`,
+          text:
+            `Error searching documentation: database unavailable — automatic installation did not complete. ` +
+            `Ensure CLEANROOM_MCP_SKIP_AUTO_UPDATE is unset and restart the server. ` +
+            `Release assets and status: ${REPO_URL}/releases\n\nOriginal error: ${errorMessage}`,
         },
       ],
       isError: true,

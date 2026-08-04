@@ -6,6 +6,7 @@
 import { ExampleService } from '../services/example-service.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { isLoader, type Scope } from '../loaders.js';
+import { REPO_URL } from '../dbs.js';
 
 export interface GetExampleParams {
   topic: string;
@@ -129,9 +130,14 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
       content: [
         {
           type: 'text',
-          text: `Error retrieving examples: ${error instanceof Error ? error.message : 'Unknown error'}\n\nThe documentation database may not be initialized. Please ensure the indexer has been run with \`npm run index-docs\`.`,
+          text:
+            `Documentation database unavailable — automatic installation did not complete. ` +
+            `Ensure CLEANROOM_MCP_SKIP_AUTO_UPDATE is unset and restart the server. ` +
+            `Release assets and status: ${REPO_URL}/releases\n\n` +
+            `Original error: ${error instanceof Error ? error.message : 'Unknown error'}`,
         },
       ],
+      isError: true,
     };
   }
 }

@@ -475,11 +475,18 @@ async function main() {
   } else {
     try {
       console.error('[DbVersioning] Checking for database updates...');
-      const updated = await autoUpdateAll();
+      const result = await autoUpdateAll();
       console.error('[DbVersioning] Update check complete');
-      if (updated) {
+      if (result.updated.length > 0) {
         console.error('[DbVersioning] Database(s) updated. Restart recommended for best results.');
-      } else {
+      }
+      if (result.failed.length > 0) {
+        console.error(
+          `[DbVersioning] Database update failed for: ${result.failed.join(', ')}. ` +
+            'Data-backed tools may be unavailable; see the preceding errors and ' +
+            'https://github.com/ndellagrotte/cleanroom-modding-mcp/releases'
+        );
+      } else if (result.updated.length === 0) {
         console.error('[DbVersioning] Installed databases are up to date');
       }
     } catch (error) {

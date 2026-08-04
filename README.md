@@ -125,13 +125,23 @@ pnpm run manifest -- --db docs --release-tag v0.5.0   # generate a release manif
 
 ### Publishing
 
-Releases are published locally to the public npm registry. After validation, bump the version and publish it:
+Releases are published locally with one fail-closed command. It verifies the
+already-built `data/docs.db`, creates the matching `v{package version}` GitHub release
+with the required docs pair plus every already-built optional database pair,
+and only then publishes npm:
 
 ```bash
-pnpm run validate
 pnpm version patch       # or minor / major / an explicit version
-pnpm run release         # runs npm publish; prepublishOnly revalidates and builds
+pnpm run release
 ```
+
+The command requires authenticated `gh` and `npm` CLIs. If npm publication
+fails after the GitHub release was created, fix npm authentication and rerun
+the same command; it verifies/reuses the asset-bearing release. To repair an
+already-published package version, first build `data/docs.db`, then run
+`pnpm run release:repair` to create/upload only the matching GitHub assets.
+Pass `--rebuild-docs` only when a deliberate fresh documentation index is needed.
+Set `CLEANROOM_RELEASE_DATA_DIR` to release already-built databases from another directory.
 
 ### Distribution convention
 

@@ -10,8 +10,15 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
+import Database from 'better-sqlite3';
 
-const DB_CONTENT = Buffer.from('sqlite pretend content');
+const fixtureDb = new Database(':memory:');
+fixtureDb.exec(
+  `CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+   INSERT INTO metadata VALUES ('schema_version', '2');`
+);
+const DB_CONTENT = fixtureDb.serialize();
+fixtureDb.close();
 const DB_HASH = crypto.createHash('sha256').update(DB_CONTENT).digest('hex');
 
 interface MockRoute {
@@ -98,6 +105,7 @@ describe('DbVersioning distribution flow', () => {
   function manifestFixture(overrides: Partial<Record<string, unknown>> = {}) {
     return {
       version: '1.2.0',
+      schemaVersion: 2,
       timestamp: '2026-01-02T00:00:00Z',
       type: 'full',
       hash: DB_HASH,
@@ -126,6 +134,23 @@ describe('DbVersioning distribution flow', () => {
     expect(remote?.downloadUrl).toBe('https://cdn.test/v0.5.0/docs.db');
   });
 
+  it('rejects a release manifest whose schema is missing or incompatible', async () => {
+    for (const schemaVersion of [undefined, 1]) {
+      const manifest = manifestFixture({ schemaVersion });
+      vi.stubGlobal(
+        'fetch',
+        mockFetch([
+          { url: /\/releases$/, body: releasesFixture() },
+          { url: /docs-manifest\.json$/, body: manifest },
+        ])
+      );
+
+      const { DbVersioning } = await load();
+      expect(await new DbVersioning().getRemoteManifest()).toBeNull();
+      vi.resetModules();
+    }
+  });
+
   it('downloads, verifies, and installs a database', async () => {
     const manifest = manifestFixture({ downloadUrl: 'https://cdn.test/v0.5.0/docs.db' });
     vi.stubGlobal('fetch', mockFetch([{ url: /docs\.db$/, body: {}, binary: DB_CONTENT }]));
@@ -137,6 +162,34 @@ describe('DbVersioning distribution flow', () => {
     expect(ok).toBe(true);
     expect(fs.readFileSync(dbPath('docs'))).toEqual(DB_CONTENT);
     expect(fs.existsSync(path.join(tempDir, 'docs-download-failed.json'))).toBe(false);
+  });
+
+  it('creates manifests only for schema-compatible databases', async () => {
+    const { DbVersioning, DBS } = await load();
+    const Database = (await import('better-sqlite3')).default;
+    const dbFile = path.join(tempDir, 'built-docs.db');
+    const db = new Database(dbFile);
+    db.exec(
+      `CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+       INSERT INTO metadata VALUES ('schema_version', '2');`
+    );
+    db.close();
+
+    const manifest = await new DbVersioning(DBS.docs, dbFile).createManifest(
+      '2.1.6',
+      'full',
+      'test',
+      'v2.1.6'
+    );
+    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.downloadUrl).toContain('/v2.1.6/docs.db');
+
+    const stale = new Database(dbFile);
+    stale.prepare("UPDATE metadata SET value='1' WHERE key='schema_version'").run();
+    stale.close();
+    await expect(
+      new DbVersioning(DBS.docs, dbFile).createManifest('2.1.6', 'full', 'test', 'v2.1.6')
+    ).rejects.toThrow('database schema v1 does not match required v2');
   });
 
   it('rejects a hash mismatch, writes the poison-pill marker, and skips that version thereafter', async () => {
@@ -167,6 +220,20 @@ describe('DbVersioning distribution flow', () => {
 
     // Poison pill: the same broken release must not be offered again.
     expect(await versioning.isUpdateAvailable()).toBe(false);
+  });
+
+  it('rejects an unreadable database even when its manifest hash matches', async () => {
+    const unreadable = Buffer.from('not sqlite');
+    const manifest = manifestFixture({
+      hash: crypto.createHash('sha256').update(unreadable).digest('hex'),
+      size: unreadable.length,
+      downloadUrl: 'https://cdn.test/v0.5.0/docs.db',
+    });
+    vi.stubGlobal('fetch', mockFetch([{ url: /docs\.db$/, body: {}, binary: unreadable }]));
+
+    const { DbVersioning, dbPath } = await load();
+    expect(await new DbVersioning().downloadDatabase(manifest as never)).toBe(false);
+    expect(fs.existsSync(dbPath('docs'))).toBe(false);
   });
 
   it('clears the poison-pill marker after a successful download', async () => {
@@ -230,6 +297,7 @@ describe('DbVersioning distribution flow', () => {
           url: /mappings-manifest\.json$/,
           body: {
             version: '1.2.0',
+            schemaVersion: 2,
             timestamp: '',
             type: 'full',
             hash: DB_HASH,
@@ -284,12 +352,19 @@ describe('DbVersioning distribution flow', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const { autoUpdateAll, dbPath } = await load();
-    const updated = await autoUpdateAll();
+    const result = await autoUpdateAll();
 
-    expect(updated).toBe(true);
+    expect(result).toEqual({ updated: ['docs'], failed: [] });
     expect(fs.existsSync(dbPath('docs'))).toBe(true);
     // Optional DBs are absent locally, so no requests may target their assets.
     const urls = fetchMock.mock.calls.map((call) => String(call[0]));
     expect(urls.some((u) => /mappings|examples|cleanroom-api/.test(u))).toBe(false);
+  });
+
+  it('reports a missing required database as failed when no release can supply it', async () => {
+    vi.stubGlobal('fetch', mockFetch([{ url: /\/releases$/, body: [] }]));
+
+    const { autoUpdateAll } = await load();
+    expect(await autoUpdateAll()).toEqual({ updated: [], failed: ['docs'] });
   });
 });

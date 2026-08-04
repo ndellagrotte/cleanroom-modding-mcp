@@ -1,6 +1,6 @@
 {
   "name": "@ndellagrotte/cleanroom-modding-mcp",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "description": "MCP server enabling AI agents to build Cleanroom (Minecraft 1.12.2) mods — docs, SRG mappings, and cross-loader porting knowledge",
   "keywords": [
     "minecraft",
@@ -65,7 +65,8 @@
     "prebuild:prod": "pnpm run clean",
     "postinstall": "node scripts/postinstall.js",
     "prepublishOnly": "pnpm run typecheck && pnpm run lint && pnpm run test -- --run && pnpm run build:prod",
-    "release": "npm publish",
+    "release": "tsx scripts/release.ts",
+    "release:repair": "tsx scripts/release.ts --assets-only",
     "validate": "pnpm run typecheck && pnpm run lint && pnpm run test",
     "validate:equivalence": "npx tsx scripts/validate-equivalence.ts",
     "manage": "npx tsx src/index.ts manage",

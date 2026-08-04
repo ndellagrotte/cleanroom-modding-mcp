@@ -7,7 +7,8 @@
 
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { LOADERS, LOADER_IDS, TARGET_VERSION } from '../loaders.js';
-import { DBS, DB_IDS, isInstalled } from '../dbs.js';
+import { DBS, DB_IDS, dbPath, isInstalled } from '../dbs.js';
+import { readDbSchemaVersion } from '../mappings/schema.js';
 import { CleanroomApiService } from '../services/cleanroom-api-service.js';
 import { ExampleService } from '../services/example-service.js';
 import { MappingsService } from '../services/mappings-service.js';
@@ -54,6 +55,8 @@ export function handleListTargets(): CallToolResult {
     } catch {
       mappingsOutdated = false;
     }
+    const docsOutdated =
+      isInstalled('docs') && readDbSchemaVersion(dbPath('docs')) !== DBS.docs.schemaVersion;
     let cleanroomApiOutdated = false;
     try {
       cleanroomApiOutdated = CleanroomApiService.isSchemaOutdated();
@@ -71,7 +74,10 @@ export function handleListTargets(): CallToolResult {
     for (const id of DB_IDS) {
       const spec = DBS[id];
       let status: string;
-      if (id === 'mappings' && mappingsOutdated) {
+      if (id === 'docs' && docsOutdated) {
+        status =
+          '⚠️ installed but schema-outdated (documentation tools may be unavailable; updates on next startup)';
+      } else if (id === 'mappings' && mappingsOutdated) {
         // File exists but the schema gate disabled it — "installed" would lie.
         status =
           '⚠️ installed but schema-outdated (mappings tools disabled; updates on next startup, or run `cleanroom-modding-mcp manage`)';

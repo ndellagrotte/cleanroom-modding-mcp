@@ -15,6 +15,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import https from 'https';
+import Database from 'better-sqlite3';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CONFIGURATION (from the compiled dist/ registry — published tarballs always ship dist/)
@@ -23,7 +24,8 @@ import https from 'https';
 let CONFIG;
 try {
   const { getDefaultDataDir } = await import('../dist/data-dir.js');
-  const { DBS, getApiBase, REPO_URL, USER_AGENT, PACKAGE_NAME } = await import('../dist/dbs.js');
+  const { DBS, getApiBase, REPO_URL, USER_AGENT, PACKAGE_NAME, selectRelease } =
+    await import('../dist/dbs.js');
   CONFIG = {
     releasesUrl: `${getApiBase()}/releases`,
     dataDir: getDefaultDataDir(),
@@ -32,6 +34,8 @@ try {
     userAgent: USER_AGENT,
     repoUrl: REPO_URL,
     packageName: PACKAGE_NAME,
+    docsSpec: DBS.docs,
+    selectRelease,
   };
 } catch {
   console.log('cleanroom-modding-mcp: dist/ not built — skipping database download.');
@@ -391,13 +395,20 @@ function printStepIndicator(step, total, description, status = 'pending') {
   );
 }
 
-function printWelcomeScreen() {
+function printWelcomeScreen(databaseAvailable = true) {
   const width = Math.min(getTerminalWidth(), 72);
   const innerWidth = width - 4;
 
   console.log();
   console.log(
-    c.brightGreen + '  ' + sym.sparkle + ' Installation Complete! ' + sym.sparkle + c.reset
+    c.brightGreen +
+      '  ' +
+      sym.sparkle +
+      (databaseAvailable
+        ? ' Installation Complete! '
+        : ' Server Installed — Database Unavailable ') +
+      sym.sparkle +
+      c.reset
   );
   console.log();
 
@@ -408,10 +419,17 @@ function printWelcomeScreen() {
 
   const welcomeLines = [
     '',
-    `${c.bold}${c.brightWhite}Welcome to Cleanroom Modding MCP!${c.reset}`,
+    `${c.bold}${c.brightWhite}${databaseAvailable ? 'Welcome to Cleanroom Modding MCP!' : 'Documentation database was not installed'}${c.reset}`,
     '',
-    `${c.dim}Your AI assistant now has access to Minecraft${c.reset}`,
-    `${c.dim}modding knowledge for:${c.reset}`,
+    ...(databaseAvailable
+      ? [
+          `${c.dim}Your AI assistant now has access to Minecraft${c.reset}`,
+          `${c.dim}modding knowledge for:${c.reset}`,
+        ]
+      : [
+          `${c.dim}The server will retry on startup. Data-backed tools${c.reset}`,
+          `${c.dim}remain unavailable until a release database downloads.${c.reset}`,
+        ]),
     '',
     `  ${c.brightGreen}${sym.check}${c.reset} ${c.cyan}Cleanroom / Forge 1.12.2${c.reset} - the development target`,
     `  ${c.brightGreen}${sym.check}${c.reset} ${c.magenta}Fabric & NeoForge${c.reset} - porting reference`,
@@ -662,17 +680,8 @@ async function fetchReleaseInfo() {
   const response = await httpsGet(CONFIG.releasesUrl);
   const releases = JSON.parse(response);
 
-  // Newest v-tag release that has both required assets (releases whose asset
-  // upload failed are skipped).
-  for (const release of releases) {
-    if (!release.tag_name.startsWith('v')) continue;
-    const hasManifest = release.assets.some((a) => a.name === CONFIG.manifestFileName);
-    const hasDb = release.assets.some((a) => a.name === CONFIG.dbFileName);
-
-    if (hasManifest && hasDb) {
-      return release;
-    }
-  }
+  const selected = CONFIG.selectRelease(releases, CONFIG.docsSpec, { requireManifest: true });
+  if (selected) return selected.release;
 
   throw new Error('No suitable release found with database artifacts');
 }
@@ -714,6 +723,23 @@ async function verifyWithProgress(filePath, expectedHash, progress) {
 
     stream.on('error', reject);
   });
+}
+
+function readSchemaVersion(filePath) {
+  try {
+    const db = new Database(filePath, { readonly: true });
+    try {
+      const row = db
+        .prepare("SELECT value FROM metadata WHERE key = 'schema_version'")
+        .get();
+      const version = Number.parseInt(row?.value, 10);
+      return Number.isNaN(version) ? null : version;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
 }
 
 async function main() {
@@ -769,6 +795,11 @@ async function main() {
       if (!manifestAsset) throw new Error('No manifest found in release');
 
       manifest = await fetchManifest(manifestAsset.browser_download_url);
+      if (manifest.schemaVersion !== CONFIG.docsSpec.schemaVersion) {
+        throw new Error(
+          `Release manifest schema v${manifest.schemaVersion ?? 'missing'} does not match required v${CONFIG.docsSpec.schemaVersion}`
+        );
+      }
 
       // Find the database asset in the release to ensure we have the correct download URL
       // This overrides the URL in the manifest which might be outdated or incorrect
@@ -784,7 +815,7 @@ async function main() {
         c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
       );
       printSectionFooter();
-      printWelcomeScreen();
+      printWelcomeScreen(false);
       return;
     }
 
@@ -822,7 +853,7 @@ async function main() {
         c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
       );
       printSectionFooter();
-      printWelcomeScreen();
+      printWelcomeScreen(false);
       return;
     }
 
@@ -849,8 +880,15 @@ async function main() {
           c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
         );
         printSectionFooter();
-        printWelcomeScreen();
+        printWelcomeScreen(false);
         return;
+      }
+
+      const downloadedSchema = readSchemaVersion(tempPath);
+      if (downloadedSchema !== CONFIG.docsSpec.schemaVersion) {
+        throw new Error(
+          `Downloaded database schema v${downloadedSchema ?? 'unreadable'} does not match required v${CONFIG.docsSpec.schemaVersion}`
+        );
       }
 
       verifyProgress.finish(true, 'Integrity verified!');
@@ -868,7 +906,7 @@ async function main() {
         c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
       );
       printSectionFooter();
-      printWelcomeScreen();
+      printWelcomeScreen(false);
       return;
     }
 
@@ -889,7 +927,7 @@ async function main() {
       c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
     );
     console.log();
-    printWelcomeScreen();
+    printWelcomeScreen(false);
   } finally {
     cleanup();
   }

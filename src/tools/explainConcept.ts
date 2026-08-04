@@ -6,6 +6,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConceptService, type ConceptExplanation } from '../services/concept-service.js';
 import { isLoader, type Loader } from '../loaders.js';
+import { REPO_URL } from '../dbs.js';
 
 export interface ExplainConceptParams {
   concept: string;
@@ -96,7 +97,10 @@ export async function handleExplainConcept(params: ExplainConceptParams): Promis
       content: [
         {
           type: 'text',
-          text: `Error explaining concept: ${errorMessage}\n\nPlease ensure the documentation database has been indexed. Run 'npm run index-docs' to build the database.`,
+          text:
+            `Error explaining concept: documentation database unavailable — automatic installation ` +
+            `did not complete. Ensure CLEANROOM_MCP_SKIP_AUTO_UPDATE is unset and restart the server. ` +
+            `Release assets and status: ${REPO_URL}/releases\n\nOriginal error: ${errorMessage}`,
         },
       ],
       isError: true,

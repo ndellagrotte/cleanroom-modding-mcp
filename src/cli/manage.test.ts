@@ -104,6 +104,16 @@ describe('selectRelease', () => {
     expect(selectRelease(releases, DBS.docs)?.release.id).toBe(2);
   });
 
+  it('ignores drafts and prereleases', () => {
+    const draft = { ...release(4, 'v0.6.0', ['docs.db', 'docs-manifest.json']), draft: true };
+    const prerelease = {
+      ...release(3, 'v0.5.0-beta.1', ['docs.db', 'docs-manifest.json']),
+      prerelease: true,
+    };
+    const stable = release(2, 'v0.4.0', ['docs.db', 'docs-manifest.json']);
+    expect(selectRelease([draft, prerelease, stable], DBS.docs)?.release.id).toBe(2);
+  });
+
   it('treats the manifest asset as optional', () => {
     const releases = [release(1, 'v0.4.0', ['mappings.db'])];
     const selected = selectRelease(releases, DBS.mappings);

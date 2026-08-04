@@ -18,6 +18,7 @@ import {
   selectRelease,
   REPO_URL,
   USER_AGENT,
+  type DbId,
   type DbSpec,
   type GitHubRelease,
 } from './dbs.js';
@@ -29,6 +30,7 @@ export const LOCAL_BUILD_SOURCE = 'local-build';
 
 export interface DbVersionManifest {
   version: string;
+  schemaVersion: number;
   timestamp: string;
   type: 'incremental' | 'full';
   hash: string;
@@ -50,6 +52,7 @@ export class DbVersioning {
   private failedMarkerPath: string;
   private dbPath: string;
   private dataDir: string;
+  private updateCheckFailed = false;
 
   constructor(spec: DbSpec = DBS.docs, dbPath?: string) {
     this.spec = spec;
@@ -114,6 +117,14 @@ export class DbVersioning {
 
       const manifest = (await manifestResponse.json()) as DbVersionManifest;
 
+      if (manifest.schemaVersion !== this.spec.schemaVersion) {
+        console.error(
+          `[DbVersioning:${this.spec.id}] Release manifest has schema v${manifest.schemaVersion ?? 'missing'} ` +
+            `but this build expects v${this.spec.schemaVersion}`
+        );
+        return null;
+      }
+
       // The release asset is authoritative for the download URL; the URL baked
       // into the manifest may be outdated or wrong.
       manifest.downloadUrl = selected.dbAsset.browser_download_url;
@@ -152,6 +163,7 @@ export class DbVersioning {
    */
   async isUpdateAvailable(): Promise<boolean> {
     try {
+      this.updateCheckFailed = false;
       const local = this.getLocalManifest();
       if (!local) {
         console.error(`[DbVersioning:${this.spec.id}] No local manifest found, update available`);
@@ -167,6 +179,7 @@ export class DbVersioning {
 
       const remote = await this.getRemoteManifest();
       if (!remote) {
+        this.updateCheckFailed = true;
         console.error(`[DbVersioning:${this.spec.id}] Could not fetch remote manifest`);
         return false;
       }
@@ -307,13 +320,10 @@ export class DbVersioning {
       // asset that lags a schema bump (e.g. a carry-forward that never re-indexed) would
       // otherwise re-trigger the force-redownload every startup — an infinite ~25MB loop.
       // Reject it and mark it failed so we stop re-pulling the same broken schema.
-      // Only reject when the schema is READABLE and mismatches (a real stale carry-forward
-      // asset is a valid sqlite file with schema_version=1). A null read means unreadable —
-      // the hash already verified integrity, so don't second-guess it here.
       const downloadedSchema = readDbSchemaVersion(tempPath);
-      if (downloadedSchema !== null && downloadedSchema !== this.spec.schemaVersion) {
+      if (downloadedSchema !== this.spec.schemaVersion) {
         console.error(
-          `[DbVersioning:${this.spec.id}] Downloaded DB has schema v${downloadedSchema} but this ` +
+          `[DbVersioning:${this.spec.id}] Downloaded DB has schema v${downloadedSchema ?? 'unreadable'} but this ` +
             `build expects v${this.spec.schemaVersion} — rejecting the stale asset`
         );
         fs.unlinkSync(tempPath);
@@ -325,7 +335,7 @@ export class DbVersioning {
                 version: manifest.version,
                 hash: manifest.hash,
                 failedAt: new Date().toISOString(),
-                reason: `Schema mismatch: downloaded v${downloadedSchema}, expected v${this.spec.schemaVersion}`,
+                reason: `Schema mismatch: downloaded v${downloadedSchema ?? 'unreadable'}, expected v${this.spec.schemaVersion}`,
               },
               null,
               2
@@ -395,6 +405,14 @@ export class DbVersioning {
         throw new Error(`Database file not found: ${this.dbPath}`);
       }
 
+      const dbSchema = readDbSchemaVersion(this.dbPath);
+      if (dbSchema !== this.spec.schemaVersion) {
+        throw new Error(
+          `Cannot create ${this.spec.manifestName}: database schema v${dbSchema ?? 'unreadable'} ` +
+            `does not match required v${this.spec.schemaVersion}`
+        );
+      }
+
       const hash = await this.calculateFileHash(this.dbPath);
       const stats = fs.statSync(this.dbPath);
 
@@ -403,6 +421,7 @@ export class DbVersioning {
 
       const manifest: DbVersionManifest = {
         version,
+        schemaVersion: this.spec.schemaVersion,
         timestamp: new Date().toISOString(),
         type,
         hash,
@@ -422,29 +441,31 @@ export class DbVersioning {
   /**
    * Perform automatic update check and download if needed.
    */
-  async autoUpdate(): Promise<boolean> {
+  async autoUpdate(): Promise<'updated' | 'up-to-date' | 'failed'> {
     try {
       const hasUpdate = await this.isUpdateAvailable();
       if (!hasUpdate) {
-        return false;
+        return this.updateCheckFailed || (this.spec.required && !isInstalled(this.spec.id))
+          ? 'failed'
+          : 'up-to-date';
       }
 
       const remote = await this.getRemoteManifest();
       if (!remote) {
         console.error(`[DbVersioning:${this.spec.id}] Could not fetch remote manifest for update`);
-        return false;
+        return 'failed';
       }
 
       const success = await this.downloadDatabase(remote);
       if (success) {
         this.saveManifest(remote);
-        return true;
+        return 'updated';
       }
 
-      return false;
+      return 'failed';
     } catch (error) {
       console.error(`[DbVersioning:${this.spec.id}] Error during auto-update:`, error);
-      return false;
+      return 'failed';
     }
   }
 }
@@ -452,21 +473,29 @@ export class DbVersioning {
 /**
  * Auto-update every managed database on MCP startup: required DBs always,
  * optional DBs only once they have been installed (via `manage`).
- * Returns true if any database was updated.
+ * Returns the IDs that updated successfully and those whose update check or
+ * download failed.
  */
-export async function autoUpdateAll(): Promise<boolean> {
-  let anyUpdated = false;
+export interface AutoUpdateSummary {
+  updated: DbId[];
+  failed: DbId[];
+}
+
+export async function autoUpdateAll(): Promise<AutoUpdateSummary> {
+  const summary: AutoUpdateSummary = { updated: [], failed: [] };
   for (const id of DB_IDS) {
     const spec = DBS[id];
     if (!spec.required && !isInstalled(id)) {
       continue;
     }
     try {
-      const updated = await new DbVersioning(spec).autoUpdate();
-      anyUpdated = anyUpdated || updated;
+      const result = await new DbVersioning(spec).autoUpdate();
+      if (result === 'updated') summary.updated.push(id);
+      if (result === 'failed') summary.failed.push(id);
     } catch (error) {
       console.error(`[DbVersioning:${id}] Auto-update failed:`, error);
+      summary.failed.push(id);
     }
   }
-  return anyUpdated;
+  return summary;
 }

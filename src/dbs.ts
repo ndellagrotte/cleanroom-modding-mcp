@@ -111,6 +111,8 @@ export interface GitHubRelease {
   id: number;
   tag_name: string;
   published_at: string;
+  draft?: boolean;
+  prerelease?: boolean;
   assets: ReleaseAsset[];
 }
 
@@ -121,9 +123,10 @@ export interface SelectedRelease {
 }
 
 /**
- * Pick the newest release (GitHub API order) that follows the `v{version}` tag
- * convention and carries this DB's file asset. Releases whose upload failed
- * (asset missing) are skipped. By default the manifest asset is optional —
+ * Pick the newest stable, published release (GitHub API order) that follows
+ * the `v{version}` tag convention and carries this DB's file asset. Drafts,
+ * prereleases, and releases whose upload failed (asset missing) are skipped.
+ * By default the manifest asset is optional —
  * callers that need it (hash verification, remote version info) either handle
  * null or pass `requireManifest: true` to keep scanning past partial uploads.
  */
@@ -133,7 +136,7 @@ export function selectRelease(
   opts: { requireManifest?: boolean } = {}
 ): SelectedRelease | null {
   for (const release of releases) {
-    if (!release.tag_name.startsWith('v')) {
+    if (release.draft || release.prerelease || !release.tag_name.startsWith('v')) {
       continue;
     }
     const dbAsset = release.assets.find((a) => a.name === spec.fileName);
