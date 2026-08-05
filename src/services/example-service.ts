@@ -4,7 +4,14 @@
  */
 
 import { DocumentStore } from '../indexer/store.js';
+import type { DocCoverageRow } from '../indexer/store.js';
 import { EmbeddingGenerator } from '../indexer/embeddings.js';
+import {
+  pickLatestVersion,
+  summarizeCoverage,
+  type CoverageFilter,
+  type DocCoverage,
+} from './corpus-coverage.js';
 import {
   tokenizeQuery,
   calculateRelevanceScore,
@@ -112,6 +119,9 @@ const MIN_EXAMPLE_SCORE = 20;
 
 export class ExampleService {
   private store: DocumentStore;
+
+  /** Coverage rows, memoized — the corpus is read-only at runtime. */
+  private coverageRows: DocCoverageRow[] | undefined;
 
   constructor(dbPath?: string) {
     const finalPath = dbPath || process.env.DB_PATH || getDefaultDbPath(DBS.docs.fileName);
@@ -226,20 +236,26 @@ export class ExampleService {
     if (scope === 'target') {
       return TARGET_VERSION;
     }
-    const versions = this.store.getAllVersions().sort((a, b) => {
-      const aParts = a.split('.').map(Number);
-      const bParts = b.split('.').map(Number);
-      for (let i = 0; i < Math.max(aParts.length, bParts.length); i++) {
-        const aNum = aParts[i] || 0;
-        const bNum = bParts[i] || 0;
-        if (aNum !== bNum) {
-          return bNum - aNum; // Descending order
-        }
-      }
-      return 0;
-    });
-    console.error(`[ExampleService] Available versions: ${versions.join(', ')}`);
-    return versions[0] || TARGET_VERSION;
+    // Scope-filtered and Minecraft-shaped. `minecraft_version` also stores
+    // loader versions ('26.2', '21.9'), and the previous numeric max picked one
+    // of those — a "latest" that matched almost no document.
+    const { versions } = this.getCoverage({ scope });
+    console.error(`[ExampleService] Versions in scope ${scope}: ${versions.join(', ')}`);
+    return pickLatestVersion(versions) ?? TARGET_VERSION;
+  }
+
+  /**
+   * What a scope/category/version combination can reach in the docs corpus.
+   *
+   * Same projection `SearchService.getCoverage` uses; both go through
+   * `summarizeCoverage` so the two documentation tools cannot report different
+   * sizes for the same corpus.
+   */
+  getCoverage(filter: CoverageFilter): DocCoverage {
+    if (!this.coverageRows) {
+      this.coverageRows = this.store.getCoverage();
+    }
+    return summarizeCoverage(this.coverageRows, filter);
   }
 
   /**

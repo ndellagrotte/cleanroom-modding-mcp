@@ -12,10 +12,11 @@ import {
   type TokenizedQuery,
   type ScoredResult,
 } from './search-utils.js';
+import { expandVersionFilter, summarizeCoverage, type DocCoverage } from './corpus-coverage.js';
 import { getDefaultDbPath } from '../data-dir.js';
 import { DBS } from '../dbs.js';
-import { LOADER_IDS, scopeToLoaders, type Scope } from '../loaders.js';
-import { DOC_CATEGORIES } from '../categories.js';
+import { scopeToLoaders, type Scope } from '../loaders.js';
+import type { DocCoverageRow } from '../indexer/store.js';
 
 export interface SearchResult {
   title: string;
@@ -121,6 +122,9 @@ export class SearchService {
   private store: DocumentStore;
   private embeddingGenerator: EmbeddingGenerator;
 
+  /** Coverage rows, memoized — the corpus is read-only at runtime. */
+  private coverageRows: DocCoverageRow[] | undefined;
+
   constructor(dbPath?: string) {
     const finalPath = dbPath || process.env.DB_PATH || getDefaultDbPath(DBS.docs.fileName);
     console.error(`[SearchService] Using database at: ${finalPath}`);
@@ -133,21 +137,12 @@ export class SearchService {
    */
   async search(options: SearchOptions): Promise<SearchResult[]> {
     const { query, category, includeCode = true, limit = 10 } = options;
-    let { minecraftVersion } = options;
 
-    // Explicit loader wins; otherwise a scope expands to its loader set
-    // ('all' or no scope = no filter).
-    const loader: string | string[] | undefined =
-      options.loader ??
-      (options.scope && options.scope !== 'all' ? scopeToLoaders(options.scope) : undefined);
+    const { loader, minecraftVersion } = this.resolveFilter(options);
 
     console.error(`[SearchService] Searching for: "${query}"`);
-
-    // Extract version from query if not explicitly provided
-    const extractedVersion = this.extractVersionFromQuery(query);
-    if (!minecraftVersion && extractedVersion) {
-      console.error(`[SearchService] Extracted version from query: ${extractedVersion}`);
-      minecraftVersion = extractedVersion;
+    if (minecraftVersion && !options.minecraftVersion) {
+      console.error(`[SearchService] Extracted version from query: ${minecraftVersion}`);
     }
 
     // Tokenize and expand query
@@ -224,15 +219,61 @@ export class SearchService {
   }
 
   /**
+   * The effective loader set and version for a request.
+   *
+   * Both `search()` and `getCoverage()` go through here so the footer can never
+   * describe a different filter than the one that ran: the loader precedence
+   * (explicit loader beats scope) and the version-extracted-from-query rule
+   * used to live inline in `search()`, where a reporting path had no way to see
+   * them.
+   */
+  private resolveFilter(options: SearchOptions): {
+    loader: string | string[] | undefined;
+    minecraftVersion: string | undefined;
+  } {
+    // Explicit loader wins; otherwise a scope expands to its loader set
+    // ('all' or no scope = no filter).
+    const loader: string | string[] | undefined =
+      options.loader ??
+      (options.scope && options.scope !== 'all' ? scopeToLoaders(options.scope) : undefined);
+
+    const minecraftVersion =
+      options.minecraftVersion ?? this.extractVersionFromQuery(options.query) ?? undefined;
+
+    return { loader, minecraftVersion };
+  }
+
+  /**
+   * What this exact request could have reached.
+   *
+   * Resolved through the same `resolveFilter` the search used, so
+   * `coverage.inFilter` is a true ceiling: when the result count equals it,
+   * rephrasing the query provably cannot surface more.
+   */
+  getCoverage(options: SearchOptions): DocCoverage {
+    const { minecraftVersion } = this.resolveFilter(options);
+
+    if (!this.coverageRows) {
+      this.coverageRows = this.store.getCoverage();
+    }
+
+    return summarizeCoverage(this.coverageRows, {
+      scope: options.scope ?? 'all',
+      ...(options.loader ? { loader: options.loader } : {}),
+      ...(options.category ? { category: options.category } : {}),
+      ...(minecraftVersion ? { minecraftVersion } : {}),
+    });
+  }
+
+  /**
    * Get version filter string (e.g. "1.21" -> "1.21%")
+   *
+   * Delegates so the coverage arithmetic in corpus-coverage.ts matches the SQL
+   * exactly — a ceiling computed with different version semantics than the
+   * query itself would be worse than no ceiling at all.
    */
   private getVersionFilter(version: string): string {
-    // If version is like "1.21", return "1.21%" to match "1.21.4"
-    // If version is like "1.21.4", return "1.21.4" (exact)
-    if (version.split('.').length === 2) {
-      return version + '%';
-    }
-    return version;
+    return expandVersionFilter(version);
   }
 
   /**
@@ -806,27 +847,11 @@ export class SearchService {
     return truncated + '...';
   }
 
-  /**
-   * Get database statistics
-   */
-  getStats(): {
-    totalDocuments: number;
-    totalSections: number;
-    categories: string[];
-    loaders: string[];
-    versions: string[];
-  } {
-    const stats = this.store.getStats();
-    const versions = this.store.getAllVersions();
-
-    return {
-      totalDocuments: stats.totalDocuments,
-      totalSections: stats.totalSections,
-      categories: [...DOC_CATEGORIES],
-      loaders: LOADER_IDS,
-      versions,
-    };
-  }
+  // getStats() was removed in favour of getCoverage(). It reported global
+  // COUNT(*) totals alongside the static LOADER_IDS and DOC_CATEGORIES
+  // constants — never DB reality — so a scoped search was footed with
+  // whole-corpus numbers and a loader list including one ('shared') that labels
+  // no documents at all. getCoverage() answers the same questions per filter.
 
   /**
    * Format search results for AI-friendly output

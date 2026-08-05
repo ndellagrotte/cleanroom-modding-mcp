@@ -45,12 +45,14 @@ function notAvailableResult(): CallToolResult {
 export const searchModExamplesTool = {
   name: 'search_mod_examples',
   description:
-    'Search curated, AI-analyzed code examples from canonical open-source Minecraft 1.12.2 ' +
-    'mods (Forge and Cleanroom-native). These are real-world, idiomatic implementations with ' +
-    'explanations, best practices, and SRG cross-links. Use this when you need a proven 1.12.2 ' +
-    'pattern (blocks, tile entities, capabilities, networking, mixins, GUIs, …). ' +
-    'See also `get_doc_snippet` for code blocks quoted from the scraped tutorial/wiki ' +
-    'documentation, and `search_docs` for prose documentation.',
+    'PRIMARY source for Minecraft 1.12.2 implementation patterns: curated, AI-analyzed code ' +
+    'examples from canonical open-source 1.12.2 mods (Forge and Cleanroom-native). These are ' +
+    'real-world, idiomatic implementations with explanations, best practices, and SRG ' +
+    'cross-links. Reach for this FIRST whenever you need working 1.12.2 code — blocks, tile ' +
+    'entities, capabilities, networking, mixins, GUIs, registration, recipes. The scraped ' +
+    'documentation tools are the supplement, not the starting point: their 1.12.2 corpus is ' +
+    'thin, and `get_doc_snippet` only quotes code blocks out of tutorials and wikis while ' +
+    '`search_docs` returns prose and concepts.',
   inputSchema: {
     type: 'object' as const,
     properties: {

@@ -157,6 +157,46 @@ function cleanText(text: string): string {
   return cleaned.trim();
 }
 
+/**
+ * Map a documentation URL onto a DOC_CATEGORIES value.
+ *
+ * Stage 1 is the historical versioned-path heuristic (Fabric/NeoForge docs,
+ * DokuWiki namespaces). When it yields nothing, stage 2 matches individual path
+ * segments — the shape of the Forge 1.12.x RTD tree ("1.12.x" defeats the
+ * version alternation) and the Cleanroom wiki routes.
+ *
+ * BOTH stages normalize through `categorizeDocPath`. Stage 1 used to return the
+ * raw path segment verbatim, which is how ~35 values outside DOC_CATEGORIES
+ * reached the corpus (`resources` 224 documents, `misc` 54, `datastorage` 41,
+ * `gettingstarted` 36, …). 577 documents ended up in categories no `category`
+ * filter can express, falsifying the invariant stated at the top of
+ * src/categories.ts — that DOC_CATEGORIES is a superset of what the crawler
+ * emits. Unrecognized segments now fall to 'general', the documented fallback.
+ *
+ * Free function rather than a method so the mapping is testable without
+ * standing up a crawler; it never touched instance state.
+ */
+export function extractCategoryFromUrl(url: string): string {
+  const match = url.match(
+    /https?:\/\/[^/]+\/(?:.*\/)?(?:(?:\d+(?:\.\d+)*|develop)\/([^/]+)|([^/:\\s]+):)/
+  );
+  if (match?.[1]) {
+    return categorizeDocPath([match[1]]);
+  }
+
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    path = url;
+  }
+  const segments = path
+    .split('/')
+    .filter(Boolean)
+    .filter((s) => s !== 'en' && s !== 'docs' && s !== 'wiki' && !/^\d+(\.\d+)*(\.x)?$/.test(s));
+  return categorizeDocPath(segments);
+}
+
 export class DocumentCrawler {
   private options: CrawlerOptions;
   private progress: IndexerProgress;
@@ -355,32 +395,9 @@ export class DocumentCrawler {
     return 'Untitled';
   }
 
-  /**
-   * Extract category from URL.
-   * Stage 1 is the historical versioned-path heuristic (Fabric/NeoForge docs,
-   * DokuWiki namespaces). When it yields nothing, stage 2 matches individual
-   * path segments — the shape of the Forge 1.12.x RTD tree ("1.12.x" defeats
-   * the version alternation) and the Cleanroom wiki routes.
-   */
+  /** @see extractCategoryFromUrl */
   private extractCategory(url: string): string {
-    const match = url.match(
-      /https?:\/\/[^/]+\/(?:.*\/)?(?:(?:\d+(?:\.\d+)*|develop)\/([^/]+)|([^/:\\s]+):)/
-    );
-    if (match?.[1]) {
-      return match[1];
-    }
-
-    let path: string;
-    try {
-      path = new URL(url).pathname;
-    } catch {
-      path = url;
-    }
-    const segments = path
-      .split('/')
-      .filter(Boolean)
-      .filter((s) => s !== 'en' && s !== 'docs' && s !== 'wiki' && !/^\d+(\.\d+)*(\.x)?$/.test(s));
-    return categorizeDocPath(segments);
+    return extractCategoryFromUrl(url);
   }
 
   /**

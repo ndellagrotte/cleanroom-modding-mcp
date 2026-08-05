@@ -9,6 +9,8 @@
  */
 
 import { ExampleService } from '../services/example-service.js';
+import type { DocCoverage } from '../services/corpus-coverage.js';
+import { formatDocSearchDiagnostics, formatScopeLine } from './docCoverage.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { isLoader, type Scope } from '../loaders.js';
 import { REPO_URL } from '../dbs.js';
@@ -86,6 +88,19 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
       limit: finalLimit,
     });
 
+    // Best effort — the payload matters more than the disclosure around it.
+    let coverage: DocCoverage | undefined;
+    try {
+      coverage = exampleService.getCoverage({
+        scope,
+        ...(loader && isLoader(loader) ? { loader } : {}),
+        ...(category ? { category } : {}),
+        ...(minecraftVersion ? { minecraftVersion } : {}),
+      });
+    } catch (error) {
+      console.error('[get_doc_snippet] coverage unavailable:', error);
+    }
+
     // Handle no results
     if (examples.length === 0) {
       exampleService.close();
@@ -104,18 +119,46 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
         message += ` (version ${minecraftVersion})`;
       }
 
-      message += '.\n\n**Suggestions:**\n';
-      message +=
-        '- Try using more general search terms (e.g., "item" instead of "custom item registration")\n';
-      message += '- Remove version or loader filters\n';
-      message += "- Try `scope: 'all'` to include the Fabric/NeoForge reference corpus\n";
-      message += '- Try searching with the `search_docs` tool first\n';
+      message += '.\n\n';
+
+      // A category filter that holds nothing in scope is the one argument no
+      // rephrasing can work around, so it gets the same explanation search_docs
+      // gives rather than a generic suggestion list.
+      const diagnostics = coverage
+        ? formatDocSearchDiagnostics(
+            {
+              query: topic,
+              scope,
+              ...(loader && isLoader(loader) ? { loader } : {}),
+              ...(category ? { category } : {}),
+              ...(minecraftVersion ? { minecraftVersion } : {}),
+              resultCount: 0,
+              limit: finalLimit,
+            },
+            coverage
+          )
+        : '';
+
+      message += diagnostics;
+
+      // The diagnostics already route to `search_mod_examples` and explain the
+      // scope, so the fallback list only carries what is specific to this tool
+      // (language tagging, the code-block corpus) — repeating the routing bullet
+      // reads as two different pieces of advice.
+      message += diagnostics ? '**Also worth trying:**\n' : '**Suggestions:**\n';
+      if (!diagnostics) {
+        message +=
+          '- For a real-mod implementation of this pattern, try `search_mod_examples` (curated ' +
+          'mod-examples corpus; listed once the examples database has downloaded)\n';
+        message += "- Try `scope: 'all'` to include the Fabric/NeoForge reference corpus\n";
+      }
       message +=
         "- Try `language: 'json'` or `'groovy'` — this tool defaults to `java` and the docs " +
         'corpus tags resource files separately\n';
       message +=
-        '- For a real-mod implementation of this pattern, try `search_mod_examples` (curated ' +
-        'mod-examples corpus; listed once the examples database has downloaded)\n';
+        '- Try using more general search terms (e.g., "item" instead of "custom item registration")\n';
+      message += '- Remove version or loader filters\n';
+      message += '- `search_docs` returns the prose around these code blocks\n';
 
       console.error(`[get_doc_snippet] No results found for "${topic}"`);
 
@@ -137,11 +180,15 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
 
     console.error(`[get_doc_snippet] Returning ${examples.length} example(s) for "${topic}"`);
 
+    // One line, not a footer block: the payload here is code and a full
+    // coverage table would crowd it out.
+    const scopeLine = coverage ? `\n\n---\n${formatScopeLine(coverage)}\n` : '';
+
     return {
       content: [
         {
           type: 'text',
-          text: deprecationNotice + formattedOutput,
+          text: deprecationNotice + formattedOutput + scopeLine,
         },
       ],
     };

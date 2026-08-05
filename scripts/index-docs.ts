@@ -30,6 +30,7 @@ import {
   getCleanroomWikiFallbackUrls,
 } from '../src/indexer/cleanroom-wiki.js';
 import { EmbeddingGenerator } from '../src/indexer/embeddings.js';
+import { isDocCategory } from '../src/categories.js';
 import type { DocumentPage } from '../src/indexer/types.js';
 import { compileEquivalence } from './equivalence-compile.js';
 
@@ -44,6 +45,8 @@ interface IndexOptions {
   loaders?: Loader[];
   /** Compile data/equivalence/*.yaml into the equivalence table (default true). */
   equivalence?: boolean;
+  /** Ship a corpus holding categories outside DOC_CATEGORIES (exit 3 otherwise). */
+  allowOffTaxonomyCategories?: boolean;
 }
 
 /** Loaders that have documentation sources registered (excludes 'shared'). */
@@ -374,6 +377,38 @@ async function main(options: IndexOptions = {}) {
     console.log(`   Updated: ${updatedCount} documents`);
     console.log(`   Skipped: ${skippedCount} documents (no changes)`);
     console.log(`   Database: ${dbPath}\n`);
+
+    // Coverage gate — every tool's `category` filter is the fixed DOC_CATEGORIES
+    // enum, so a document filed under anything else is unreachable by any
+    // filter an agent can express. This was true of 577 documents before
+    // extractCategoryFromUrl normalized both of its stages, and only a comment
+    // asserted the invariant. Now the build enforces it.
+    const offTaxonomy = store.getCoverage().filter((row) => !isDocCategory(row.category));
+    if (offTaxonomy.length > 0) {
+      const byCategory = new Map<string, number>();
+      for (const row of offTaxonomy) {
+        byCategory.set(row.category, (byCategory.get(row.category) ?? 0) + row.count);
+      }
+      const total = [...byCategory.values()].reduce((sum, n) => sum + n, 0);
+      const listed = [...byCategory.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .map(([category, count]) => `${category} (${count})`)
+        .join(', ');
+
+      console.error(
+        `\n❌ ${total} documents are filed under ${byCategory.size} categories outside DOC_CATEGORIES:`
+      );
+      console.error(`   ${listed}`);
+      console.error(
+        '   No `category` filter can reach these — extend PATH_SEGMENT_CATEGORIES in ' +
+          'src/categories.ts, or pass --allow-off-taxonomy-categories to ship anyway.'
+      );
+      if (!options.allowOffTaxonomyCategories) {
+        store.close();
+        process.exit(3);
+      }
+      console.error('   --allow-off-taxonomy-categories set; shipping regardless.\n');
+    }
   } catch (error) {
     console.error('\n💥 Indexing failed:', error);
     process.exit(1);
@@ -419,6 +454,7 @@ const options: IndexOptions = {
   embeddingsBatchSize: 100,
   loaders: parseLoadersArg(args),
   equivalence: !args.includes('--no-equivalence'),
+  allowOffTaxonomyCategories: args.includes('--allow-off-taxonomy-categories'),
 };
 
 // Show help
@@ -433,6 +469,9 @@ if (args.includes('--help') || args.includes('-h')) {
   console.log('      --loaders a,b   Only index the given loaders');
   console.log(`                      (default: ${INDEXABLE_LOADERS.join(',')})`);
   console.log('      --no-equivalence  Skip compiling data/equivalence/*.yaml');
+  console.log('      --allow-off-taxonomy-categories');
+  console.log('                      Ship a corpus with categories outside DOC_CATEGORIES');
+  console.log('                      (they are unreachable by any `category` filter; exit 3)');
   console.log('  -h, --help          Show this help message');
   console.log('');
   console.log('Examples:');

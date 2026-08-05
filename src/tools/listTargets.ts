@@ -6,7 +6,8 @@
  */
 
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { LOADERS, LOADER_IDS, TARGET_VERSION } from '../loaders.js';
+import { LOADERS, LOADER_IDS, TARGET_VERSION, type Scope } from '../loaders.js';
+import type { DocCoverage } from '../services/corpus-coverage.js';
 import { DBS, DB_IDS, dbPath, isInstalled } from '../dbs.js';
 import { readDbSchemaVersion } from '../mappings/schema.js';
 import { CleanroomApiService } from '../services/cleanroom-api-service.js';
@@ -24,27 +25,72 @@ export function handleListTargets(): CallToolResult {
     output += `This server helps you build **Cleanroom / Forge mods for Minecraft ${TARGET_VERSION}**. `;
     output += 'Fabric and NeoForge corpora are retained as porting reference.\n\n';
 
-    output += '| Loader | Role | Default version |\n|---|---|---|\n';
+    // Document counts per scope, so the corpus asymmetry is visible before the
+    // first search rather than inferred from thin results afterwards.
+    // Best effort — orientation output must never fail on a missing DB.
+    let scopes: Partial<Record<Scope, DocCoverage>>;
+    try {
+      const exampleService = new ExampleService();
+      scopes = {
+        target: exampleService.getCoverage({ scope: 'target' }),
+        reference: exampleService.getCoverage({ scope: 'reference' }),
+        all: exampleService.getCoverage({ scope: 'all' }),
+      };
+      exampleService.close();
+    } catch {
+      scopes = {};
+    }
+
+    const docsFor = (id: string): string => {
+      const row = scopes.all?.loaders.find((l) => l.loader === id);
+      return row ? String(row.count) : '—';
+    };
+
+    output += '| Loader | Role | Default version | Indexed docs |\n|---|---|---|---|\n';
     for (const id of LOADER_IDS) {
       const info = LOADERS[id];
       const version = info.defaultVersion ?? 'latest indexed';
-      output += `| ${info.displayName} (\`${id}\`) | ${info.role} | ${version} |\n`;
+      output += `| ${info.displayName} (\`${id}\`) | ${info.role} | ${version} | ${docsFor(id)} |\n`;
     }
 
-    output += '\n**Scopes** (accepted by `search_docs` / `get_doc_snippet`):\n';
-    output += `- \`target\` (default) — Cleanroom + Forge + loader-agnostic content at ${TARGET_VERSION}\n`;
-    output += '- `reference` — Fabric + NeoForge porting material\n';
-    output += '- `all` — everything, for comparative work\n';
+    const reach = (scope: Scope): string =>
+      scopes[scope] ? ` — **${scopes[scope].inScope} documents**` : '';
 
-    // Indexed documentation versions (best effort — docs DB may be absent)
-    try {
-      const exampleService = new ExampleService();
-      const topics = exampleService.getAvailableTopics();
-      exampleService.close();
-      if (topics.versions.length > 0) {
-        output += `\n**Indexed documentation versions:** ${topics.versions.join(', ')}\n`;
+    output += '\n**Scopes** (accepted by `search_docs` / `get_doc_snippet`):\n';
+    output += `- \`target\` (default) — Cleanroom + Forge + loader-agnostic content at ${TARGET_VERSION}${reach('target')}\n`;
+    output += `- \`reference\` — Fabric + NeoForge porting material${reach('reference')}\n`;
+    output += `- \`all\` — everything, for comparative work${reach('all')}\n`;
+
+    const target = scopes.target;
+    if (target) {
+      output += `\n⚠️ The ${TARGET_VERSION} documentation corpus is small: ${target.inScope} scraped pages `;
+      output += `against ${target.corpusDocuments} indexed overall. Treat \`search_mod_examples\` as the `;
+      output += `primary source for ${TARGET_VERSION} implementation patterns and \`search_docs\` / `;
+      output += '`get_doc_snippet` as the supplement for prose and concepts.\n';
+
+      const populated = target.categories
+        .filter((c) => c.inEnum && c.count > 0)
+        .sort((a, b) => b.count - a.count);
+      if (populated.length > 0) {
+        output += `\n**${TARGET_VERSION} documentation by category:** `;
+        output += populated.map((c) => `${c.category} ${c.count}`).join(', ') + '.\n';
       }
-    } catch {
+      if (target.emptyCategories.length > 0) {
+        // Offered as `category` values but backed by nothing at this scope, so
+        // filtering by one can never match — say so before an agent tries.
+        output += `**No ${TARGET_VERSION} documents:** ${target.emptyCategories.join(', ')} `;
+        output += '— accepted by the `category` filter but unable to return results here.\n';
+      }
+      if (target.versions.length > 0) {
+        output += `\n**Indexed documentation versions:** \`target\` ${target.versions.join(', ')}`;
+        const referenceVersions = scopes.reference?.versions ?? [];
+        if (referenceVersions.length > 0) {
+          output += ` · \`reference\` ${referenceVersions.slice(0, 6).join(', ')}`;
+          output += referenceVersions.length > 6 ? ', …' : '';
+        }
+        output += '\n';
+      }
+    } else {
       output += '\n**Indexed documentation versions:** docs database not installed yet\n';
     }
 

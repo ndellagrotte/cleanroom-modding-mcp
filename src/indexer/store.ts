@@ -31,6 +31,19 @@ export interface EquivalenceDbRow {
   validated_against: string | null;
 }
 
+/**
+ * One `(loader, category, minecraft_version)` cell of the corpus with its
+ * document count. Every scope-aware figure the tools report — documents in
+ * scope, per-loader counts, per-category counts, versions in scope — is a
+ * projection of these rows, so one grouped query answers all of them.
+ */
+export interface DocCoverageRow {
+  loader: string;
+  category: string;
+  minecraftVersion: string | null;
+  count: number;
+}
+
 export interface ChunkResult {
   id: string;
   content: string;
@@ -75,6 +88,9 @@ function loaderFilter(
 
 export class DocumentStore {
   private db: Database.Database;
+
+  /** Memoized getCoverage() result — see the note there on why caching is safe. */
+  private coverageCache: DocCoverageRow[] | null = null;
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
@@ -313,6 +329,9 @@ export class DocumentStore {
    * Store a complete document with sections
    */
   storeDocument(doc: DocumentPage): number {
+    // The corpus just changed; drop the memoized coverage projection.
+    this.coverageCache = null;
+
     const insert = this.db.prepare(`
       INSERT OR REPLACE INTO documents (url, title, content, raw_html, category, loader, hash, minecraft_version, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
@@ -537,6 +556,46 @@ export class DocumentStore {
       version: version.value,
       loaders,
     };
+  }
+
+  /**
+   * Per-`(loader, category, version)` document counts for the whole corpus.
+   *
+   * `getStats()` deliberately stays global — `scripts/index-docs.ts` reports on
+   * the corpus it just built. This is the projection the *tools* need, because
+   * a search runs under a scope and reporting corpus-wide totals against a
+   * scoped result set is what made the default scope look 16x larger than it is.
+   *
+   * One grouped pass, served from `idx_documents_loader`/`_category`/`_version`;
+   * a few hundred rows against the shipped corpus. Memoized because at runtime
+   * the corpus is read-only, and invalidated by `storeDocument` for the indexer.
+   */
+  getCoverage(): DocCoverageRow[] {
+    if (this.coverageCache) {
+      return this.coverageCache;
+    }
+
+    const rows = this.db
+      .prepare(
+        `SELECT loader, category, minecraft_version, COUNT(*) as count
+         FROM documents
+         GROUP BY loader, category, minecraft_version`
+      )
+      .all() as Array<{
+      loader: string;
+      category: string;
+      minecraft_version: string | null;
+      count: number;
+    }>;
+
+    this.coverageCache = rows.map((row) => ({
+      loader: row.loader,
+      category: row.category,
+      minecraftVersion: row.minecraft_version,
+      count: row.count,
+    }));
+
+    return this.coverageCache;
   }
 
   /**

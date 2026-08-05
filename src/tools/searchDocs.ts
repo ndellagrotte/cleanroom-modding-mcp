@@ -7,8 +7,17 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { SearchService } from '../services/search-service.js';
 import type { SearchResult, SearchOptions } from '../services/search-service.js';
+import type { DocCoverage } from '../services/corpus-coverage.js';
+import { pickLatestVersion } from '../services/corpus-coverage.js';
+import { ModExamplesService } from '../services/mod-examples-service.js';
+import {
+  formatDocCoverage,
+  formatDocSearchDiagnostics,
+  type DocSearchRequest,
+  type ExampleCounts,
+} from './docCoverage.js';
 import { isLoader, TARGET_VERSION, type Scope } from '../loaders.js';
-import { DOC_CATEGORIES } from '../categories.js';
+import { DOC_CATEGORIES, isExampleCategory } from '../categories.js';
 import { REPO_URL } from '../dbs.js';
 
 export interface SearchDocsParams {
@@ -95,19 +104,14 @@ export async function handleSearchDocs(params: SearchDocsParams): Promise<CallTo
         if (scope === 'target') {
           searchOptions.minecraftVersion = TARGET_VERSION;
         } else {
-          const stats = searchService.getStats();
-          const versions = stats.versions.sort((a, b) => {
-            const partsA = a.split('.').map(Number);
-            const partsB = b.split('.').map(Number);
-            for (let i = 0; i < Math.max(partsA.length, partsB.length); i++) {
-              const numA = partsA[i] || 0;
-              const numB = partsB[i] || 0;
-              if (numA !== numB) return numB - numA;
-            }
-            return 0;
-          });
-          if (versions[0]) {
-            searchOptions.minecraftVersion = versions[0];
+          // Scope-filtered, and Minecraft-shaped: the global version list also
+          // holds loader versions ('26.2', '21.9'), and a naive numeric max
+          // resolved 'latest' to one of those, matching almost nothing.
+          const latest = pickLatestVersion(
+            searchService.getCoverage({ query: trimmedQuery, scope }).versions
+          );
+          if (latest) {
+            searchOptions.minecraftVersion = latest;
           }
         }
       } else {
@@ -129,14 +133,44 @@ export async function handleSearchDocs(params: SearchDocsParams): Promise<CallTo
           'Verify the Cleanroom-side equivalent before writing code.\n\n'
         : '';
 
-    // Add metadata for AI to use
-    const metadata = buildMetadata(results, searchOptions, searchService);
+    // Best effort: a coverage hiccup must never sink an otherwise good search.
+    let coverage: DocCoverage | undefined;
+    try {
+      coverage = searchService.getCoverage(searchOptions);
+    } catch (error) {
+      console.error('[searchDocs] coverage unavailable:', error);
+    }
+
+    let body = formattedOutput;
+    if (coverage) {
+      const req: DocSearchRequest = {
+        query: trimmedQuery,
+        scope,
+        ...(searchOptions.loader ? { loader: searchOptions.loader } : {}),
+        ...(searchOptions.category ? { category: searchOptions.category } : {}),
+        ...(searchOptions.minecraftVersion
+          ? { minecraftVersion: searchOptions.minecraftVersion }
+          : {}),
+        resultCount: results.length,
+        limit: effectiveLimit,
+      };
+
+      const diagnostics = formatDocSearchDiagnostics(req, coverage, loadExampleCounts());
+      // With no results there is nothing to bury the explanation under, so it
+      // leads; with hits it follows them.
+      body =
+        results.length === 0
+          ? diagnostics + formattedOutput
+          : formattedOutput + '\n\n' + diagnostics;
+
+      body += '\n\n' + formatDocCoverage(req, coverage);
+    }
 
     return {
       content: [
         {
           type: 'text',
-          text: referenceBanner + formattedOutput + '\n\n' + metadata,
+          text: referenceBanner + body,
         },
       ],
     };
@@ -160,52 +194,37 @@ export async function handleSearchDocs(params: SearchDocsParams): Promise<CallTo
 }
 
 /**
- * Build metadata section for AI context
+ * Live `search_mod_examples` counts, or undefined when examples.db is absent.
+ *
+ * A bare "try `search_mod_examples`" does not tell an agent whether the other
+ * corpus is any better stocked than the one that just came back empty, and the
+ * whole point of routing is that it usually is by an order of magnitude. The
+ * dependency is one-way and optional: with no examples DB installed the
+ * diagnostics still route, just without numbers.
  */
-function buildMetadata(
-  results: SearchResult[],
-  options: SearchOptions,
-  service: SearchService
-): string {
-  const stats = service.getStats();
-
-  let metadata = '---\n**Search Metadata:**\n';
-  metadata += `- Query: "${options.query}"\n`;
-  metadata += `- Results found: ${results.length}\n`;
-
-  if (options.category) {
-    metadata += `- Category filter: ${options.category}\n`;
+function loadExampleCounts(): ExampleCounts | undefined {
+  if (!ModExamplesService.isAvailable()) {
+    return undefined;
   }
 
-  if (options.loader) {
-    metadata += `- Loader filter: ${options.loader}\n`;
-  } else if (options.scope) {
-    metadata += `- Scope: ${options.scope}\n`;
+  let service: ModExamplesService | undefined;
+  try {
+    service = new ModExamplesService();
+    const byCategory: ExampleCounts['byCategory'] = {};
+    let categorized = 0;
+    for (const category of service.listCategories()) {
+      if (isExampleCategory(category.slug)) {
+        byCategory[category.slug] = category.exampleCount;
+      }
+      categorized += category.exampleCount;
+    }
+    return { byCategory, total: categorized + service.countUncategorized() };
+  } catch (error) {
+    console.error('[searchDocs] mod-examples counts unavailable:', error);
+    return undefined;
+  } finally {
+    service?.close();
   }
-
-  if (options.minecraftVersion) {
-    metadata += `- Minecraft version filter: ${options.minecraftVersion}\n`;
-  }
-
-  metadata += `\n**Database Stats:**\n`;
-  metadata += `- Total documents indexed: ${stats.totalDocuments}\n`;
-  metadata += `- Total sections: ${stats.totalSections}\n`;
-  metadata += `- Available loaders: ${stats.loaders.join(', ')}\n`;
-  metadata += `- Available versions: ${stats.versions.slice(0, 5).join(', ')}${stats.versions.length > 5 ? '...' : ''}\n`;
-
-  // Add suggestions based on results
-  if (results.length === 0) {
-    metadata += '\n**Suggestions:**\n';
-    metadata += '- Try broader search terms\n';
-    metadata += '- Remove category/loader filters\n';
-    metadata += '- Use synonyms (e.g., "register" instead of "create")\n';
-  } else if (results.length < 3) {
-    metadata += '\n**Note:** Few results found. Consider:\n';
-    metadata += '- Using `get_doc_snippet` for code blocks from these pages\n';
-    metadata += '- Trying related terms or concepts\n';
-  }
-
-  return metadata;
 }
 
 /**

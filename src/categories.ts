@@ -25,6 +25,12 @@ export const DOC_CATEGORIES = [
 /** Schema enum for doc-search tools ('all' disables the filter). */
 export const DOC_CATEGORY_ENUM = [...DOC_CATEGORIES, 'all'] as const;
 
+export type DocCategory = (typeof DOC_CATEGORIES)[number];
+
+export function isDocCategory(value: string): value is DocCategory {
+  return (DOC_CATEGORIES as readonly string[]).includes(value);
+}
+
 /**
  * Categories for the curated mod-examples corpus, edited for the 1.12.2 era:
  * 'data-generation' removed (datagen does not exist in 1.12.2 — resources are
@@ -55,6 +61,15 @@ export const EXAMPLE_CATEGORIES = [
 ] as const;
 
 export type ExampleCategory = (typeof EXAMPLE_CATEGORIES)[number];
+
+/**
+ * Narrow a DB-sourced slug to the taxonomy. `categories.slug` is seeded from
+ * EXAMPLE_CATEGORIES but read back as a plain string, and a corpus built by a
+ * different indexer version may carry slugs this build does not know.
+ */
+export function isExampleCategory(value: string): value is ExampleCategory {
+  return (EXAMPLE_CATEGORIES as readonly string[]).includes(value);
+}
 
 /**
  * Display metadata for the mod-examples categories, seeded into the DB's
@@ -157,13 +172,30 @@ export interface CategoryCoverage {
  * Pure: a missing key counts as 0, and keys outside the taxonomy are ignored.
  */
 export function auditCategoryCoverage(counts: Record<string, number>): CategoryCoverage {
-  const empty: ExampleCategory[] = [];
-  const thin: Array<{ slug: ExampleCategory; count: number }> = [];
-  for (const slug of EXAMPLE_CATEGORIES) {
+  return auditCoverage(EXAMPLE_CATEGORIES, counts);
+}
+
+/**
+ * The taxonomy-agnostic form of the audit above, so the documentation corpus
+ * gets the same disclosure without a second copy of the logic. `DOC_CATEGORIES`
+ * has the identical failure mode: `entities`, `commands` and `data-generation`
+ * are offered as `search_docs` filter values but hold zero documents at the
+ * default target scope, so filtering by one can never match.
+ *
+ * Pure: a missing key counts as 0, and keys outside `slugs` are ignored.
+ */
+export function auditCoverage<T extends string>(
+  slugs: readonly T[],
+  counts: Record<string, number>,
+  threshold: number = THIN_CATEGORY_THRESHOLD
+): { empty: T[]; thin: Array<{ slug: T; count: number }> } {
+  const empty: T[] = [];
+  const thin: Array<{ slug: T; count: number }> = [];
+  for (const slug of slugs) {
     const count = counts[slug] ?? 0;
     if (count === 0) {
       empty.push(slug);
-    } else if (count < THIN_CATEGORY_THRESHOLD) {
+    } else if (count < threshold) {
       thin.push({ slug, count });
     }
   }
@@ -186,6 +218,47 @@ export function buildCategoryPromptBlock(): string {
     return `- \`${slug}\` — ${info.description}`;
   }).join('\n');
 }
+
+/**
+ * Where to send an agent whose doc-category filter came back empty.
+ *
+ *  - `examples`      — `search_mod_examples` has a category answering the same question
+ *  - `free-text`     — no counterpart category; the corpus still helps unfiltered
+ *  - `not-in-1.12.2` — the concept does not exist in this era. Reporting a corpus
+ *                      gap here would be a lie by omission: no amount of indexing
+ *                      will ever produce 1.12.2 datagen documentation.
+ */
+export type DocCategoryRouting =
+  | { kind: 'examples'; category: ExampleCategory }
+  | { kind: 'free-text' }
+  | { kind: 'not-in-1.12.2'; reason: string };
+
+/**
+ * Doc category → the corpus that can answer when the docs cannot. Lives here
+ * beside both taxonomies (the SSOT rule) so neither side hardcodes the other's
+ * slugs; `Record<DocCategory, …>` makes a future DOC_CATEGORIES addition a
+ * compile error rather than a silent hole, and the ExampleCategory values are
+ * type-checked so `mixins → coremods-mixins` cannot rot.
+ */
+export const DOC_CATEGORY_ROUTING: Record<DocCategory, DocCategoryRouting> = {
+  'getting-started': { kind: 'free-text' },
+  items: { kind: 'examples', category: 'items' },
+  blocks: { kind: 'examples', category: 'blocks' },
+  entities: { kind: 'examples', category: 'entities' },
+  rendering: { kind: 'examples', category: 'rendering' },
+  networking: { kind: 'examples', category: 'networking' },
+  commands: { kind: 'examples', category: 'commands' },
+  sounds: { kind: 'examples', category: 'sounds' },
+  events: { kind: 'examples', category: 'events' },
+  mixins: { kind: 'examples', category: 'coremods-mixins' },
+  general: { kind: 'free-text' },
+  'data-generation': {
+    kind: 'not-in-1.12.2',
+    reason:
+      'data generation does not exist in Minecraft 1.12.2 — models, blockstates, recipes and ' +
+      'loot tables are hand-written JSON under `src/main/resources`',
+  },
+};
 
 /** Tag vocabulary for concept explanations (superset of doc categories). */
 export const CONCEPT_CATEGORIES = [
@@ -223,6 +296,32 @@ const PATH_SEGMENT_CATEGORIES: Record<string, (typeof DOC_CATEGORIES)[number]> =
   commands: 'commands',
   entities: 'entities',
   'data-generation': 'data-generation',
+
+  // Aliases observed in the shipped corpus once stage 1 of extractCategory
+  // stopped emitting raw path segments. Only segments with an unambiguous home
+  // in the 12-value taxonomy are mapped; everything else falls to 'general'.
+  //
+  // Deliberately NOT added as new DOC_CATEGORIES members: 'resources',
+  // 'worldgen', 'recipes' and friends exist only in the modern reference
+  // corpora, so promoting them would add filter values holding zero target-scope
+  // documents — the exact failure this taxonomy is being audited for.
+  datagen: 'data-generation',
+  blockentities: 'blocks',
+  blockentity: 'blocks',
+  tileentity: 'blocks',
+  inventories: 'items',
+  gui: 'rendering',
+  guis: 'rendering',
+  particles: 'rendering',
+  textures: 'rendering',
+  'class-tweakers': 'mixins',
+  coremods: 'mixins',
+  accesstransformers: 'mixins',
+  command: 'commands',
+  entity: 'entities',
+  sound: 'sounds',
+  item: 'items',
+  block: 'blocks',
 };
 
 export function categorizeDocPath(segments: string[]): (typeof DOC_CATEGORIES)[number] {

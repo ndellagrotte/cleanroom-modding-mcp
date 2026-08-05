@@ -93,7 +93,14 @@ const BASE_TOOLS = [
   {
     name: 'search_docs',
     description:
-      'Search Minecraft modding documentation. Defaults to the TARGET scope: Cleanroom + Forge 1.12.2 — the loaders this server helps you build for. Use scope "reference" for Fabric/NeoForge porting material, "all" for comparative work.',
+      'Search the scraped modding documentation (tutorials, wikis) for PROSE — concepts, ' +
+      'terminology, toolchain setup, and porting background. Defaults to the TARGET scope: ' +
+      'Cleanroom + Forge 1.12.2, where the corpus is deliberately small, so treat this as the ' +
+      'supplement: for how to IMPLEMENT something prefer `search_mod_examples` (curated code ' +
+      'from real 1.12.2 mods), and `get_doc_snippet` for code blocks quoted out of these pages. ' +
+      'Use scope "reference" for Fabric/NeoForge porting material, "all" for comparative work. ' +
+      'Every response states how many documents the active scope and category filter can reach ' +
+      '— when the result count already equals that number, rephrasing cannot surface more.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -117,7 +124,10 @@ const BASE_TOOLS = [
         category: {
           type: 'string',
           enum: DOC_CATEGORY_ENUM,
-          description: 'Documentation category to search within (default: all)',
+          description:
+            'Documentation category to search within (default: all). This is a hard ' +
+            'pre-filter, not a relevance boost, and several categories hold no 1.12.2 ' +
+            'documents at all — the response names them and says where to look instead.',
           default: 'all',
         },
         minecraft_version: {
@@ -147,7 +157,9 @@ const BASE_TOOLS = [
       'Get code snippets out of the scraped modding documentation corpus (docs.db): code ' +
       'blocks lifted from tutorials and wikis, returned with their surrounding section text, ' +
       'source URL, loader, and Minecraft version. Defaults to the target scope ' +
-      '(Cleanroom/Forge 1.12.2). This tool only ever returns what the documentation shows — ' +
+      '(Cleanroom/Forge 1.12.2), where that documentation corpus is small — responses state ' +
+      'how many documents are in scope, so a thin result set reads as corpus size rather than ' +
+      'a bad query. This tool only ever returns what the documentation shows — ' +
       'for idiomatic, production-tested implementations taken from real 1.12.2 mods, prefer ' +
       '`search_mod_examples` (curated mod-examples corpus; listed once the examples database ' +
       'has downloaded). ' +
