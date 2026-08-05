@@ -959,10 +959,11 @@ async function main(): Promise<number> {
     );
     log(
       'error',
-      '  Usual cause: selectSnippets truncates each repo at maxSnippetsPerRepo in tree order ' +
-        '(src/examples/select.ts), so late-sorting packages never reach the corpus — DESIGN §6.2 ' +
-        'asks selection to prefer category-bearing units instead. Widen the roster include globs, ' +
-        'raise the cap, or spread the selection.'
+      '  Where to look: each capped repo logs a `cap coverage:` line above (debug) reporting how ' +
+        'many files/directories its kept set spans out of the candidates. A repo whose kept ' +
+        'directories are far below its candidate directories is cap-bound — raise its ' +
+        'maxSnippetsPerRepo. A category with no candidates at all is a roster problem — widen ' +
+        "that repo's include globs, or add a repo that demonstrates the pattern."
     );
     log('error', '  Pass --allow-empty-categories to ship a knowingly-incomplete corpus anyway.');
     return 3;
