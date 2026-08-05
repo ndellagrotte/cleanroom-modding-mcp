@@ -94,7 +94,7 @@ export const CLEANROOM_API_TOOLS = [
 
 const NOT_INSTALLED_MESSAGE =
   'The Cleanroom API database is not installed. This optional database indexes the Cleanroom/Forge framework API surface (com.cleanroommc.*, zone.rong.mixinbooter.*, net.minecraftforge.*) — classes, events, annotations, signatures, and Javadoc.\n\n' +
-  'To install it, run: `cleanroom-modding-mcp manage`.\n\n' +
+  'It downloads automatically on server startup — restart the server to retry, or install it now with `cleanroom-modding-mcp manage`.\n\n' +
   'The standard documentation tools (search_docs, get_doc_snippet) are still available for modding guidance.';
 
 const OUTDATED_SCHEMA_MESSAGE =

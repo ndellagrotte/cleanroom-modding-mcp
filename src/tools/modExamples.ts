@@ -22,7 +22,8 @@ const NOT_INSTALLED_MESSAGE =
   'The mod examples database is not installed. This optional database holds curated, ' +
   'AI-analyzed code examples from canonical open-source 1.12.2 mods (Forge and Cleanroom-native), ' +
   'with per-example source + license attribution and SRG cross-links.\n\n' +
-  'To install it, run: `cleanroom-modding-mcp manage`.\n\n' +
+  'It downloads automatically on server startup — restart the server to retry, or install it ' +
+  'now with `cleanroom-modding-mcp manage`.\n\n' +
   'The standard documentation tools (search_docs, get_doc_snippet) are still available.';
 
 const OUTDATED_SCHEMA_MESSAGE =

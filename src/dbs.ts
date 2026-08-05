@@ -33,7 +33,12 @@ export interface DbSpec {
   name: string;
   fileName: string;
   manifestName: string;
-  /** Required DBs are installed by postinstall and always auto-updated; optional DBs only once installed via `manage`. */
+  /**
+   * Whether the server's base tools depend on this DB. Every DB — required or
+   * not — is installed by postinstall and auto-updated on startup; `required`
+   * only marks the one the server cannot serve `search_docs`/`explain_concept`
+   * without, and drives the `[core]` badge in `manage`.
+   */
   required: boolean;
   /** Runtime schema gate: services treat a DB with a different schema_version as not installed. */
   schemaVersion: number;

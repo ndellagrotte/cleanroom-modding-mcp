@@ -149,8 +149,8 @@ const BASE_TOOLS = [
       'source URL, loader, and Minecraft version. Defaults to the target scope ' +
       '(Cleanroom/Forge 1.12.2). This tool only ever returns what the documentation shows — ' +
       'for idiomatic, production-tested implementations taken from real 1.12.2 mods, prefer ' +
-      '`search_mod_examples` (curated mod-examples corpus; listed only when the optional ' +
-      'examples database is installed — run `cleanroom-modding-mcp manage` to add it). ' +
+      '`search_mod_examples` (curated mod-examples corpus; listed once the examples database ' +
+      'has downloaded). ' +
       'See also `search_docs` for prose documentation rather than code.',
     inputSchema: {
       type: 'object',

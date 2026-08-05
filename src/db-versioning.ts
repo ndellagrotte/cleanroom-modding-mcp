@@ -159,6 +159,31 @@ export class DbVersioning {
   }
 
   /**
+   * Delete the `-shm`/`-wal` sidecars SQLite creates when the downloaded temp
+   * file is opened for the schema check. They are named after the temp path, so
+   * renaming the temp file to its final name would orphan them.
+   */
+  private removeTempSidecars(tempPath: string): void {
+    for (const sidecar of [`${tempPath}-shm`, `${tempPath}-wal`]) {
+      try {
+        if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar);
+      } catch {
+        // Best effort: a stray sidecar is untidy, not fatal.
+      }
+    }
+  }
+
+  /** Discard a rejected download: the temp file and any sidecars it produced. */
+  private removeTempFiles(tempPath: string): void {
+    this.removeTempSidecars(tempPath);
+    try {
+      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    } catch {
+      // Best effort.
+    }
+  }
+
+  /**
    * Check if update is available
    */
   async isUpdateAvailable(): Promise<boolean> {
@@ -284,7 +309,7 @@ export class DbVersioning {
         console.error(
           `[DbVersioning:${this.spec.id}] Hash mismatch: expected ${manifest.hash}, got ${downloadedHash}`
         );
-        fs.unlinkSync(tempPath);
+        this.removeTempFiles(tempPath);
 
         // Save a "failed download" marker so subsequent startups skip re-downloading
         // the same broken release, preventing an infinite download loop.
@@ -326,7 +351,7 @@ export class DbVersioning {
           `[DbVersioning:${this.spec.id}] Downloaded DB has schema v${downloadedSchema ?? 'unreadable'} but this ` +
             `build expects v${this.spec.schemaVersion} — rejecting the stale asset`
         );
-        fs.unlinkSync(tempPath);
+        this.removeTempFiles(tempPath);
         try {
           fs.writeFileSync(
             this.failedMarkerPath,
@@ -353,7 +378,10 @@ export class DbVersioning {
         return false;
       }
 
-      // Replace database
+      // Replace database. The -shm/-wal sidecars the schema check just created
+      // are named after the temp path, so they must go before the rename or
+      // they are stranded in the data directory forever.
+      this.removeTempSidecars(tempPath);
       fs.renameSync(tempPath, this.dbPath);
 
       // Clear any previous failed-download marker now that we have a good DB
@@ -445,9 +473,9 @@ export class DbVersioning {
     try {
       const hasUpdate = await this.isUpdateAvailable();
       if (!hasUpdate) {
-        return this.updateCheckFailed || (this.spec.required && !isInstalled(this.spec.id))
-          ? 'failed'
-          : 'up-to-date';
+        // "No update" while the file is still absent means we could not supply
+        // it at all — a failure for every DB, not just the required one.
+        return this.updateCheckFailed || !isInstalled(this.spec.id) ? 'failed' : 'up-to-date';
       }
 
       const remote = await this.getRemoteManifest();
@@ -471,8 +499,10 @@ export class DbVersioning {
 }
 
 /**
- * Auto-update every managed database on MCP startup: required DBs always,
- * optional DBs only once they have been installed (via `manage`).
+ * Install/update every managed database on MCP startup — required and optional
+ * alike. A DB that is absent has no local manifest, so `isUpdateAvailable()`
+ * reports an update and the download path installs it; this is what makes the
+ * optional tool groups appear without the user ever running `manage`.
  * Returns the IDs that updated successfully and those whose update check or
  * download failed.
  */
@@ -485,9 +515,6 @@ export async function autoUpdateAll(): Promise<AutoUpdateSummary> {
   const summary: AutoUpdateSummary = { updated: [], failed: [] };
   for (const id of DB_IDS) {
     const spec = DBS[id];
-    if (!spec.required && !isInstalled(id)) {
-      continue;
-    }
     try {
       const result = await new DbVersioning(spec).autoUpdate();
       if (result === 'updated') summary.updated.push(id);

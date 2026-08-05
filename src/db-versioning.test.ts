@@ -11,14 +11,24 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
+// Fixtures are built from the registry rather than hardcoded filenames (see
+// src/dbs.ts); the values are static data, so importing it outside `load()` is safe.
+import { DBS, DB_IDS, type DbId } from './dbs.js';
 
-const fixtureDb = new Database(':memory:');
+// Built on disk in WAL mode, like every shipped database: opening a WAL DB —
+// even read-only, as the schema check does — makes SQLite create -shm/-wal
+// sidecars, which is what the temp-file cleanup has to deal with.
+const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanroom-mcp-fixture-'));
+const fixturePath = path.join(fixtureDir, 'fixture.db');
+const fixtureDb = new Database(fixturePath);
+fixtureDb.pragma('journal_mode = WAL');
 fixtureDb.exec(
   `CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
    INSERT INTO metadata VALUES ('schema_version', '2');`
 );
-const DB_CONTENT = fixtureDb.serialize();
 fixtureDb.close();
+const DB_CONTENT = fs.readFileSync(fixturePath);
+fs.rmSync(fixtureDir, { recursive: true, force: true });
 const DB_HASH = crypto.createHash('sha256').update(DB_CONTENT).digest('hex');
 
 interface MockRoute {
@@ -80,29 +90,30 @@ describe('DbVersioning distribution flow', () => {
     return { ...dbsModule, ...versioningModule };
   }
 
-  function releasesFixture() {
+  /** A single v-tag release carrying the DB + manifest pair of every listed id. */
+  function releasesFixture(ids: readonly DbId[] = DB_IDS) {
     return [
       {
         id: 2,
         tag_name: 'v0.5.0',
         published_at: '2026-01-02T00:00:00Z',
-        assets: [
+        assets: ids.flatMap((id) => [
           {
-            name: 'docs.db',
-            browser_download_url: 'https://cdn.test/v0.5.0/docs.db',
+            name: DBS[id].fileName,
+            browser_download_url: `https://cdn.test/v0.5.0/${DBS[id].fileName}`,
             size: DB_CONTENT.length,
           },
           {
-            name: 'docs-manifest.json',
-            browser_download_url: 'https://cdn.test/v0.5.0/docs-manifest.json',
+            name: DBS[id].manifestName,
+            browser_download_url: `https://cdn.test/v0.5.0/${DBS[id].manifestName}`,
             size: 500,
           },
-        ],
+        ]),
       },
     ];
   }
 
-  function manifestFixture(overrides: Partial<Record<string, unknown>> = {}) {
+  function manifestFixture(overrides: Partial<Record<string, unknown>> = {}, id: DbId = 'docs') {
     return {
       version: '1.2.0',
       schemaVersion: 2,
@@ -111,10 +122,19 @@ describe('DbVersioning distribution flow', () => {
       hash: DB_HASH,
       size: DB_CONTENT.length,
       // Deliberately stale URL: the release asset URL must win.
-      downloadUrl: 'https://cdn.test/stale/docs.db',
+      downloadUrl: `https://cdn.test/stale/${DBS[id].fileName}`,
       changelog: 'test',
       ...overrides,
     };
+  }
+
+  /** Manifest + database asset routes for each listed id. */
+  function dbAssetRoutes(ids: readonly DbId[] = DB_IDS): MockRoute[] {
+    const exact = (name: string) => new RegExp(`/${name.replace(/\./g, '\\.')}$`);
+    return ids.flatMap((id) => [
+      { url: exact(DBS[id].manifestName), body: manifestFixture({}, id) },
+      { url: exact(DBS[id].fileName), body: {}, binary: DB_CONTENT },
+    ]);
   }
 
   it('getRemoteManifest prefers the release asset URL over the manifest URL', async () => {
@@ -236,6 +256,19 @@ describe('DbVersioning distribution flow', () => {
     expect(fs.existsSync(dbPath('docs'))).toBe(false);
   });
 
+  it('leaves no temp sidecars behind (the schema check opens the .tmp file)', async () => {
+    const manifest = manifestFixture({ downloadUrl: 'https://cdn.test/v0.5.0/docs.db' });
+    vi.stubGlobal('fetch', mockFetch([{ url: /docs\.db$/, body: {}, binary: DB_CONTENT }]));
+
+    const { DbVersioning, dbPath } = await load();
+    expect(await new DbVersioning().downloadDatabase(manifest as never)).toBe(true);
+
+    // -shm/-wal are named after the .tmp path, so the rename would strand them.
+    const strays = fs.readdirSync(tempDir).filter((name) => name.includes('.tmp'));
+    expect(strays).toEqual([]);
+    expect(fs.existsSync(dbPath('docs'))).toBe(true);
+  });
+
   it('clears the poison-pill marker after a successful download', async () => {
     const markerPath = path.join(tempDir, 'docs-download-failed.json');
     fs.mkdirSync(tempDir, { recursive: true });
@@ -342,29 +375,65 @@ describe('DbVersioning distribution flow', () => {
     expect(fs.readFileSync(`${dbPath('docs')}.backup`, 'utf-8')).toBe('old content');
   });
 
-  it('autoUpdateAll updates required DBs and skips optional DBs that are not installed', async () => {
-    const manifest = manifestFixture({ downloadUrl: 'https://cdn.test/v0.5.0/docs.db' });
-    const fetchMock = mockFetch([
-      { url: /\/releases$/, body: releasesFixture() },
-      { url: /docs-manifest\.json$/, body: manifest },
-      { url: /docs\.db$/, body: {}, binary: DB_CONTENT },
-    ]);
-    vi.stubGlobal('fetch', fetchMock);
+  it('autoUpdateAll installs every database, optional ones included', async () => {
+    vi.stubGlobal(
+      'fetch',
+      mockFetch([{ url: /\/releases$/, body: releasesFixture() }, ...dbAssetRoutes()])
+    );
 
     const { autoUpdateAll, dbPath } = await load();
     const result = await autoUpdateAll();
 
-    expect(result).toEqual({ updated: ['docs'], failed: [] });
-    expect(fs.existsSync(dbPath('docs'))).toBe(true);
-    // Optional DBs are absent locally, so no requests may target their assets.
-    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
-    expect(urls.some((u) => /mappings|examples|cleanroom-api/.test(u))).toBe(false);
+    expect(result).toEqual({ updated: [...DB_IDS], failed: [] });
+    for (const id of DB_IDS) {
+      expect(fs.existsSync(dbPath(id))).toBe(true);
+    }
   });
 
-  it('reports a missing required database as failed when no release can supply it', async () => {
+  it('reports a database the release cannot supply as failed, and installs the rest', async () => {
+    const carried = DB_IDS.filter((id) => id !== 'examples');
+    vi.stubGlobal(
+      'fetch',
+      mockFetch([{ url: /\/releases$/, body: releasesFixture(carried) }, ...dbAssetRoutes(carried)])
+    );
+
+    const { autoUpdateAll, dbPath } = await load();
+    const result = await autoUpdateAll();
+
+    expect(result).toEqual({ updated: carried, failed: ['examples'] });
+    expect(fs.existsSync(dbPath('examples'))).toBe(false);
+  });
+
+  it('reports a missing database as failed when no release can supply it', async () => {
     vi.stubGlobal('fetch', mockFetch([{ url: /\/releases$/, body: [] }]));
 
     const { autoUpdateAll } = await load();
-    expect(await autoUpdateAll()).toEqual({ updated: [], failed: ['docs'] });
+    expect(await autoUpdateAll()).toEqual({ updated: [], failed: [...DB_IDS] });
+  });
+
+  it('leaves a locally built database alone now that every DB auto-installs', async () => {
+    const fetchMock = mockFetch([
+      { url: /\/releases$/, body: releasesFixture() },
+      ...dbAssetRoutes(),
+    ]);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { autoUpdateAll, dbPath } = await load();
+    fs.mkdirSync(tempDir, { recursive: true });
+    fs.writeFileSync(dbPath('mappings'), DB_CONTENT);
+    fs.writeFileSync(
+      path.join(tempDir, DBS.mappings.manifestName),
+      JSON.stringify({ version: '0.0.0-local', source: 'local-build' })
+    );
+
+    const result = await autoUpdateAll();
+
+    expect(result.updated).not.toContain('mappings');
+    expect(result.failed).not.toContain('mappings');
+    // The prebuilt asset must never be fetched over an on-device build.
+    const urls = fetchMock.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((u) => /\/mappings\.db$/.test(u))).toBe(false);
+    // …while the other three still install.
+    expect(result.updated).toEqual(DB_IDS.filter((id) => id !== 'mappings'));
   });
 });

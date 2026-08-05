@@ -90,9 +90,7 @@ export function handleListTargets(): CallToolResult {
       } else if (isInstalled(id)) {
         status = '✅ installed';
       } else {
-        status = spec.required
-          ? '⬜ not installed (downloads automatically on startup)'
-          : '⬜ not installed (`cleanroom-modding-mcp manage` to add)';
+        status = '⬜ not installed (downloads automatically on startup)';
       }
       output += `- ${spec.icon} **${spec.name}** — ${status}\n`;
     }

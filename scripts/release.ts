@@ -126,10 +126,17 @@ if (!assetsOnly) {
 if (rebuildDocs) {
   run('npm', ['run', 'index-docs:prod']);
 }
-if (!fs.existsSync(dbFile('docs'))) {
-  fail(`required database is missing: ${dbFile('docs')}`);
+// Every DB now auto-installs on the client, so a release that omits one makes
+// every user's startup report it as a failed download. Ship all or nothing.
+const missing = DB_IDS.filter((id) => !fs.existsSync(dbFile(id)));
+if (missing.length > 0) {
+  fail(
+    `databases missing from the release data dir: ${missing.map((id) => dbFile(id)).join(', ')}\n` +
+      'Every registry database ships on every release — build the missing ones, or point ' +
+      'CLEANROOM_RELEASE_DATA_DIR at a directory that already has them.'
+  );
 }
-const includedIds = DB_IDS.filter((id) => fs.existsSync(dbFile(id)));
+const includedIds = DB_IDS;
 for (const id of includedIds) {
   run('npm', [
     'run',

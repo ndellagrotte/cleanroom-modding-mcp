@@ -3,12 +3,16 @@
 
 /**
  * cleanroom-modding-mcp postinstall script
- * Downloads the documentation database during npm installation.
+ * Downloads every database in the registry during npm installation.
  *
  * All identity facts (repo slug, DB/manifest filenames, data directory) come
  * from the compiled registry in dist/ — this script must never duplicate them.
  * In a dev checkout without dist/, the download is skipped: the server fetches
- * the database on first use.
+ * the databases on first use.
+ *
+ * The databases are independent: one failing (missing release asset, bad hash,
+ * network error) must never abort the others, and nothing here may fail the
+ * npm install — the startup auto-updater retries whatever is still missing.
  */
 
 import fs from 'fs';
@@ -24,22 +28,21 @@ import Database from 'better-sqlite3';
 let CONFIG;
 try {
   const { getDefaultDataDir } = await import('../dist/data-dir.js');
-  const { DBS, getApiBase, REPO_URL, USER_AGENT, PACKAGE_NAME, selectRelease } =
+  const { DBS, DB_IDS, getApiBase, REPO_URL, USER_AGENT, PACKAGE_NAME, selectRelease } =
     await import('../dist/dbs.js');
   CONFIG = {
     releasesUrl: `${getApiBase()}/releases`,
     dataDir: getDefaultDataDir(),
-    dbFileName: DBS.docs.fileName,
-    manifestFileName: DBS.docs.manifestName,
     userAgent: USER_AGENT,
     repoUrl: REPO_URL,
     packageName: PACKAGE_NAME,
-    docsSpec: DBS.docs,
+    // Registry order: the docs DB the base tools need comes first.
+    specs: DB_IDS.map((id) => DBS[id]),
     selectRelease,
   };
 } catch {
   console.log('cleanroom-modding-mcp: dist/ not built — skipping database download.');
-  console.log('The database will be downloaded on first use.');
+  console.log('The databases will be downloaded on first use.');
   process.exit(0);
 }
 
@@ -295,11 +298,13 @@ function createProgressBar(progress, width = 40, showGradient = true) {
 }
 
 class ProgressDisplay {
-  constructor() {
+  constructor(label = 'database') {
+    this.label = label;
     this.lines = 0;
     this.startTime = Date.now();
     this.lastUpdate = 0;
     this.speeds = [];
+    this.lastMilestone = -1;
   }
 
   clear() {
@@ -324,12 +329,27 @@ class ProgressDisplay {
     if (now - this.lastUpdate < 100) return; // Throttle updates
     this.lastUpdate = now;
 
+    const progressRatio = total > 0 ? downloaded / total : 0;
+    const percent = Math.round(progressRatio * 100);
+
+    // Piped stdout (the npm log): the cursor codes are empty strings, so a
+    // rewrite becomes an append. Emit one line per quarter instead of the
+    // ~1800 stale frames a large download would otherwise leave in the log.
+    if (!isColorSupported) {
+      const milestone = Math.floor(percent / 25);
+      if (phase !== 'download' || milestone <= this.lastMilestone) return;
+      this.lastMilestone = milestone;
+      console.log(
+        `  ${this.label}: ${percent}% (${formatBytes(downloaded)} / ${formatBytes(total)})`
+      );
+      return;
+    }
+
     this.clear();
 
     const width = Math.min(getTerminalWidth(), 72);
     const barWidth = Math.max(20, width - 35);
-    const progress = total > 0 ? downloaded / total : 0;
-    const percent = Math.round(progress * 100);
+    const progress = progressRatio;
     const elapsed = (now - this.startTime) / 1000;
     const speed = this.calculateSpeed(downloaded, elapsed);
     const eta = speed > 0 ? (total - downloaded) / speed : 0;
@@ -338,7 +358,8 @@ class ProgressDisplay {
 
     // Status line with icon
     const statusIcon = phase === 'download' ? sym.download : sym.shield;
-    const statusText = phase === 'download' ? 'Downloading database...' : 'Verifying integrity...';
+    const statusText =
+      phase === 'download' ? `Downloading ${this.label}...` : `Verifying ${this.label}...`;
     lines.push(`  ${c.brightYellow}${statusIcon}${c.reset} ${c.bold}${statusText}${c.reset}`);
 
     // Progress bar
@@ -366,45 +387,55 @@ class ProgressDisplay {
     process.stdout.write(lines.join('\n') + '\n');
   }
 
-  finish(success = true, message = '') {
-    this.clear();
-    const icon = success ? c.brightGreen + sym.check : c.brightRed + sym.cross;
-    const color = success ? c.brightGreen : c.brightRed;
-    console.log(`  ${icon}${c.reset} ${color}${message}${c.reset}`);
-    this.lines = 1;
+}
+
+/**
+ * Owns exactly one terminal line, for one database. On a TTY the line is
+ * rewritten in place as that database progresses; when stdout is a pipe the
+ * cursor codes are empty strings, so transient states are dropped instead and
+ * only the final one is appended. This and ProgressDisplay.clear() are the only
+ * places in this file that move the cursor.
+ */
+class DbLine {
+  constructor(index, total, spec) {
+    this.label = `[${index}/${total}]`;
+    this.spec = spec;
+    this.printed = false;
+  }
+
+  set(status, detail = '') {
+    if (status === 'active' && !isColorSupported) return;
+
+    const icons = {
+      active: c.brightYellow + sym.dot + c.reset,
+      done: c.brightGreen + sym.check + c.reset,
+      skip: c.brightBlack + sym.circle + c.reset,
+      error: c.brightRed + sym.cross + c.reset,
+    };
+    const colors = { active: c.brightWhite, done: c.green, skip: c.dim, error: c.red };
+
+    if (this.printed && isColorSupported) {
+      process.stdout.write(c.cursorUp + c.clearLine);
+    }
+    const name = padRight(`${this.spec.icon} ${this.spec.name}`, 32);
+    console.log(
+      `  ${icons[status]} ${c.dim}${this.label}${c.reset} ${colors[status]}${name}${c.reset} ${detail}`
+    );
+    this.printed = true;
   }
 }
 
-function printStepIndicator(step, total, description, status = 'pending') {
-  const icons = {
-    pending: c.dim + sym.circle + c.reset,
-    active: c.brightYellow + sym.dot + c.reset,
-    done: c.brightGreen + sym.check + c.reset,
-    error: c.brightRed + sym.cross + c.reset,
-  };
-
-  const colors = {
-    pending: c.dim,
-    active: c.brightWhite,
-    done: c.green,
-    error: c.red,
-  };
-
-  console.log(
-    `  ${icons[status]} ${colors[status]}Step ${step}/${total}: ${description}${c.reset}`
-  );
-}
-
-function printWelcomeScreen(databaseAvailable = true) {
+function printWelcomeScreen(results = []) {
   const width = Math.min(getTerminalWidth(), 72);
   const innerWidth = width - 4;
+  const docsAvailable = results.some((r) => r.spec.required && r.status !== 'failed');
 
   console.log();
   console.log(
     c.brightGreen +
       '  ' +
       sym.sparkle +
-      (databaseAvailable
+      (docsAvailable
         ? ' Installation Complete! '
         : ' Server Installed — Database Unavailable ') +
       sym.sparkle +
@@ -419,9 +450,9 @@ function printWelcomeScreen(databaseAvailable = true) {
 
   const welcomeLines = [
     '',
-    `${c.bold}${c.brightWhite}${databaseAvailable ? 'Welcome to Cleanroom Modding MCP!' : 'Documentation database was not installed'}${c.reset}`,
+    `${c.bold}${c.brightWhite}${docsAvailable ? 'Welcome to Cleanroom Modding MCP!' : 'Documentation database was not installed'}${c.reset}`,
     '',
-    ...(databaseAvailable
+    ...(docsAvailable
       ? [
           `${c.dim}Your AI assistant now has access to Minecraft${c.reset}`,
           `${c.dim}modding knowledge for:${c.reset}`,
@@ -510,11 +541,29 @@ function printWelcomeScreen(databaseAvailable = true) {
   );
   console.log(c.brightMagenta + '  ' + sym.sVertical + c.reset);
 
+  // The base tools are always registered; the rest appear only when their
+  // database landed, so they are listed off the actual install results.
+  const toolsByDb = {
+    mappings: [
+      [`${c.brightCyan}resolve_symbol${c.reset}`, 'Resolve SRG/obfuscated names from crash logs'],
+      [`${c.brightCyan}search_mappings${c.reset}`, 'Minecraft class/method/field mappings'],
+    ],
+    'cleanroom-api': [
+      [`${c.brightCyan}search_cleanroom_api${c.reset}`, 'Cleanroom/Forge framework API surface'],
+    ],
+    examples: [
+      [`${c.brightCyan}search_mod_examples${c.reset}`, 'Curated code from real 1.12.2 mods'],
+    ],
+  };
+
   const tools = [
     [`${c.brightCyan}search_docs${c.reset}`, 'Search modding docs (Cleanroom/Forge 1.12.2 first)'],
     [`${c.brightCyan}get_doc_snippet${c.reset}`, 'Code snippets from the scraped modding docs'],
     [`${c.brightCyan}explain_concept${c.reset}`, 'Explain modding concepts and patterns'],
     [`${c.brightCyan}list_targets${c.reset}`, 'Show target/reference loaders and installed DBs'],
+    ...results
+      .filter((r) => r.status !== 'failed')
+      .flatMap((r) => toolsByDb[r.spec.id] ?? []),
   ];
 
   tools.forEach(([name, desc]) => {
@@ -608,8 +657,6 @@ async function downloadWithProgress(url, destPath, onProgress) {
   return new Promise((resolve, reject) => {
     const file = fs.createWriteStream(destPath);
 
-    console.log(`  ${c.dim}${sym.arrow} Downloading from: ${url}${c.reset}`);
-
     const makeRequest = (requestUrl) => {
       const urlObj = new URL(requestUrl);
       const headers = {
@@ -646,13 +693,20 @@ async function downloadWithProgress(url, destPath, onProgress) {
 
           res.on('data', (chunk) => {
             downloaded += chunk.length;
-            file.write(chunk);
+            // Honour backpressure: without this a slow disk buffers the whole
+            // database (hundreds of MB) in memory.
+            if (!file.write(chunk)) {
+              res.pause();
+              file.once('drain', () => res.resume());
+            }
             if (onProgress) onProgress(downloaded, total);
           });
 
           res.on('end', () => {
-            file.end();
-            resolve({ downloaded, total });
+            // Resolve only once the write stream has flushed — the hash check
+            // reads this file back immediately and would otherwise hash a
+            // short file and report a bogus mismatch.
+            file.end(() => resolve({ downloaded, total }));
           });
 
           res.on('error', (err) => {
@@ -676,14 +730,22 @@ async function downloadWithProgress(url, destPath, onProgress) {
 // MAIN INSTALLATION LOGIC
 // ═══════════════════════════════════════════════════════════════════════════════
 
-async function fetchReleaseInfo() {
-  const response = await httpsGet(CONFIG.releasesUrl);
-  const releases = JSON.parse(response);
+/**
+ * The one GitHub API call this script makes. Every database resolves against
+ * this single list — `selectRelease` is pure — so installing four databases
+ * costs the same 1/60 of the unauthenticated hourly budget as installing one.
+ */
+async function fetchReleases() {
+  return JSON.parse(await httpsGet(CONFIG.releasesUrl));
+}
 
-  const selected = CONFIG.selectRelease(releases, CONFIG.docsSpec, { requireManifest: true });
-  if (selected) return selected.release;
-
-  throw new Error('No suitable release found with database artifacts');
+/** Newest release carrying this DB's file + manifest pair. Throws if there is none. */
+function resolveDbRelease(releases, spec) {
+  const selected = CONFIG.selectRelease(releases, spec, { requireManifest: true });
+  if (!selected) {
+    throw new Error(`no release carries ${spec.fileName} + ${spec.manifestName}`);
+  }
+  return selected;
 }
 
 async function fetchManifest(manifestUrl) {
@@ -742,192 +804,215 @@ function readSchemaVersion(filePath) {
   }
 }
 
+/** Temp file of the download in flight, so an interrupt doesn't orphan it. */
+let activeTempPath = null;
+
+/**
+ * Download, verify, and install one database. Never throws and never touches
+ * another database's state: a failure here is reported and the loop moves on,
+ * because the startup auto-updater retries whatever is still missing.
+ */
+async function installDb(entry, index, total) {
+  const { spec, present, resolved, reason } = entry;
+  const line = new DbLine(index, total, spec);
+  const base = { id: spec.id, name: spec.name, spec };
+
+  if (present) {
+    line.set('skip', `${c.dim}already installed${c.reset}`);
+    return { ...base, status: 'present' };
+  }
+  if (!resolved) {
+    line.set('error', `${c.dim}${reason}${c.reset}`);
+    return { ...base, status: 'failed', reason };
+  }
+
+  const dbPath = path.join(CONFIG.dataDir, spec.fileName);
+  const manifestPath = path.join(CONFIG.dataDir, spec.manifestName);
+  const tempPath = dbPath + '.tmp';
+  const downloadProgress = new ProgressDisplay(spec.name);
+  const verifyProgress = new ProgressDisplay(spec.name);
+
+  try {
+    line.set('active', `${c.dim}fetching manifest...${c.reset}`);
+    const manifest = await fetchManifest(resolved.manifestAsset.browser_download_url);
+    if (manifest.schemaVersion !== spec.schemaVersion) {
+      throw new Error(
+        `release manifest schema v${manifest.schemaVersion ?? 'missing'} does not match required v${spec.schemaVersion}`
+      );
+    }
+    // The release asset is authoritative; the URL baked into the manifest may be stale.
+    manifest.downloadUrl = resolved.dbAsset.browser_download_url;
+
+    fs.mkdirSync(CONFIG.dataDir, { recursive: true });
+    // A previous interrupted run can leave hundreds of MB behind here.
+    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+    activeTempPath = tempPath;
+
+    line.set('active', `${c.dim}downloading ${formatBytes(manifest.size)}...${c.reset}`);
+    await downloadWithProgress(manifest.downloadUrl, tempPath, (downloaded, downloadTotal) => {
+      downloadProgress.update(downloaded, downloadTotal || manifest.size, 'download');
+    });
+    downloadProgress.clear();
+
+    line.set('active', `${c.dim}verifying...${c.reset}`);
+    if (!(await verifyWithProgress(tempPath, manifest.hash, verifyProgress))) {
+      throw new Error('hash verification failed');
+    }
+    verifyProgress.clear();
+
+    const downloadedSchema = readSchemaVersion(tempPath);
+    if (downloadedSchema !== spec.schemaVersion) {
+      throw new Error(
+        `downloaded database schema v${downloadedSchema ?? 'unreadable'} does not match required v${spec.schemaVersion}`
+      );
+    }
+
+    fs.renameSync(tempPath, dbPath);
+    activeTempPath = null;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+    line.set('done', `${c.brightCyan}v${manifest.version}${c.reset} ${c.dim}${formatBytes(manifest.size)}${c.reset}`);
+    return { ...base, status: 'installed', version: manifest.version, size: manifest.size };
+  } catch (error) {
+    line.set('error', `${c.dim}${error.message}${c.reset}`);
+    return { ...base, status: 'failed', reason: error.message };
+  } finally {
+    // Idempotent: guarantees the progress blocks own no lines past this point.
+    downloadProgress.clear();
+    verifyProgress.clear();
+    // The temp file itself, plus the -shm/-wal sidecars the schema check makes
+    // when it opens it — those are named after the temp path, so the rename to
+    // the final name would strand them in the data directory.
+    for (const stray of [tempPath, `${tempPath}-shm`, `${tempPath}-wal`]) {
+      if (fs.existsSync(stray)) {
+        try {
+          fs.unlinkSync(stray);
+        } catch {
+          /* best effort */
+        }
+      }
+    }
+    activeTempPath = null;
+  }
+}
+
+function printSummary(results) {
+  const installed = results.filter((r) => r.status === 'installed');
+  const present = results.filter((r) => r.status === 'present');
+  const failed = results.filter((r) => r.status === 'failed');
+
+  const icon = failed.length
+    ? c.brightYellow + sym.warning
+    : c.brightGreen + sym.check;
+  console.log();
+  console.log(
+    `  ${icon}${c.reset} ${c.white}${installed.length} installed${c.reset} ${c.dim}·${c.reset} ` +
+      `${c.white}${present.length} already present${c.reset} ${c.dim}·${c.reset} ` +
+      `${failed.length ? c.brightRed : c.white}${failed.length} failed${c.reset}`
+  );
+  for (const item of failed) {
+    console.log(
+      `    ${c.brightYellow}${sym.warning}${c.reset} ${c.dim}${item.name} — the server retries this on startup.${c.reset}`
+    );
+  }
+}
+
 async function main() {
   // Hide cursor during installation
   if (isColorSupported) process.stdout.write(c.cursorHide);
 
-  // Ensure cursor is shown on exit
+  // Ensure cursor is shown, and no partial download is left behind, on exit
   const cleanup = () => {
     if (isColorSupported) process.stdout.write(c.cursorShow);
+    if (activeTempPath && fs.existsSync(activeTempPath)) {
+      try {
+        fs.unlinkSync(activeTempPath);
+      } catch {
+        /* best effort */
+      }
+      activeTempPath = null;
+    }
   };
   process.on('exit', cleanup);
   process.on('SIGINT', () => {
     cleanup();
-    process.exit(1);
+    process.exit(0); // An interrupted download must not fail the npm install
   });
   process.on('SIGTERM', () => {
     cleanup();
-    process.exit(1);
+    process.exit(0);
   });
 
+  let results = [];
   try {
     printBanner();
 
-    printSectionHeader('Installation Progress', sym.package);
+    printSectionHeader('Installing Databases', sym.package);
     console.log();
 
-    // Step 1: Check for existing database
-    printStepIndicator(1, 4, 'Checking existing installation...', 'active');
-    await sleep(300);
-
-    const dbPath = path.join(CONFIG.dataDir, CONFIG.dbFileName);
-    const manifestPath = path.join(CONFIG.dataDir, CONFIG.manifestFileName);
-
-    if (fs.existsSync(dbPath) && fs.existsSync(manifestPath)) {
-      process.stdout.write(c.cursorUp + c.clearLine);
-      printStepIndicator(1, 4, 'Existing database found - skipping download', 'done');
-      console.log();
-      printSectionFooter();
-      printWelcomeScreen();
-      return;
-    }
-
-    process.stdout.write(c.cursorUp + c.clearLine);
-    printStepIndicator(1, 4, 'No existing database - will download', 'done');
-
-    // Step 2: Fetch release information
-    printStepIndicator(2, 4, 'Fetching latest release information...', 'active');
-
-    let release, manifest;
+    // One API call covers every database — selectRelease is pure.
+    let releases;
     try {
-      release = await fetchReleaseInfo();
-      const manifestAsset = release.assets.find((a) => a.name === CONFIG.manifestFileName);
-      if (!manifestAsset) throw new Error('No manifest found in release');
-
-      manifest = await fetchManifest(manifestAsset.browser_download_url);
-      if (manifest.schemaVersion !== CONFIG.docsSpec.schemaVersion) {
-        throw new Error(
-          `Release manifest schema v${manifest.schemaVersion ?? 'missing'} does not match required v${CONFIG.docsSpec.schemaVersion}`
-        );
-      }
-
-      // Find the database asset in the release to ensure we have the correct download URL
-      // This overrides the URL in the manifest which might be outdated or incorrect
-      const dbAsset = release.assets.find((a) => a.name === CONFIG.dbFileName);
-      if (dbAsset) {
-        manifest.downloadUrl = dbAsset.browser_download_url;
-      }
+      await sleep(300);
+      releases = await fetchReleases();
     } catch (error) {
-      process.stdout.write(c.cursorUp + c.clearLine);
-      printStepIndicator(2, 4, `Failed to fetch release info: ${error.message}`, 'error');
+      console.log(
+        `  ${c.brightRed}${sym.cross}${c.reset} ${c.red}Could not reach GitHub: ${error.message}${c.reset}`
+      );
       console.log();
       console.log(
-        c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
+        c.yellow + `  ${sym.warning} The databases will be downloaded on first use.${c.reset}`
       );
+      results = CONFIG.specs.map((spec) => ({
+        id: spec.id,
+        name: spec.name,
+        spec,
+        status: 'failed',
+        reason: 'release list unavailable',
+      }));
       printSectionFooter();
-      printWelcomeScreen(false);
+      printWelcomeScreen(results);
       return;
     }
 
-    process.stdout.write(c.cursorUp + c.clearLine);
-    printStepIndicator(
-      2,
-      4,
-      `Found database v${manifest.version} (${formatBytes(manifest.size)})`,
-      'done'
-    );
-
-    // Step 3: Download database
-    printStepIndicator(3, 4, 'Downloading database...', 'active');
-    console.log();
-
-    // Ensure data directory exists
-    if (!fs.existsSync(CONFIG.dataDir)) {
-      fs.mkdirSync(CONFIG.dataDir, { recursive: true });
-    }
-
-    const tempPath = dbPath + '.tmp';
-    const progress = new ProgressDisplay();
-
-    try {
-      await downloadWithProgress(manifest.downloadUrl, tempPath, (downloaded, total) => {
-        progress.update(downloaded, total || manifest.size, 'download');
-      });
-      progress.finish(true, 'Download complete!');
-    } catch (error) {
-      console.error(error);
-      progress.finish(false, `Download failed: ${error.message}`);
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-      console.log();
-      console.log(
-        c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
-      );
-      printSectionFooter();
-      printWelcomeScreen(false);
-      return;
-    }
-
-    // Clear the step indicator and update
-    process.stdout.write(c.cursorUp + c.cursorUp + c.clearLine);
-    printStepIndicator(3, 4, 'Database downloaded successfully', 'done');
-    process.stdout.write(c.cursorUp + c.clearLine);
-    process.stdout.write('\n'); // Move past the progress line
-
-    // Step 4: Verify integrity
-    printStepIndicator(4, 4, 'Verifying file integrity...', 'active');
-    console.log();
-
-    const verifyProgress = new ProgressDisplay();
-
-    try {
-      const isValid = await verifyWithProgress(tempPath, manifest.hash, verifyProgress);
-
-      if (!isValid) {
-        verifyProgress.finish(false, 'Hash verification failed!');
-        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-        console.log();
-        console.log(
-          c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
-        );
-        printSectionFooter();
-        printWelcomeScreen(false);
-        return;
+    // Resolve everything up front so the byte total is known before the first
+    // download starts, and so a DB missing from the release fails instantly.
+    const plan = CONFIG.specs.map((spec) => {
+      const present =
+        fs.existsSync(path.join(CONFIG.dataDir, spec.fileName)) &&
+        fs.existsSync(path.join(CONFIG.dataDir, spec.manifestName));
+      try {
+        return { spec, present, resolved: resolveDbRelease(releases, spec), reason: null };
+      } catch (error) {
+        return { spec, present, resolved: null, reason: error.message };
       }
+    });
 
-      const downloadedSchema = readSchemaVersion(tempPath);
-      if (downloadedSchema !== CONFIG.docsSpec.schemaVersion) {
-        throw new Error(
-          `Downloaded database schema v${downloadedSchema ?? 'unreadable'} does not match required v${CONFIG.docsSpec.schemaVersion}`
-        );
-      }
-
-      verifyProgress.finish(true, 'Integrity verified!');
-
-      // Move temp file to final location
-      fs.renameSync(tempPath, dbPath);
-
-      // Save manifest
-      fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
-    } catch (error) {
-      verifyProgress.finish(false, `Verification failed: ${error.message}`);
-      if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
-      console.log();
+    const pending = plan.filter((entry) => !entry.present && entry.resolved);
+    if (pending.length > 0) {
+      const bytes = pending.reduce((sum, entry) => sum + (entry.resolved.dbAsset.size || 0), 0);
       console.log(
-        c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
+        `  ${c.brightCyan}${sym.info}${c.reset} ${c.white}${pending.length} database(s) to download${c.reset} ${c.dim}(${formatBytes(bytes)})${c.reset}`
       );
-      printSectionFooter();
-      printWelcomeScreen(false);
-      return;
+      console.log();
     }
 
-    // Clear and update final step
-    process.stdout.write(c.cursorUp + c.cursorUp + c.clearLine);
-    printStepIndicator(4, 4, 'Database verified and installed', 'done');
-    console.log();
+    for (let i = 0; i < plan.length; i++) {
+      results.push(await installDb(plan[i], i + 1, plan.length));
+    }
 
+    printSummary(results);
     printSectionFooter();
-
-    // Show welcome screen
-    printWelcomeScreen();
+    printWelcomeScreen(results);
   } catch (error) {
     console.error();
     console.error(c.brightRed + `  ${sym.cross} Installation error: ${error.message}${c.reset}`);
     console.error();
     console.log(
-      c.yellow + `  ${sym.warning} The database will be downloaded on first use.${c.reset}`
+      c.yellow + `  ${sym.warning} Missing databases will be downloaded on first use.${c.reset}`
     );
     console.log();
-    printWelcomeScreen(false);
+    printWelcomeScreen(results);
   } finally {
     cleanup();
   }

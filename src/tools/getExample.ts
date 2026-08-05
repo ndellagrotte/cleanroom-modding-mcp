@@ -115,7 +115,7 @@ export async function handleGetExample(params: GetExampleParams): Promise<CallTo
         'corpus tags resource files separately\n';
       message +=
         '- For a real-mod implementation of this pattern, try `search_mod_examples` (curated ' +
-        'mod-examples corpus; run `cleanroom-modding-mcp manage` if that tool is not listed)\n';
+        'mod-examples corpus; listed once the examples database has downloaded)\n';
 
       console.error(`[get_doc_snippet] No results found for "${topic}"`);
 

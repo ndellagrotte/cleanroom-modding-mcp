@@ -63,12 +63,19 @@ For [Claude Code](https://docs.anthropic.com/en/docs/claude-code), add this serv
 
 All database assets are attached to this repository's `v{version}` GitHub Releases and verified by SHA256 manifest.
 
+All four install themselves — there is no opt-in step. Postinstall downloads them during
+`npm install`, and any that are still missing (interrupted install, offline machine, a release
+that lacked the asset) are fetched on the next server startup.
+
 | Database | File | Installed | Auto-update |
 | --- | --- | --- | --- |
 | 📚 Documentation | `docs.db` | automatically (postinstall / first use) | on every startup |
-| 🗺️ Mappings | `mappings.db` | via `manage` (prebuilt download, or local 1.12.2 build) | once installed¹ |
-| 🧩 Mod examples | `examples.db` | via `manage` | once installed |
-| 🧬 Cleanroom API | `cleanroom-api.db` | via `manage` | once installed |
+| 🗺️ Mappings | `mappings.db` | automatically (postinstall / first use)¹ | on every startup |
+| 🧩 Mod examples | `examples.db` | automatically (postinstall / first use) | on every startup |
+| 🧬 Cleanroom API | `cleanroom-api.db` | automatically (postinstall / first use) | on every startup |
+
+`cleanroom-modding-mcp manage` remains available to install or refresh any database by hand —
+useful when you want a specific one immediately rather than at the next restart.
 
 ¹ The mappings database can also be **built on-device** — `cleanroom-modding-mcp manage --build-mappings` fetches the MCP sources (~730 KB from `maven.outlands.top` / `maven.minecraftforge.net`) and builds the 1.12.2 MCP/SRG data locally in under a minute (no modern reference versions). Locally built databases are never overwritten by auto-update; switch back to the prebuilt DB explicitly via `manage`.
 
@@ -80,7 +87,7 @@ Databases live in a shared platform-standard data directory:
 
 ## Tools
 
-Four base tools are always available; the mappings, mod-examples, and Cleanroom API tool groups register automatically when their optional databases are installed (the table below groups them by database, not by registration order).
+Four base tools are always available; the mappings, mod-examples, and Cleanroom API tool groups register automatically once their databases are on disk — which, since all four install themselves, is the normal case (the table below groups them by database, not by registration order).
 
 | Tool | Purpose |
 | --- | --- |
@@ -119,9 +126,9 @@ pnpm run manifest -- --db docs --release-tag v0.5.0   # generate a release manif
 ### Publishing
 
 Releases are published locally with one fail-closed command. It verifies the
-already-built `data/docs.db`, creates the matching `v{package version}` GitHub release
-with the required docs pair plus every already-built optional database pair,
-and only then publishes npm:
+already-built databases, creates the matching `v{package version}` GitHub release
+with all four database + manifest pairs — every one is required, since clients now
+download all of them — and only then publishes npm:
 
 ```bash
 pnpm version patch       # or minor / major / an explicit version

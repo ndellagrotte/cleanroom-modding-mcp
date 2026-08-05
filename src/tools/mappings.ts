@@ -172,7 +172,7 @@ export const MAPPINGS_TOOLS = [
 
 const NOT_INSTALLED_MESSAGE =
   'The mappings database is not installed. This optional database provides Minecraft class/method/field mappings — 1.12.2 MCP/SRG names (the Cleanroom target) plus modern Parchment/Mojang reference versions.\n\n' +
-  'To install it, run: `cleanroom-modding-mcp manage` (download prebuilt, or build the 1.12.2 data locally with `cleanroom-modding-mcp manage --build-mappings`).\n\n' +
+  'It downloads automatically on server startup — restart the server to retry, or install it now with `cleanroom-modding-mcp manage` (download prebuilt, or build the 1.12.2 data locally with `cleanroom-modding-mcp manage --build-mappings`).\n\n' +
   'The standard documentation tools (search_docs, get_doc_snippet) are still available for modding guidance.';
 
 const OUTDATED_SCHEMA_MESSAGE =
