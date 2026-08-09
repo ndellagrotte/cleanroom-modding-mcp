@@ -173,6 +173,16 @@ function cleanText(text: string): string {
  * src/categories.ts — that DOC_CATEGORIES is a superset of what the crawler
  * emits. Unrecognized segments now fall to 'general', the documented fallback.
  *
+ * Normalizing alone was not enough, because stage 1 only ever inspected ONE
+ * segment. NeoForge files whole trees under container words that map to nothing
+ * (`resources/`, `concepts/`, `advanced/`, `misc/`, `datastorage/`), so the
+ * deeper segment that does carry a category was never read and 463 documents
+ * landed in 'general'. The tell was the same page indexed twice:
+ * `/docs/concepts/events` resolved to 'events' via stage 2, while its nine
+ * versioned twins `/docs/1.2x.y/concepts/events` stopped at 'concepts' in stage
+ * 1 and became 'general'. Stage 1 now yields to stage 2 instead of returning a
+ * fallback it has no evidence for.
+ *
  * Free function rather than a method so the mapping is testable without
  * standing up a crawler; it never touched instance state.
  */
@@ -181,7 +191,13 @@ export function extractCategoryFromUrl(url: string): string {
     /https?:\/\/[^/]+\/(?:.*\/)?(?:(?:\d+(?:\.\d+)*|develop)\/([^/]+)|([^/:\\s]+):)/
   );
   if (match?.[1]) {
-    return categorizeDocPath([match[1]]);
+    const versionedSegment = categorizeDocPath([match[1]]);
+    // Only a positive match short-circuits. 'general' here means "this one
+    // segment told us nothing", not "this URL has no category" — stage 2 reads
+    // the rest of the path before we settle for the fallback.
+    if (versionedSegment !== 'general') {
+      return versionedSegment;
+    }
   }
 
   let path: string;

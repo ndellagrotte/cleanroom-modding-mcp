@@ -13,7 +13,11 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: [20.x, 22.x]
+        # Must satisfy package.json `engines.node` (>=24.18.0) and the pnpm 11
+        # toolchain, which needs >=22.13 and loads node:sqlite. Runners pinned to
+        # 20.x failed in `actions/setup-node`'s pnpm cache step, so nothing has
+        # been gated since the dependency bump in 0996b6c.
+        node-version: [24.x, 26.x]
 
     steps:
       - name: Checkout code
@@ -43,7 +47,7 @@ jobs:
         run: pnpm run test:coverage
 
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '20.x'
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == '24.x'
         uses: codecov/codecov-action@v4
         with:
           files: ./coverage/lcov.info
@@ -65,7 +69,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
+          node-version: '24.x'
           cache: 'pnpm'
 
       - name: Install dependencies

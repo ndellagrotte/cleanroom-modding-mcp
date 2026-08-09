@@ -69,6 +69,49 @@ describe('extractCategoryFromUrl', () => {
     );
   });
 
+  it('descends past container segments when stage 1 finds no category', () => {
+    // NeoForge files whole trees under words that map to nothing. Stopping at
+    // the first segment hid the one that does carry a category.
+    expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.20.4/concepts/events')).toBe(
+      'events'
+    );
+    expect(
+      extractCategoryFromUrl(
+        'https://docs.neoforged.net/docs/1.20.4/resources/client/models/bakedmodel'
+      )
+    ).toBe('rendering');
+    expect(
+      extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/advanced/accesstransformers')
+    ).toBe('mixins');
+  });
+
+  it('categorizes a versioned URL the same as its unversioned twin', () => {
+    // The regression that motivated the fall-through: nine versioned copies of
+    // NeoForge's Events page were 'general' while the unversioned tenth, which
+    // stage 1 never matches, was 'events'.
+    const unversioned = extractCategoryFromUrl('https://docs.neoforged.net/docs/concepts/events');
+    expect(unversioned).toBe('events');
+    for (const version of ['1.20.4', '1.21.1', '1.21.11']) {
+      expect(
+        extractCategoryFromUrl(`https://docs.neoforged.net/docs/${version}/concepts/events`)
+      ).toBe(unversioned);
+    }
+  });
+
+  it('still settles on general when no segment carries a category', () => {
+    // Container segments whose subtrees have no home in the 12-value taxonomy
+    // must not acquire one just because stage 2 now gets to look.
+    expect(
+      extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/datastorage/saveddata/')
+    ).toBe('general');
+    expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.20.4/concepts/sides/')).toBe(
+      'general'
+    );
+    expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/misc/config')).toBe(
+      'general'
+    );
+  });
+
   it('falls back to general rather than inventing a category', () => {
     expect(extractCategoryFromUrl('https://docs.fabricmc.net/develop/wildly-unknown-topic')).toBe(
       'general'

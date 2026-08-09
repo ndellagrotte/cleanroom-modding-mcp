@@ -203,6 +203,68 @@ export function auditCoverage<T extends string>(
 }
 
 /**
+ * The doc category `categorizeDocPath` returns when no path segment matches.
+ * Named rather than inlined because two different things care about it: the
+ * mapping below, and the build gate that watches how much of the corpus ends up
+ * here.
+ */
+export const DOC_FALLBACK_CATEGORY = 'general' satisfies DocCategory;
+
+/** One `(loader, category)` bucket, as `SqliteStore.getCoverage()` reports it. */
+export interface CategoryCountRow {
+  loader: string;
+  category: string;
+  count: number;
+}
+
+export interface GeneralShare {
+  general: number;
+  total: number;
+  byLoader: Array<{ loader: string; general: number; total: number }>;
+}
+
+/**
+ * How much of a corpus fell through to DOC_FALLBACK_CATEGORY, overall and per
+ * loader.
+ *
+ * The off-taxonomy audit cannot see this failure: 'general' *is* a member of
+ * DOC_CATEGORIES, so a crawler that stopped recognizing every path segment would
+ * emit nothing else and still pass. The share is the only signal that separates
+ * "categorization is working, and this material genuinely has no home in a
+ * 12-value 1.12.2 taxonomy" from "categorization broke".
+ *
+ * Per-loader as well as overall because the two corpora behave differently by
+ * design — the target loaders sit near a third, the modern reference sites near
+ * a half — and an aggregate alone would let one of them rot unnoticed.
+ *
+ * Pure, and lives here beside the taxonomy for the same reason auditCoverage
+ * does: the maintainer indexer is not the only plausible caller, and `src/` must
+ * never import pipeline code.
+ */
+export function summarizeGeneralShare(rows: readonly CategoryCountRow[]): GeneralShare {
+  const perLoader = new Map<string, { general: number; total: number }>();
+  let general = 0;
+  let total = 0;
+
+  for (const row of rows) {
+    const bucket = perLoader.get(row.loader) ?? { general: 0, total: 0 };
+    bucket.total += row.count;
+    total += row.count;
+    if (row.category === DOC_FALLBACK_CATEGORY) {
+      bucket.general += row.count;
+      general += row.count;
+    }
+    perLoader.set(row.loader, bucket);
+  }
+
+  const byLoader = [...perLoader.entries()]
+    .map(([loader, counts]) => ({ loader, ...counts }))
+    .sort((a, b) => b.total - a.total);
+
+  return { general, total, byLoader };
+}
+
+/**
  * Render the allowed-category block for the analysis prompt, one bullet per
  * slug with its EXAMPLE_CATEGORY_INFO description.
  *

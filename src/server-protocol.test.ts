@@ -117,6 +117,27 @@ describe.runIf(DIST_OK)('MCP server protocol (spawned stdio)', () => {
     await transport.close();
   });
 
+  it('discloses that `general` is a fallback bucket, not a subject area', async () => {
+    const { client, transport } = await connect(v2Db);
+    const tools = (await client.listTools()).tools;
+
+    // `general` holds ~32% of the target corpus and ~50% of the whole index because
+    // it is where extractCategoryFromUrl lands when no path segment names a topic.
+    // An agent that reads it as a subject and filters by it excludes every
+    // categorized page while narrowing nothing, so saying so is part of the schema.
+    for (const name of ['search_docs', 'get_doc_snippet']) {
+      const tool = tools.find((t) => t.name === name)!;
+      const category = tool.inputSchema.properties?.['category'] as
+        | { description?: string }
+        | undefined;
+      const description = category?.description;
+      expect(description, name).toMatch(/fallback/i);
+      expect(description, name).toContain('general');
+    }
+
+    await transport.close();
+  });
+
   it('lists get_doc_snippet, not get_example, and cross-links search_mod_examples', async () => {
     const { client, transport } = await connect(v2Db);
     const tools = (await client.listTools()).tools;
