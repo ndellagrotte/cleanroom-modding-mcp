@@ -16,6 +16,8 @@ import {
   auditCategoryCoverage,
   buildCategoryPromptBlock,
   categorizeDocPath,
+  summarizeGeneralShare,
+  DOC_FALLBACK_CATEGORY,
 } from './categories.js';
 import { CATEGORY_LIST_PLACEHOLDER, renderPromptTemplate } from './examples/analyze.js';
 import { getAvailableCategories } from './tools/searchDocs.js';
@@ -162,6 +164,77 @@ describe('categorizeDocPath', () => {
   it('always returns a DOC_CATEGORIES value', () => {
     expect(DOC_CATEGORIES).toContain(categorizeDocPath(['end-user-guide', 'introduction']));
     expect(categorizeDocPath([])).toBe('general');
+  });
+});
+
+describe('summarizeGeneralShare', () => {
+  it('is the fallback categorizeDocPath actually returns', () => {
+    expect(categorizeDocPath(['nothing', 'matches', 'here'])).toBe(DOC_FALLBACK_CATEGORY);
+    expect(DOC_CATEGORIES).toContain(DOC_FALLBACK_CATEGORY);
+  });
+
+  it('totals the fallback bucket across loaders', () => {
+    const share = summarizeGeneralShare([
+      { loader: 'neoforge', category: 'general', count: 381 },
+      { loader: 'neoforge', category: 'rendering', count: 200 },
+      { loader: 'fabric', category: 'general', count: 307 },
+      { loader: 'fabric', category: 'items', count: 100 },
+    ]);
+    expect(share.general).toBe(688);
+    expect(share.total).toBe(988);
+  });
+
+  it('sums the several rows one loader/category pair spans', () => {
+    // getCoverage() groups by (loader, category, minecraft_version), so one
+    // category shows up once per version rather than once overall.
+    const share = summarizeGeneralShare([
+      { loader: 'neoforge', category: 'general', count: 10 },
+      { loader: 'neoforge', category: 'general', count: 10 },
+      { loader: 'neoforge', category: 'general', count: 9 },
+    ]);
+    expect(share.general).toBe(29);
+    expect(share.byLoader).toEqual([{ loader: 'neoforge', general: 29, total: 29 }]);
+  });
+
+  it('orders loaders by corpus size, largest first', () => {
+    const share = summarizeGeneralShare([
+      { loader: 'cleanroom', category: 'general', count: 12 },
+      { loader: 'cleanroom', category: 'rendering', count: 22 },
+      { loader: 'neoforge', category: 'general', count: 381 },
+      { loader: 'neoforge', category: 'blocks', count: 367 },
+      { loader: 'forge', category: 'general', count: 16 },
+    ]);
+    expect(share.byLoader.map((row) => row.loader)).toEqual(['neoforge', 'cleanroom', 'forge']);
+    expect(share.byLoader[0]).toEqual({ loader: 'neoforge', general: 381, total: 748 });
+  });
+
+  it('reports zeroes rather than dividing by nothing on an empty corpus', () => {
+    expect(summarizeGeneralShare([])).toEqual({ general: 0, total: 0, byLoader: [] });
+  });
+
+  it('counts a corpus with no fallback documents at zero, not as missing', () => {
+    const share = summarizeGeneralShare([{ loader: 'forge', category: 'items', count: 54 }]);
+    expect(share.general).toBe(0);
+    expect(share.byLoader).toEqual([{ loader: 'forge', general: 0, total: 54 }]);
+  });
+
+  it('stays under the 60% build ceiling on the post-fix corpus', () => {
+    // Frozen from data/docs.db after the stage-1 fall-through landed. If a
+    // future crawler change pushes this over 0.6, scripts/index-docs.ts exits 4
+    // and this test says so first.
+    const share = summarizeGeneralShare([
+      { loader: 'neoforge', category: 'general', count: 381 },
+      { loader: 'neoforge', category: 'other', count: 367 },
+      { loader: 'fabric', category: 'general', count: 307 },
+      { loader: 'fabric', category: 'other', count: 289 },
+      { loader: 'forge', category: 'general', count: 16 },
+      { loader: 'forge', category: 'other', count: 38 },
+      { loader: 'cleanroom', category: 'general', count: 12 },
+      { loader: 'cleanroom', category: 'other', count: 22 },
+    ]);
+    expect(share.total).toBe(1432);
+    expect(share.general).toBe(716);
+    expect(share.general / share.total).toBeLessThan(0.6);
   });
 });
 

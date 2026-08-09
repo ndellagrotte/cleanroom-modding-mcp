@@ -18,7 +18,7 @@ import { DocumentCrawler, getFabricDocumentationUrls } from '../src/indexer/craw
 import { DocumentChunker } from '../src/indexer/chunker.js';
 import { DocumentStore } from '../src/indexer/store.js';
 import { DBS } from '../src/dbs.js';
-import { LOADERS, LOADER_IDS, isLoader, type Loader } from '../src/loaders.js';
+import { LOADERS, LOADER_IDS, isLoader, scopeToLoaders, type Loader } from '../src/loaders.js';
 import {
   getFabricUrlsFromSitemap,
   getFabricWikiUrlsFromSitemap,
@@ -30,7 +30,7 @@ import {
   getCleanroomWikiFallbackUrls,
 } from '../src/indexer/cleanroom-wiki.js';
 import { EmbeddingGenerator } from '../src/indexer/embeddings.js';
-import { isDocCategory } from '../src/categories.js';
+import { isDocCategory, summarizeGeneralShare } from '../src/categories.js';
 import type { DocumentPage } from '../src/indexer/types.js';
 import { compileEquivalence } from './equivalence-compile.js';
 
@@ -47,6 +47,39 @@ interface IndexOptions {
   equivalence?: boolean;
   /** Ship a corpus holding categories outside DOC_CATEGORIES (exit 3 otherwise). */
   allowOffTaxonomyCategories?: boolean;
+  /** Ship a corpus whose 'general' share exceeds GENERAL_SHARE_LIMIT (exit 4 otherwise). */
+  allowGeneralShare?: boolean;
+}
+
+/**
+ * Ceiling on the share of the corpus allowed to sit in 'general'.
+ *
+ * 'general' is the documented fallback, so it can never be an error on its own —
+ * but it is also where a categorization regression lands silently. The
+ * off-taxonomy gate below cannot see that failure at all: a crawler that stopped
+ * recognizing every path segment would emit nothing but 'general' and pass, since
+ * 'general' is in DOC_CATEGORIES.
+ *
+ * Set against the real number rather than an aspiration. The corpus sits at 50%
+ * (716/1432) once extractCategoryFromUrl descends past NeoForge's container
+ * segments; per loader, neoforge 51%, fabric 52%, forge 30%, cleanroom 35%; at
+ * the default target scope, 28/88 = 32%. Most of that residue is modern
+ * reference material with no home in a 12-value 1.12.2 taxonomy
+ * (`resources/server`, `misc/*`, `datastorage/*`, `develop/loom`), which is
+ * expected and not a defect.
+ *
+ * Be clear about what 60% buys: **this gate would not have caught the 56% state
+ * that motivated it.** Catching that needs ~52%, two points of headroom, which
+ * would fail on ordinary upstream churn. This is a collapse detector, not a
+ * drift detector — it fires when the heuristic stops matching and the bucket
+ * runs toward 100%. Detecting drift needs a per-build comparison against the
+ * previous manifest, which is not built here.
+ */
+const GENERAL_SHARE_LIMIT = 0.6;
+
+/** Whole-percent share, for the gate's log lines. */
+function pct(part: number, whole: number): string {
+  return whole === 0 ? '0%' : `${Math.round((part / whole) * 100)}%`;
 }
 
 /** Loaders that have documentation sources registered (excludes 'shared'). */
@@ -383,7 +416,8 @@ async function main(options: IndexOptions = {}) {
     // filter an agent can express. This was true of 577 documents before
     // extractCategoryFromUrl normalized both of its stages, and only a comment
     // asserted the invariant. Now the build enforces it.
-    const offTaxonomy = store.getCoverage().filter((row) => !isDocCategory(row.category));
+    const coverage = store.getCoverage();
+    const offTaxonomy = coverage.filter((row) => !isDocCategory(row.category));
     if (offTaxonomy.length > 0) {
       const byCategory = new Map<string, number>();
       for (const row of offTaxonomy) {
@@ -408,6 +442,55 @@ async function main(options: IndexOptions = {}) {
         process.exit(3);
       }
       console.error('   --allow-off-taxonomy-categories set; shipping regardless.\n');
+    }
+
+    // Fallback-share gate. Reported on every build, passing or not: the share is
+    // the one number that says whether categorization is still working, and a
+    // figure printed only on failure is a figure nobody watches move.
+    const corpus = summarizeGeneralShare(coverage);
+    if (corpus.total > 0) {
+      // Gate the default scope separately. It is only 88 documents, so it never
+      // moves the corpus-wide figure, but it is the slice every default
+      // `search_docs` call actually reads — the one a collapse would be felt in.
+      const targetLoaders = new Set<string>(scopeToLoaders('target'));
+      const target = summarizeGeneralShare(coverage.filter((row) => targetLoaders.has(row.loader)));
+
+      const perLoader = corpus.byLoader
+        .map((row) => `${row.loader} ${pct(row.general, row.total)}`)
+        .join(', ');
+      console.log(
+        `📊 'general' holds ${corpus.general}/${corpus.total} documents ` +
+          `(${pct(corpus.general, corpus.total)}) — ${perLoader}`
+      );
+      console.log(
+        `   target scope: ${target.general}/${target.total} (${pct(target.general, target.total)})`
+      );
+
+      const ceiling = `${Math.round(GENERAL_SHARE_LIMIT * 100)}%`;
+      const breaches = [
+        { label: 'the corpus', share: corpus },
+        { label: 'the target scope', share: target },
+      ].filter(({ share }) => share.total > 0 && share.general / share.total > GENERAL_SHARE_LIMIT);
+
+      if (breaches.length > 0) {
+        for (const { label, share } of breaches) {
+          console.error(
+            `\n❌ 'general' is ${pct(share.general, share.total)} of ${label}, over the ${ceiling} ceiling.`
+          );
+        }
+        console.error(
+          "   'general' is the fallback extractCategoryFromUrl returns when no path segment " +
+            'matches, so a share this high means the heuristic has stopped matching — usually ' +
+            'an upstream doc site restructured its URL tree and PATH_SEGMENT_CATEGORIES in ' +
+            'src/categories.ts no longer recognizes it. Extend the map, or pass ' +
+            '--allow-general-share to ship anyway.'
+        );
+        if (!options.allowGeneralShare) {
+          store.close();
+          process.exit(4);
+        }
+        console.error('   --allow-general-share set; shipping regardless.\n');
+      }
     }
   } catch (error) {
     console.error('\n💥 Indexing failed:', error);
@@ -455,6 +538,7 @@ const options: IndexOptions = {
   loaders: parseLoadersArg(args),
   equivalence: !args.includes('--no-equivalence'),
   allowOffTaxonomyCategories: args.includes('--allow-off-taxonomy-categories'),
+  allowGeneralShare: args.includes('--allow-general-share'),
 };
 
 // Show help
@@ -472,6 +556,11 @@ if (args.includes('--help') || args.includes('-h')) {
   console.log('      --allow-off-taxonomy-categories');
   console.log('                      Ship a corpus with categories outside DOC_CATEGORIES');
   console.log('                      (they are unreachable by any `category` filter; exit 3)');
+  console.log('      --allow-general-share');
+  console.log(
+    `                      Ship a corpus with over ${Math.round(GENERAL_SHARE_LIMIT * 100)}% of documents in`
+  );
+  console.log("                      'general', the no-match fallback (exit 4)");
   console.log('  -h, --help          Show this help message');
   console.log('');
   console.log('Examples:');

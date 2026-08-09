@@ -127,7 +127,10 @@ const BASE_TOOLS = [
           description:
             'Documentation category to search within (default: all). This is a hard ' +
             'pre-filter, not a relevance boost, and several categories hold no 1.12.2 ' +
-            'documents at all — the response names them and says where to look instead.',
+            'documents at all — the response names them and says where to look instead. ' +
+            '`general` is not a subject area: it is the fallback for pages whose URL named ' +
+            'no topic — about a third of the target corpus and half of the whole index — so ' +
+            'filtering by it excludes every categorized page without narrowing the subject.',
           default: 'all',
         },
         minecraft_version: {
@@ -197,7 +200,9 @@ const BASE_TOOLS = [
         category: {
           type: 'string',
           enum: DOC_CATEGORIES,
-          description: 'Documentation category to filter by',
+          description:
+            'Documentation category to filter by. Hard pre-filter; `general` is the fallback ' +
+            'bucket for pages whose URL named no topic, not a subject area.',
         },
         limit: {
           type: 'number',
