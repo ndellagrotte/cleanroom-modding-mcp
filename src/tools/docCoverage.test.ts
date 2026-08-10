@@ -36,7 +36,7 @@ const CORPUS = rows(
   ['cleanroom', 'events', '1.12.2', 1],
   ['neoforge', 'entities', '1.21.11', 46],
   ['neoforge', 'data-generation', '1.21.4', 36],
-  ['neoforge', 'resources', '1.21.4', 224],
+  ['neoforge', 'misc', '1.21.4', 224],
   ['neoforge', 'general', '21.9', 20],
   ['neoforge', 'items', '', 422],
   ['fabric', 'general', '1.21.1', 596]
@@ -123,7 +123,8 @@ describe('formatDocCoverage — the footer', () => {
 
   it('reconciles categories outside the filter enum', () => {
     const out = formatDocCoverage(request({ scope: 'reference' }), coverage('reference'));
-    // 224 `resources` documents no `category` value can express.
+    // 224 `misc` documents no `category` value can express — the shape a corpus
+    // built by a different indexer version can still take.
     expect(out).toMatch(/224 in-scope documents sit in categories outside/);
   });
 });
@@ -191,13 +192,17 @@ describe('formatDocSearchDiagnostics — empty category', () => {
     expect(out).toContain('8 curated examples');
   });
 
-  it('maps mixins to coremods-mixins, not to a category that does not exist there', () => {
+  it('routes coremods-mixins to the identically-named examples category', () => {
+    // This used to be a `mixins` → `coremods-mixins` remap. The doc taxonomy is
+    // a superset of the examples taxonomy now, so the two corpora share the
+    // slug and the routing is an identity — which is the point of converging
+    // them: an agent can carry a category name between the tools unchanged.
     const cov = summarizeCoverage(rows(['forge', 'general', '1.12.2', 54]), {
       scope: 'target',
-      category: 'mixins',
+      category: 'coremods-mixins',
     });
     const out = formatDocSearchDiagnostics(
-      request({ category: 'mixins', resultCount: 0 }),
+      request({ category: 'coremods-mixins', resultCount: 0 }),
       cov,
       EXAMPLES
     );

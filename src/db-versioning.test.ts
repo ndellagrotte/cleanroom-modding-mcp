@@ -15,21 +15,47 @@ import Database from 'better-sqlite3';
 // src/dbs.ts); the values are static data, so importing it outside `load()` is safe.
 import { DBS, DB_IDS, type DbId } from './dbs.js';
 
-// Built on disk in WAL mode, like every shipped database: opening a WAL DB —
-// even read-only, as the schema check does — makes SQLite create -shm/-wal
-// sidecars, which is what the temp-file cleanup has to deal with.
-const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanroom-mcp-fixture-'));
-const fixturePath = path.join(fixtureDir, 'fixture.db');
-const fixtureDb = new Database(fixturePath);
-fixtureDb.pragma('journal_mode = WAL');
-fixtureDb.exec(
-  `CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-   INSERT INTO metadata VALUES ('schema_version', '2');`
+/**
+ * Built on disk in WAL mode, like every shipped database: opening a WAL DB —
+ * even read-only, as the schema check does — makes SQLite create -shm/-wal
+ * sidecars, which is what the temp-file cleanup has to deal with.
+ *
+ * The stamped schema version comes from the registry rather than a literal.
+ * The databases no longer share one version (docs is ahead of the others), and
+ * a hardcoded fixture would fail the download's own schema check every time a
+ * single DB's DDL changed — a test failure that says nothing about
+ * distribution.
+ */
+function buildFixture(schemaVersion: number): Buffer {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cleanroom-mcp-fixture-'));
+  const file = path.join(dir, 'fixture.db');
+  const db = new Database(file);
+  db.pragma('journal_mode = WAL');
+  db.exec(
+    `CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+     INSERT INTO metadata VALUES ('schema_version', '${schemaVersion}');`
+  );
+  db.close();
+  const content = fs.readFileSync(file);
+  fs.rmSync(dir, { recursive: true, force: true });
+  return content;
+}
+
+const FIXTURES = new Map<number, Buffer>(
+  [...new Set(DB_IDS.map((id) => DBS[id].schemaVersion))].map((v) => [v, buildFixture(v)])
 );
-fixtureDb.close();
-const DB_CONTENT = fs.readFileSync(fixturePath);
-fs.rmSync(fixtureDir, { recursive: true, force: true });
-const DB_HASH = crypto.createHash('sha256').update(DB_CONTENT).digest('hex');
+
+/** The on-disk bytes a given database's release asset should carry. */
+function dbContent(id: DbId = 'docs'): Buffer {
+  return FIXTURES.get(DBS[id].schemaVersion)!;
+}
+
+function dbHash(id: DbId = 'docs'): string {
+  return crypto.createHash('sha256').update(dbContent(id)).digest('hex');
+}
+
+const DB_CONTENT = dbContent('docs');
+const DB_HASH = dbHash('docs');
 
 interface MockRoute {
   url: RegExp;
@@ -116,11 +142,11 @@ describe('DbVersioning distribution flow', () => {
   function manifestFixture(overrides: Partial<Record<string, unknown>> = {}, id: DbId = 'docs') {
     return {
       version: '1.2.0',
-      schemaVersion: 2,
+      schemaVersion: DBS[id].schemaVersion,
       timestamp: '2026-01-02T00:00:00Z',
       type: 'full',
-      hash: DB_HASH,
-      size: DB_CONTENT.length,
+      hash: dbHash(id),
+      size: dbContent(id).length,
       // Deliberately stale URL: the release asset URL must win.
       downloadUrl: `https://cdn.test/stale/${DBS[id].fileName}`,
       changelog: 'test',
@@ -133,7 +159,7 @@ describe('DbVersioning distribution flow', () => {
     const exact = (name: string) => new RegExp(`/${name.replace(/\./g, '\\.')}$`);
     return ids.flatMap((id) => [
       { url: exact(DBS[id].manifestName), body: manifestFixture({}, id) },
-      { url: exact(DBS[id].fileName), body: {}, binary: DB_CONTENT },
+      { url: exact(DBS[id].fileName), body: {}, binary: dbContent(id) },
     ]);
   }
 
@@ -188,10 +214,11 @@ describe('DbVersioning distribution flow', () => {
     const { DbVersioning, DBS } = await load();
     const Database = (await import('better-sqlite3')).default;
     const dbFile = path.join(tempDir, 'built-docs.db');
+    const current = DBS.docs.schemaVersion;
     const db = new Database(dbFile);
     db.exec(
       `CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-       INSERT INTO metadata VALUES ('schema_version', '2');`
+       INSERT INTO metadata VALUES ('schema_version', '${current}');`
     );
     db.close();
 
@@ -201,7 +228,7 @@ describe('DbVersioning distribution flow', () => {
       'test',
       'v2.1.6'
     );
-    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.schemaVersion).toBe(current);
     expect(manifest.downloadUrl).toContain('/v2.1.6/docs.db');
 
     const stale = new Database(dbFile);
@@ -209,7 +236,7 @@ describe('DbVersioning distribution flow', () => {
     stale.close();
     await expect(
       new DbVersioning(DBS.docs, dbFile).createManifest('2.1.6', 'full', 'test', 'v2.1.6')
-    ).rejects.toThrow('database schema v1 does not match required v2');
+    ).rejects.toThrow(`database schema v1 does not match required v${current}`);
   });
 
   it('rejects a hash mismatch, writes the poison-pill marker, and skips that version thereafter', async () => {

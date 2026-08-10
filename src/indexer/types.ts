@@ -12,6 +12,8 @@ export interface DocumentPage {
   category: string;
   loader: Loader;
   minecraftVersion?: string;
+  /** Docs-site / loader version the page was published under, when versioned. */
+  loaderVersion?: string;
   sections: DocumentSection[];
   metadata: PageMetadata;
   hash: string; // For change detection

@@ -68,6 +68,7 @@
     "release": "tsx scripts/release.ts",
     "release:repair": "tsx scripts/release.ts --assets-only",
     "validate": "pnpm run typecheck && pnpm run lint && pnpm run test",
+    "lint:corpus": "npx tsx scripts/lint-corpus.ts",
     "validate:equivalence": "npx tsx scripts/validate-equivalence.ts",
     "manage": "npx tsx src/index.ts manage",
     "manifest": "npx tsx scripts/generate-manifest.ts",

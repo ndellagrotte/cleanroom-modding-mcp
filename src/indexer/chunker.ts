@@ -67,8 +67,9 @@ export class DocumentChunker {
    * Create title/intro chunk
    */
   private createTitleChunk(doc: DocumentPage, order: number): DocumentChunk {
-    // Get first paragraph or first N characters as intro
-    const intro = doc.content.substring(0, this.options.maxChunkSize);
+    // First N characters as intro, cut on a word boundary — a raw substring
+    // ends mid-token, and this chunk is a search result in its own right.
+    const intro = this.truncateAtWord(doc.content, this.options.maxChunkSize);
 
     return {
       id: `${this.hashString(doc.url)}-title`,
@@ -175,44 +176,86 @@ export class DocumentChunker {
     return chunks;
   }
 
+  /** Cut at or before `limit`, on a word boundary rather than mid-token. */
+  private truncateAtWord(text: string, limit: number): string {
+    if (text.length <= limit) return text;
+    const slice = text.slice(0, limit);
+    const lastBoundary = slice.search(/\s\S*$/);
+    return (lastBoundary > 0 ? slice.slice(0, lastBoundary) : slice).trim();
+  }
+
   /**
-   * Split long text into overlapping chunks
+   * Advance an index to the start of the next whole word.
+   *
+   * Never moves backwards, and never past the end. When the remainder holds no
+   * whitespace at all — one unbroken token — the index is returned unchanged:
+   * there is no boundary to snap to, and skipping to the end would drop text.
+   */
+  private snapToWordStart(text: string, index: number): number {
+    if (index <= 0) return 0;
+    if (index >= text.length) return text.length;
+    // The previous character is whitespace, so this already starts a word.
+    if (/\s/.test(text[index - 1] ?? '')) return index;
+
+    const offset = text.slice(index).search(/\s/);
+    return offset === -1 ? index : index + offset + 1;
+  }
+
+  /**
+   * Split long text into overlapping chunks.
+   *
+   * Two defects lived here, and both reached users as garbled `search_docs`
+   * summaries (beta report S6):
+   *
+   *  1. The overlap step (`start = end - overlapSize`) landed mid-word, so a
+   *     chunk could open partway through a token — the shipped corpus holds
+   *     `"Registering Custom Objects\n\not entry:"`, which `search_docs`
+   *     rendered verbatim as a result summary. `start` is now snapped forward
+   *     to a word boundary.
+   *  2. When the sentence-boundary search pulled `end` back to within
+   *     `overlapSize` of `start`, the overlap subtraction went backwards and the
+   *     loop fell into its `prevStart + 1` guard — advancing **one character per
+   *     pass** and emitting a cascade of near-duplicate mid-word chunks. Each
+   *     pass now advances by at least `minChunkSize`.
+   *
+   * Fragments below `minChunkSize` are dropped rather than shipped. They cannot
+   * carry content that the previous chunk missed: a tail is only reached when
+   * `start = end - overlapSize`, so the remainder is at least `overlapSize`
+   * characters, and anything shorter is whitespace this `trim()` removed.
    */
   private splitText(text: string): string[] {
     if (text.length <= this.options.maxChunkSize) {
       return [text];
     }
 
+    const { maxChunkSize, minChunkSize, overlapSize } = this.options;
     const chunks: string[] = [];
     let start = 0;
 
     while (start < text.length) {
-      let end = Math.min(start + this.options.maxChunkSize, text.length);
+      let end = Math.min(start + maxChunkSize, text.length);
 
-      // Try to break at sentence boundary
+      // Prefer to close the chunk on a sentence or line boundary.
       if (end < text.length) {
         const sentenceEnd = text.lastIndexOf('.', end);
         const newlineEnd = text.lastIndexOf('\n', end);
         const breakPoint = Math.max(sentenceEnd, newlineEnd);
 
-        if (breakPoint > start + this.options.minChunkSize) {
+        if (breakPoint > start + minChunkSize) {
           end = breakPoint + 1;
         }
       }
 
-      const chunk = text.substring(start, end).trim();
-      if (chunk.length > 0) {
+      const chunk = text.slice(start, end).trim();
+      if (chunk.length >= minChunkSize) {
         chunks.push(chunk);
       }
 
-      // Move start forward with overlap, ensuring it doesn't go backwards
-      const prevStart = start;
-      start = end - this.options.overlapSize;
-      // Ensure we always make forward progress
-      if (start <= prevStart) {
-        start = Math.min(prevStart + 1, text.length);
-      }
-      if (start >= text.length) break;
+      if (end >= text.length) break;
+
+      // Step back for the overlap, but never far enough to stall, then forward
+      // to a word boundary.
+      start = this.snapToWordStart(text, Math.max(start + minChunkSize, end - overlapSize));
     }
 
     return chunks;

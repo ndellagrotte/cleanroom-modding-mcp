@@ -3,38 +3,19 @@
  * inconsistent enums across tool schemas and helper functions.
  *
  * DOC_CATEGORIES must stay a superset of what the crawler actually emits
- * (it falls back to 'general' when a URL matches no known category).
+ * (it falls back to 'general' when a URL matches no known category). That is
+ * enforced structurally below: DOC_CATEGORIES is *defined* as EXAMPLE_CATEGORIES
+ * plus the doc-only values, so the two agent-facing vocabularies cannot drift.
  */
-
-/** Categories for indexed documentation pages. */
-export const DOC_CATEGORIES = [
-  'getting-started',
-  'items',
-  'blocks',
-  'entities',
-  'rendering',
-  'networking',
-  'data-generation',
-  'commands',
-  'sounds',
-  'events',
-  'mixins',
-  'general',
-] as const;
-
-/** Schema enum for doc-search tools ('all' disables the filter). */
-export const DOC_CATEGORY_ENUM = [...DOC_CATEGORIES, 'all'] as const;
-
-export type DocCategory = (typeof DOC_CATEGORIES)[number];
-
-export function isDocCategory(value: string): value is DocCategory {
-  return (DOC_CATEGORIES as readonly string[]).includes(value);
-}
 
 /**
  * Categories for the curated mod-examples corpus, edited for the 1.12.2 era:
  * 'data-generation' removed (datagen does not exist in 1.12.2 — resources are
  * hand-written JSON), 'capabilities' and 'coremods-mixins' added.
+ *
+ * This is the base vocabulary. It is hand-tuned against a corpus of real 1.12.2
+ * mod code, every value is populated, and DOC_CATEGORIES extends it rather than
+ * competing with it.
  */
 export const EXAMPLE_CATEGORIES = [
   'blocks',
@@ -69,6 +50,49 @@ export type ExampleCategory = (typeof EXAMPLE_CATEGORIES)[number];
  */
 export function isExampleCategory(value: string): value is ExampleCategory {
   return (EXAMPLE_CATEGORIES as readonly string[]).includes(value);
+}
+
+/**
+ * Subjects the scraped documentation corpora cover that the curated
+ * mod-examples corpus has no counterpart for.
+ *
+ *  - `resources`       — resource/data packs, models, lang, tags, advancements
+ *  - `toolchain`       — Gradle, Loom, mappings, debugging, publishing
+ *  - `porting`         — version-migration primers; this project's core mission
+ *  - `getting-started` — setup and first-mod material
+ *  - `data-generation` — modern-only; kept so the corpus can be filtered *and*
+ *                        so the `not-in-1.12.2` disclosure has somewhere to hang
+ *  - `general`         — the documented fallback (see DOC_FALLBACK_CATEGORY)
+ */
+export const DOC_ONLY_CATEGORIES = [
+  'getting-started',
+  'data-generation',
+  'resources',
+  'toolchain',
+  'porting',
+  'general',
+] as const;
+
+export type DocOnlyCategory = (typeof DOC_ONLY_CATEGORIES)[number];
+
+/**
+ * Categories for indexed documentation pages.
+ *
+ * Defined as a superset of EXAMPLE_CATEGORIES so that `EXAMPLE_CATEGORIES ⊆
+ * DOC_CATEGORIES` is a fact of the type system rather than a test assertion.
+ * The tool descriptions route agents between `search_docs` and
+ * `search_mod_examples`; before this, an agent that read a category name off
+ * `list_mod_categories` and passed it to `search_docs` got a schema error.
+ */
+export const DOC_CATEGORIES = [...EXAMPLE_CATEGORIES, ...DOC_ONLY_CATEGORIES] as const;
+
+/** Schema enum for doc-search tools ('all' disables the filter). */
+export const DOC_CATEGORY_ENUM = [...DOC_CATEGORIES, 'all'] as const;
+
+export type DocCategory = (typeof DOC_CATEGORIES)[number];
+
+export function isDocCategory(value: string): value is DocCategory {
+  return (DOC_CATEGORIES as readonly string[]).includes(value);
 }
 
 /**
@@ -178,9 +202,10 @@ export function auditCategoryCoverage(counts: Record<string, number>): CategoryC
 /**
  * The taxonomy-agnostic form of the audit above, so the documentation corpus
  * gets the same disclosure without a second copy of the logic. `DOC_CATEGORIES`
- * has the identical failure mode: `entities`, `commands` and `data-generation`
- * are offered as `search_docs` filter values but hold zero documents at the
- * default target scope, so filtering by one can never match.
+ * has the identical failure mode: several values are offered as `search_docs`
+ * filters but hold zero documents at the default target scope, so filtering by
+ * one can never match. See the note on DOC_ONLY_ROUTING for why that is
+ * acceptable now in a way it was not before.
  *
  * Pure: a missing key counts as 0, and keys outside `slugs` are ignored.
  */
@@ -230,12 +255,11 @@ export interface GeneralShare {
  * The off-taxonomy audit cannot see this failure: 'general' *is* a member of
  * DOC_CATEGORIES, so a crawler that stopped recognizing every path segment would
  * emit nothing else and still pass. The share is the only signal that separates
- * "categorization is working, and this material genuinely has no home in a
- * 12-value 1.12.2 taxonomy" from "categorization broke".
+ * "categorization is working, and this material genuinely has no home in the
+ * taxonomy" from "categorization broke".
  *
  * Per-loader as well as overall because the two corpora behave differently by
- * design — the target loaders sit near a third, the modern reference sites near
- * a half — and an aggregate alone would let one of them rot unnoticed.
+ * design, and an aggregate alone would let one of them rot unnoticed.
  *
  * Pure, and lives here beside the taxonomy for the same reason auditCoverage
  * does: the maintainer indexer is not the only plausible caller, and `src/` must
@@ -289,31 +313,29 @@ export function buildCategoryPromptBlock(): string {
  *  - `not-in-1.12.2` — the concept does not exist in this era. Reporting a corpus
  *                      gap here would be a lie by omission: no amount of indexing
  *                      will ever produce 1.12.2 datagen documentation.
+ *  - `porting-tools` — the dedicated porting surface answers this better than any
+ *                      corpus search would
  */
 export type DocCategoryRouting =
   | { kind: 'examples'; category: ExampleCategory }
   | { kind: 'free-text' }
+  | { kind: 'porting-tools' }
   | { kind: 'not-in-1.12.2'; reason: string };
 
 /**
- * Doc category → the corpus that can answer when the docs cannot. Lives here
- * beside both taxonomies (the SSOT rule) so neither side hardcodes the other's
- * slugs; `Record<DocCategory, …>` makes a future DOC_CATEGORIES addition a
- * compile error rather than a silent hole, and the ExampleCategory values are
- * type-checked so `mixins → coremods-mixins` cannot rot.
+ * Routing for the doc-only categories. The shared ones need no table: a doc
+ * category that is also an example category routes to its own name, which is
+ * exactly what the superset definition buys.
+ *
+ * `Record<DocOnlyCategory, …>` keeps a future DOC_ONLY_CATEGORIES addition a
+ * compile error rather than a silent hole.
  */
-export const DOC_CATEGORY_ROUTING: Record<DocCategory, DocCategoryRouting> = {
+export const DOC_ONLY_ROUTING: Record<DocOnlyCategory, DocCategoryRouting> = {
   'getting-started': { kind: 'free-text' },
-  items: { kind: 'examples', category: 'items' },
-  blocks: { kind: 'examples', category: 'blocks' },
-  entities: { kind: 'examples', category: 'entities' },
-  rendering: { kind: 'examples', category: 'rendering' },
-  networking: { kind: 'examples', category: 'networking' },
-  commands: { kind: 'examples', category: 'commands' },
-  sounds: { kind: 'examples', category: 'sounds' },
-  events: { kind: 'examples', category: 'events' },
-  mixins: { kind: 'examples', category: 'coremods-mixins' },
   general: { kind: 'free-text' },
+  resources: { kind: 'free-text' },
+  toolchain: { kind: 'free-text' },
+  porting: { kind: 'porting-tools' },
   'data-generation': {
     kind: 'not-in-1.12.2',
     reason:
@@ -322,76 +344,365 @@ export const DOC_CATEGORY_ROUTING: Record<DocCategory, DocCategoryRouting> = {
   },
 };
 
-/** Tag vocabulary for concept explanations (superset of doc categories). */
-export const CONCEPT_CATEGORIES = [
-  ...DOC_CATEGORIES,
-  'capabilities',
-  'coremods-mixins',
-  'toolchain',
-  'mappings',
-] as const;
+/**
+ * Doc category → the corpus that can answer when the docs cannot.
+ *
+ * NOTE ON A REVERSED DECISION. This module previously refused to promote
+ * `resources`, `worldgen`, `recipes` and friends to DOC_CATEGORIES on the
+ * grounds that they hold zero target-scope documents — "the exact failure this
+ * taxonomy is being audited for". That objection was correct on its own terms
+ * and the promotion still makes that particular count worse (9 of 27 values are
+ * empty at target scope, against 3 of 12 before).
+ *
+ * It was reversed anyway, because the target corpus is 88 documents: *any*
+ * taxonomy finer than about six values has empty target-scope buckets, and
+ * refusing to name a subject does not create 1.12.2 documentation. What decides
+ * it is whether an agent that filters into an empty bucket is helped or misled —
+ * and under the superset definition every empty bucket now routes somewhere
+ * real (`gui` → 69 examples, `api-design` → 30, `worldgen` → 15, `porting` → the
+ * porting tools). Compare the state this replaced, where the single largest
+ * value — `general`, half the corpus — routed to `free-text`, i.e. no help at
+ * all.
+ */
+export function docCategoryRouting(category: DocCategory): DocCategoryRouting {
+  return isExampleCategory(category) ? { kind: 'examples', category } : DOC_ONLY_ROUTING[category];
+}
 
 /**
- * Map URL/repo path segments onto DOC_CATEGORIES (first matching segment
- * wins; 'general' when nothing matches). Used for corpora whose URLs don't
- * fit the crawler's versioned-path heuristic: the Forge 1.12.x RTD tree and
- * the Cleanroom wiki routes.
+ * Tag vocabulary for concept explanations (superset of doc categories).
+ * `capabilities`, `coremods-mixins` and `toolchain` used to be listed here
+ * explicitly; they are members of DOC_CATEGORIES now, so only `mappings`
+ * remains additive.
  */
-const PATH_SEGMENT_CATEGORIES: Record<string, (typeof DOC_CATEGORIES)[number]> = {
-  event: 'events',
-  events: 'events',
-  mixin: 'mixins',
-  mixins: 'mixins',
+export const CONCEPT_CATEGORIES = [...DOC_CATEGORIES, 'mappings'] as const;
+
+/**
+ * Path segments that name a *subject*. First match wins.
+ *
+ * Keys are matched against segments split on `/`, `:` and `_` — deliberately
+ * NOT `-`, because several live slugs depend on the hyphen staying intact
+ * (`getting-started`, `class-tweakers`, `transfer-api`, `custom-recipe-types`).
+ */
+const PATH_SEGMENT_CATEGORIES: Record<string, DocCategory> = {
+  // blocks
+  blocks: 'blocks',
+  block: 'blocks',
+  blockstate: 'blocks',
+  blockstates: 'blocks',
+  directionalblock: 'blocks',
+  waterloggable: 'blocks',
+  crops: 'blocks',
+  blockappearance: 'blocks',
+  // tile entities
+  tileentity: 'tile-entities',
+  tileentities: 'tile-entities',
+  blockentity: 'tile-entities',
+  blockentities: 'tile-entities',
+  blockentityrenderers: 'tile-entities',
+  tesr: 'tile-entities',
+  // items
+  items: 'items',
+  item: 'items',
+  armor: 'items',
+  tools: 'items',
+  shield: 'items',
+  itemgroup: 'items',
+  tooltip: 'items',
+  spawn: 'items',
+  enchantments: 'items',
+  potions: 'items',
+  // entities
+  entities: 'entities',
+  entity: 'entities',
+  projectiles: 'entities',
+  damagetypes: 'entities',
+  // rendering
   render: 'rendering',
   rendering: 'rendering',
   models: 'rendering',
-  animation: 'rendering',
-  modularui: 'rendering',
-  networking: 'networking',
-  sidedness: 'networking',
-  blocks: 'blocks',
-  tileentities: 'blocks',
-  items: 'items',
-  gettingstarted: 'getting-started',
-  'getting-started': 'getting-started',
-  sounds: 'sounds',
-  commands: 'commands',
-  entities: 'entities',
-  'data-generation': 'data-generation',
-
-  // Aliases observed in the shipped corpus once stage 1 of extractCategory
-  // stopped emitting raw path segments. Only segments with an unambiguous home
-  // in the 12-value taxonomy are mapped; everything else falls to 'general'.
-  //
-  // Deliberately NOT added as new DOC_CATEGORIES members: 'resources',
-  // 'worldgen', 'recipes' and friends exist only in the modern reference
-  // corpora, so promoting them would add filter values holding zero target-scope
-  // documents — the exact failure this taxonomy is being audited for.
-  datagen: 'data-generation',
-  blockentities: 'blocks',
-  blockentity: 'blocks',
-  tileentity: 'blocks',
-  inventories: 'items',
-  gui: 'rendering',
-  guis: 'rendering',
-  particles: 'rendering',
+  model: 'rendering',
   textures: 'rendering',
-  'class-tweakers': 'mixins',
-  coremods: 'mixins',
-  accesstransformers: 'mixins',
-  command: 'commands',
-  entity: 'entities',
+  modularui: 'rendering',
+  colorprovider: 'rendering',
+  // gui
+  gui: 'gui',
+  guis: 'gui',
+  screen: 'gui',
+  screens: 'gui',
+  screenhandler: 'gui',
+  extendedscreenhandler: 'gui',
+  containers: 'gui',
+  container: 'gui',
+  propertydelegates: 'gui',
+  hud: 'gui',
+  keybinds: 'gui',
+  'key-mappings': 'gui',
+  keymappings: 'gui',
+  // networking
+  networking: 'networking',
+  network: 'networking',
+  packets: 'networking',
+  packet: 'networking',
+  // world generation
+  worldgen: 'worldgen',
+  biomes: 'worldgen',
+  biome: 'worldgen',
+  chunkgenerator: 'worldgen',
+  features: 'worldgen',
+  structures: 'worldgen',
+  ores: 'worldgen',
+  trees: 'worldgen',
+  dimensions: 'worldgen',
+  dimensionconcepts: 'worldgen',
+  jigsaw: 'worldgen',
+  // recipes
+  recipes: 'recipes',
+  recipe: 'recipes',
+  'custom-recipe-types': 'recipes',
+  // events
+  events: 'events',
+  event: 'events',
+  callbacks: 'events',
+  // registry
+  registry: 'registry',
+  registries: 'registry',
+  // capabilities
+  capabilities: 'capabilities',
+  capability: 'capabilities',
+  attachments: 'capabilities',
+  'data-attachments': 'capabilities',
+  // coremods & mixins
+  mixin: 'coremods-mixins',
+  mixins: 'coremods-mixins',
+  mixinheritance: 'coremods-mixins',
+  coremods: 'coremods-mixins',
+  coremod: 'coremods-mixins',
+  'class-tweakers': 'coremods-mixins',
+  accesstransformers: 'coremods-mixins',
+  accesswideners: 'coremods-mixins',
+  accesswidening: 'coremods-mixins',
+  asm: 'coremods-mixins',
+  reflection: 'coremods-mixins',
+  extensibleenums: 'coremods-mixins',
+  featureflags: 'coremods-mixins',
+  // api design
+  'api-design': 'api-design',
+  api: 'api-design',
+  // cross platform
+  'cross-platform': 'cross-platform',
+  sides: 'cross-platform',
+  side: 'cross-platform',
+  sidedness: 'cross-platform',
+  proxy: 'cross-platform',
+  // storage systems
+  'storage-systems': 'storage-systems',
+  storage: 'storage-systems',
+  inventory: 'storage-systems',
+  inventories: 'storage-systems',
+  fluids: 'storage-systems',
+  fluid: 'storage-systems',
+  energy: 'storage-systems',
+  'transfer-api': 'storage-systems',
+  saveddata: 'storage-systems',
+  'saved-data': 'storage-systems',
+  nbt: 'storage-systems',
+  codecs: 'storage-systems',
+  codec: 'storage-systems',
+  valueio: 'storage-systems',
+  // animation, particles, sounds, commands
+  animation: 'animation',
+  animations: 'animation',
+  particles: 'particles',
+  particle: 'particles',
+  sounds: 'sounds',
   sound: 'sounds',
-  item: 'items',
-  block: 'blocks',
+  commands: 'commands',
+  command: 'commands',
+  // config
+  config: 'config',
+  configuration: 'config',
+  gamerule: 'config',
+  'game-rules': 'config',
+  gamerules: 'config',
+  'resource-conditions': 'config',
+  updatechecker: 'config',
+  // getting started
+  'getting-started': 'getting-started',
+  gettingstarted: 'getting-started',
+  setup: 'getting-started',
+  introduction: 'getting-started',
+  start: 'getting-started',
+  install: 'getting-started',
+  installation: 'getting-started',
+  terms: 'getting-started',
+  // data generation
+  'data-generation': 'data-generation',
+  datagen: 'data-generation',
+  // resources
+  resource: 'resources',
+  lang: 'resources',
+  tags: 'resources',
+  'text-and-translations': 'resources',
+  translations: 'resources',
+  resourcelocation: 'resources',
+  identifier: 'resources',
+  advancements: 'resources',
+  loot: 'resources',
+  statistics: 'resources',
+  stats: 'resources',
+  // toolchain
+  gradle: 'toolchain',
+  mappings: 'toolchain',
+  kotlin: 'toolchain',
+  cursegradle: 'toolchain',
+  minotaur: 'toolchain',
+  hotswapping: 'toolchain',
+  gametest: 'toolchain',
+  'automatic-testing': 'toolchain',
+  debugging: 'toolchain',
+  debugprofiler: 'toolchain',
+  'ide-tips-and-tricks': 'toolchain',
+  plugins: 'toolchain',
+  dependencies: 'toolchain',
+  // porting
+  migration: 'porting',
 };
 
-export function categorizeDocPath(segments: string[]): (typeof DOC_CATEGORIES)[number] {
+/**
+ * Segments that name a *container*, not a subject.
+ *
+ * These are consulted only after every segment has failed the specific table
+ * above, so `/datastorage/capabilities` resolves to `capabilities` rather than
+ * being swallowed by its container. This is the same failure `a64e14f` fixed for
+ * the versioned-path heuristic, generalized to the segment matcher: NeoForge
+ * files whole trees under words like `resources/`, `concepts/`, `advanced/` and
+ * `datastorage/`, and matching those eagerly hides the segment that carries the
+ * real subject.
+ */
+const CONTAINER_SEGMENT_CATEGORIES: Record<string, DocCategory> = {
+  datastorage: 'storage-systems',
+  serialization: 'storage-systems',
+  resources: 'resources',
+  datamaps: 'config',
+  loader: 'toolchain',
+  loom: 'toolchain',
+  toolchain: 'toolchain',
+  primer: 'porting',
+  porting: 'porting',
+  advanced: 'coremods-mixins',
+  player: 'getting-started',
+  user: 'getting-started',
+  'end-user-guide': 'getting-started',
+  misc: 'general',
+  concepts: 'general',
+  tutorial: 'general',
+  documentation: 'general',
+  community: 'general',
+  archive: 'general',
+  faq: 'general',
+  utilities: 'general',
+  conventions: 'general',
+  proposal: 'general',
+  modpack: 'general',
+  'cleanroom-mod-development': 'general',
+  'forge-mod-development': 'general',
+};
+
+/**
+ * Segments that carry no information at any tier — site scaffolding and
+ * loader names that appear as path components.
+ */
+const NOISE_SEGMENTS = new Set([
+  'en',
+  'docs',
+  'wiki',
+  'develop',
+  'tutorials',
+  'legacy',
+  'neo',
+  'forge',
+  'fabric',
+  'ng',
+]);
+
+/** `1.12.2`, `1.21`, `1.12.x` — a version, never a subject. */
+const VERSIONISH = /^\d+(\.\d+)*(\.x)?$/;
+
+/**
+ * Split a path into candidate segments.
+ *
+ * Splitting on `:` and `_` as well as `/` is load-bearing: the Fabric wiki is a
+ * DokuWiki whose URLs are colon namespaces (`wiki.fabricmc.net/tutorial:blocks`,
+ * `tutorial:blockentity_sync_itemstack`). A `/`-only split made 224 of those
+ * pages *structurally* unmatchable — no mapping-table entry could ever reach
+ * them — which is why they sat in 'general' through two rounds of remapping.
+ */
+function splitSegments(path: string): string[] {
+  return path
+    .split(/[/:_]/)
+    .filter(Boolean)
+    .filter((s) => !NOISE_SEGMENTS.has(s.toLowerCase()) && !VERSIONISH.test(s));
+}
+
+function matchSegments(segments: string[], table: Record<string, DocCategory>): DocCategory | null {
   for (const segment of segments) {
-    const category = PATH_SEGMENT_CATEGORIES[segment.toLowerCase()];
+    const category = table[segment.toLowerCase()];
     if (category) {
       return category;
     }
   }
-  return 'general';
+  return null;
+}
+
+/**
+ * Map URL/repo path segments onto DOC_CATEGORIES. Specific subjects win over
+ * containers; 'general' when nothing matches at either tier.
+ */
+export function categorizeDocPath(segments: string[]): DocCategory {
+  const candidates = segments.flatMap((s) => splitSegments(s));
+  return (
+    matchSegments(candidates, PATH_SEGMENT_CATEGORIES) ??
+    matchSegments(candidates, CONTAINER_SEGMENT_CATEGORIES) ??
+    DOC_FALLBACK_CATEGORY
+  );
+}
+
+/**
+ * Map a documentation URL onto a DOC_CATEGORIES value.
+ *
+ * Stage 1 is the versioned-path heuristic (Fabric/NeoForge docs): take the
+ * segment immediately after a version number and trust it *only* if it names a
+ * specific subject. Stage 2 matches every segment of the path — the shape of the
+ * Forge 1.12.x RTD tree ("1.12.x" defeats the version alternation), the
+ * Cleanroom wiki routes, and the Fabric DokuWiki namespaces.
+ *
+ * Stage 1 must not short-circuit on a *container* match, only a specific one.
+ * That is the same trap `a64e14f` documented: `/docs/concepts/events` resolved
+ * to 'events' via stage 2 while its versioned twins `/docs/1.2x.y/concepts/events`
+ * stopped at 'concepts' in stage 1. Stage 1 yields to stage 2 rather than
+ * returning a category it has no specific evidence for.
+ *
+ * Free function rather than a method so the mapping is testable without standing
+ * up a crawler, and it lives here rather than in src/indexer/crawler.ts so the
+ * startup corpus migration can replay it without pulling the crawler's
+ * dependencies into the MCP server process.
+ */
+export function extractCategoryFromUrl(url: string): DocCategory {
+  const match = url.match(
+    /https?:\/\/[^/]+\/(?:.*\/)?(?:(?:\d+(?:\.\d+)*|develop)\/([^/]+)|([^/:\\s]+):)/
+  );
+  if (match?.[1]) {
+    const specific = matchSegments(splitSegments(match[1]), PATH_SEGMENT_CATEGORIES);
+    if (specific) {
+      return specific;
+    }
+  }
+
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    path = url;
+  }
+  return categorizeDocPath([path]);
 }

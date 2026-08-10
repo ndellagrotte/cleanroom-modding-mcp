@@ -10,9 +10,10 @@
 import { load, CheerioAPI } from 'cheerio';
 import fetch from 'node-fetch';
 import { createHash } from 'crypto';
-import { detectMinecraftVersion } from './sitemap.js';
+import { detectVersions } from './sitemap.js';
 import { detectLoaderFromUrl, type Loader } from '../loaders.js';
-import { categorizeDocPath } from '../categories.js';
+import { extractCategoryFromUrl } from '../categories.js';
+import { stripZeroWidth } from './text.js';
 import type {
   DocumentPage,
   DocumentSection,
@@ -143,7 +144,9 @@ const NOISE_TEXT_PATTERNS: RegExp[] = [
  * Clean text by removing UI noise patterns
  */
 function cleanText(text: string): string {
-  let cleaned = text;
+  // Before the whitespace collapse, so a space orphaned by the removal
+  // collapses with its neighbour instead of surviving as a double space.
+  let cleaned = stripZeroWidth(text);
 
   for (const pattern of NOISE_TEXT_PATTERNS) {
     cleaned = cleaned.replace(pattern, '');
@@ -155,62 +158,6 @@ function cleanText(text: string): string {
   cleaned = cleaned.replace(/^\s+|\s+$/gm, '');
 
   return cleaned.trim();
-}
-
-/**
- * Map a documentation URL onto a DOC_CATEGORIES value.
- *
- * Stage 1 is the historical versioned-path heuristic (Fabric/NeoForge docs,
- * DokuWiki namespaces). When it yields nothing, stage 2 matches individual path
- * segments — the shape of the Forge 1.12.x RTD tree ("1.12.x" defeats the
- * version alternation) and the Cleanroom wiki routes.
- *
- * BOTH stages normalize through `categorizeDocPath`. Stage 1 used to return the
- * raw path segment verbatim, which is how ~35 values outside DOC_CATEGORIES
- * reached the corpus (`resources` 224 documents, `misc` 54, `datastorage` 41,
- * `gettingstarted` 36, …). 577 documents ended up in categories no `category`
- * filter can express, falsifying the invariant stated at the top of
- * src/categories.ts — that DOC_CATEGORIES is a superset of what the crawler
- * emits. Unrecognized segments now fall to 'general', the documented fallback.
- *
- * Normalizing alone was not enough, because stage 1 only ever inspected ONE
- * segment. NeoForge files whole trees under container words that map to nothing
- * (`resources/`, `concepts/`, `advanced/`, `misc/`, `datastorage/`), so the
- * deeper segment that does carry a category was never read and 463 documents
- * landed in 'general'. The tell was the same page indexed twice:
- * `/docs/concepts/events` resolved to 'events' via stage 2, while its nine
- * versioned twins `/docs/1.2x.y/concepts/events` stopped at 'concepts' in stage
- * 1 and became 'general'. Stage 1 now yields to stage 2 instead of returning a
- * fallback it has no evidence for.
- *
- * Free function rather than a method so the mapping is testable without
- * standing up a crawler; it never touched instance state.
- */
-export function extractCategoryFromUrl(url: string): string {
-  const match = url.match(
-    /https?:\/\/[^/]+\/(?:.*\/)?(?:(?:\d+(?:\.\d+)*|develop)\/([^/]+)|([^/:\\s]+):)/
-  );
-  if (match?.[1]) {
-    const versionedSegment = categorizeDocPath([match[1]]);
-    // Only a positive match short-circuits. 'general' here means "this one
-    // segment told us nothing", not "this URL has no category" — stage 2 reads
-    // the rest of the path before we settle for the fallback.
-    if (versionedSegment !== 'general') {
-      return versionedSegment;
-    }
-  }
-
-  let path: string;
-  try {
-    path = new URL(url).pathname;
-  } catch {
-    path = url;
-  }
-  const segments = path
-    .split('/')
-    .filter(Boolean)
-    .filter((s) => s !== 'en' && s !== 'docs' && s !== 'wiki' && !/^\d+(\.\d+)*(\.x)?$/.test(s));
-  return categorizeDocPath(segments);
 }
 
 export class DocumentCrawler {
@@ -379,8 +326,8 @@ export class DocumentCrawler {
     // Detect loader from URL
     const loader = this.detectLoader(url);
 
-    // Detect Minecraft version (fallback comes from the loader's registry entry)
-    const minecraftVersion = detectMinecraftVersion(url, content, loader);
+    // Detect versions (the target family's is fixed by the loader registry)
+    const { minecraftVersion, loaderVersion } = detectVersions(url, content, loader);
 
     return {
       url,
@@ -390,6 +337,7 @@ export class DocumentCrawler {
       category,
       loader,
       minecraftVersion,
+      loaderVersion,
       sections,
       metadata,
       hash,
@@ -501,9 +449,11 @@ export class DocumentCrawler {
           }
         });
 
-        // Only add section if it has meaningful content
+        // A heading alone is not content. Admitting one minted 462 body-less
+        // sections in the shipped corpus, 88 of the 96 duplicate
+        // `(document_id, content)` groups the beta report counted (S6).
         const sectionContent = content.join('\n\n');
-        if (heading || sectionContent || codeBlocks.length > 0) {
+        if (sectionContent || codeBlocks.length > 0) {
           sections.push({
             heading,
             level,
@@ -573,9 +523,9 @@ export class DocumentCrawler {
         $current = $current.next();
       }
 
-      // Only add section if it has meaningful content
+      // A heading alone is not content — see the note on the wiki path above.
       const sectionContent = content.join('\n\n');
-      if (heading || sectionContent || codeBlocks.length > 0) {
+      if (sectionContent || codeBlocks.length > 0) {
         sections.push({
           heading,
           level,

@@ -1,12 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { extractCategoryFromUrl } from './crawler.js';
-import { DOC_CATEGORIES } from '../categories.js';
+import { extractCategoryFromUrl, DOC_CATEGORIES, EXAMPLE_CATEGORIES } from '../categories.js';
 
 /**
  * The crawler is the only writer of `documents.category`, and every tool's
  * `category` filter is the fixed DOC_CATEGORIES enum. A value the crawler emits
- * that is not in that enum is a document no filter can reach: the shipped
- * corpus holds 577 such rows (`resources` 224, `misc` 54, `datastorage` 41,
+ * that is not in that enum is a document no filter can reach: the corpus once
+ * held 577 such rows (`resources` 224, `misc` 54, `datastorage` 41,
  * `gettingstarted` 36, …) because stage 1 of the URL heuristic returned raw
  * path segments. These tests pin the invariant that used to be only a comment.
  */
@@ -32,12 +31,79 @@ describe('extractCategoryFromUrl', () => {
     }
   });
 
-  it('normalizes stage-1 segments that used to pass through raw', () => {
-    // Previously returned 'resources' / 'misc' / 'datastorage' verbatim.
-    expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/resources/')).toBe(
-      'general'
-    );
-    expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/misc/')).toBe('general');
+  /**
+   * The Fabric wiki is a DokuWiki: its URLs are colon namespaces, not slash
+   * paths. Splitting on `/` alone made 224 documents structurally unmatchable —
+   * no mapping-table entry could ever reach them — which is why they survived
+   * two rounds of remapping sitting in 'general'.
+   */
+  describe('DokuWiki colon namespaces', () => {
+    it('reads past the namespace to the subject', () => {
+      expect(extractCategoryFromUrl('https://wiki.fabricmc.net/tutorial:blocks')).toBe('blocks');
+      expect(extractCategoryFromUrl('https://wiki.fabricmc.net/tutorial:commands')).toBe(
+        'commands'
+      );
+      expect(extractCategoryFromUrl('https://wiki.fabricmc.net/tutorial:blockstate')).toBe(
+        'blocks'
+      );
+    });
+
+    it('splits underscore-joined slugs', () => {
+      expect(
+        extractCategoryFromUrl('https://wiki.fabricmc.net/tutorial:blockentity_sync_itemstack')
+      ).toBe('tile-entities');
+      expect(extractCategoryFromUrl('https://wiki.fabricmc.net/tutorial:mixin_injects')).toBe(
+        'coremods-mixins'
+      );
+      expect(extractCategoryFromUrl('https://wiki.fabricmc.net/tutorial:datagen_loot')).toBe(
+        'data-generation'
+      );
+    });
+
+    it('handles an embedded version segment', () => {
+      expect(
+        extractCategoryFromUrl('https://wiki.fabricmc.net/tutorial:1.14:blockentityrenderers')
+      ).toBe('tile-entities');
+    });
+  });
+
+  /**
+   * Container words name a tree, not a subject. Matching them eagerly hides the
+   * segment that carries the real category — the failure `a64e14f` fixed for the
+   * versioned-path heuristic, which this generalizes to the segment matcher.
+   */
+  describe('container segments yield to specific ones', () => {
+    it('prefers the subject inside the container', () => {
+      expect(
+        extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/datastorage/capabilities')
+      ).toBe('capabilities');
+      expect(
+        extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/datastorage/saveddata/')
+      ).toBe('storage-systems');
+      expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/misc/config')).toBe(
+        'config'
+      );
+      expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.20.4/concepts/sides/')).toBe(
+        'cross-platform'
+      );
+      expect(
+        extractCategoryFromUrl('https://docs.neoforged.net/docs/1.20.4/concepts/registries')
+      ).toBe('registry');
+    });
+
+    it('falls back to the container when nothing specific matches', () => {
+      expect(
+        extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/resources/server')
+      ).toBe('resources');
+      expect(extractCategoryFromUrl('https://docs.fabricmc.net/develop/loom/')).toBe('toolchain');
+      expect(extractCategoryFromUrl('https://docs.neoforged.net/primer/1.21.1/')).toBe('porting');
+    });
+
+    it('leaves a container with no subject in general', () => {
+      expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/misc/')).toBe(
+        'general'
+      );
+    });
   });
 
   it('maps stage-1 aliases onto their taxonomy home', () => {
@@ -46,9 +112,9 @@ describe('extractCategoryFromUrl', () => {
     );
     expect(
       extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/blockentities/ber/')
-    ).toBe('blocks');
+    ).toBe('tile-entities');
     expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/gui/screens/')).toBe(
-      'rendering'
+      'gui'
     );
     expect(
       extractCategoryFromUrl('https://docs.fabricmc.net/develop/1.21.4/entities/damage-types')
@@ -65,13 +131,11 @@ describe('extractCategoryFromUrl', () => {
       extractCategoryFromUrl('https://docs.minecraftforge.net/en/1.12.x/networking/simpleimpl/')
     ).toBe('networking');
     expect(extractCategoryFromUrl('https://cleanroommc.com/wiki/mixin/getting-started')).toBe(
-      'mixins'
+      'coremods-mixins'
     );
   });
 
   it('descends past container segments when stage 1 finds no category', () => {
-    // NeoForge files whole trees under words that map to nothing. Stopping at
-    // the first segment hid the one that does carry a category.
     expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.20.4/concepts/events')).toBe(
       'events'
     );
@@ -82,7 +146,7 @@ describe('extractCategoryFromUrl', () => {
     ).toBe('rendering');
     expect(
       extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/advanced/accesstransformers')
-    ).toBe('mixins');
+    ).toBe('coremods-mixins');
   });
 
   it('categorizes a versioned URL the same as its unversioned twin', () => {
@@ -98,24 +162,22 @@ describe('extractCategoryFromUrl', () => {
     }
   });
 
-  it('still settles on general when no segment carries a category', () => {
-    // Container segments whose subtrees have no home in the 12-value taxonomy
-    // must not acquire one just because stage 2 now gets to look.
-    expect(
-      extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/datastorage/saveddata/')
-    ).toBe('general');
-    expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.20.4/concepts/sides/')).toBe(
-      'general'
-    );
-    expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/misc/config')).toBe(
-      'general'
-    );
-  });
-
   it('falls back to general rather than inventing a category', () => {
     expect(extractCategoryFromUrl('https://docs.fabricmc.net/develop/wildly-unknown-topic')).toBe(
       'general'
     );
     expect(extractCategoryFromUrl('https://example.invalid/')).toBe('general');
+    expect(extractCategoryFromUrl('not even a url')).toBe('general');
+  });
+
+  /**
+   * The cross-corpus contract the tool descriptions depend on: they route agents
+   * from `list_mod_categories` into `search_docs`, so every example category has
+   * to be a legal doc filter value.
+   */
+  it('accepts every mod-examples category as a doc category', () => {
+    for (const slug of EXAMPLE_CATEGORIES) {
+      expect(DOC_CATEGORIES).toContain(slug);
+    }
   });
 });

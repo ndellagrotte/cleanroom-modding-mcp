@@ -5,6 +5,7 @@
 
 import { DocumentStore } from '../indexer/store.js';
 import { EmbeddingGenerator } from '../indexer/embeddings.js';
+import { stripZeroWidth } from '../indexer/text.js';
 import {
   tokenizeQuery,
   calculateRelevanceScore,
@@ -694,7 +695,11 @@ export class SearchService {
    * Clean content by removing UI/navigation noise
    */
   private cleanContent(content: string): string {
-    let cleaned = content;
+    // Defensive, and the reason this fix reaches users before they download
+    // anything: every shipped docs.db carries zero-width characters in stored
+    // headings and chunks, and stripping at render neutralizes them without a
+    // migration or a re-download.
+    let cleaned = stripZeroWidth(content);
 
     for (const pattern of NOISE_PATTERNS) {
       cleaned = cleaned.replace(pattern, '');
@@ -797,13 +802,38 @@ export class SearchService {
 
         const cleaned = snippet.trim();
         if (cleaned.length > 20) {
-          return cleaned;
+          return this.markLeadingFragments(cleaned);
         }
       }
     }
 
-    // Fallback: return beginning of content
-    return this.truncateCodeAware(content, maxLength);
+    // Fallback: return beginning of content. The repair above only runs when
+    // the match forced a cut (`start > 0`); a chunk short enough to be returned
+    // whole reaches here unrepaired, which is how "ot entry:" shipped as a
+    // complete summary.
+    return this.markLeadingFragments(this.truncateCodeAware(content, maxLength));
+  }
+
+  /**
+   * Mark a passage that begins partway through a sentence.
+   *
+   * Chunks built before the splitter snapped to word boundaries can open
+   * mid-word — the shipped corpus holds `"Registering Custom
+   * Objects\n\not entry:"`, where the body is the tail of "loot entry:" (beta
+   * report S6). The missing prefix is not recoverable at render time, because
+   * it is not in the chunk. What *is* fixable is presenting the fragment as
+   * though it were the start of a sentence: an ellipsis tells the reader the
+   * text was cut, which is the honest rendering of a truncated passage and
+   * costs nothing on a corpus built by the current chunker.
+   *
+   * Applied per paragraph because the chunk body follows its heading, so the
+   * fragment is rarely the first thing in the string.
+   */
+  private markLeadingFragments(text: string): string {
+    return text
+      .split('\n\n')
+      .map((part) => (/^\s*[a-z][a-z]*[\s,.;:)]/.test(part) ? `...${part.trimStart()}` : part))
+      .join('\n\n');
   }
 
   /**

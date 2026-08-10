@@ -18,6 +18,7 @@ import { DocumentCrawler, getFabricDocumentationUrls } from '../src/indexer/craw
 import { DocumentChunker } from '../src/indexer/chunker.js';
 import { DocumentStore } from '../src/indexer/store.js';
 import { DBS } from '../src/dbs.js';
+import { lintCorpus, reportLint } from './lint-corpus.js';
 import { LOADERS, LOADER_IDS, isLoader, scopeToLoaders, type Loader } from '../src/loaders.js';
 import {
   getFabricUrlsFromSitemap,
@@ -49,6 +50,8 @@ interface IndexOptions {
   allowOffTaxonomyCategories?: boolean;
   /** Ship a corpus whose 'general' share exceeds GENERAL_SHARE_LIMIT (exit 4 otherwise). */
   allowGeneralShare?: boolean;
+  /** Ship a corpus failing the full corpus lint (exit 5 otherwise). */
+  allowCorpusLintFailures?: boolean;
 }
 
 /**
@@ -60,22 +63,21 @@ interface IndexOptions {
  * recognizing every path segment would emit nothing but 'general' and pass, since
  * 'general' is in DOC_CATEGORIES.
  *
- * Set against the real number rather than an aspiration. The corpus sits at 50%
- * (716/1432) once extractCategoryFromUrl descends past NeoForge's container
- * segments; per loader, neoforge 51%, fabric 52%, forge 30%, cleanroom 35%; at
- * the default target scope, 28/88 = 32%. Most of that residue is modern
- * reference material with no home in a 12-value 1.12.2 taxonomy
- * (`resources/server`, `misc/*`, `datastorage/*`, `develop/loom`), which is
- * expected and not a defect.
+ * Set against the real number rather than an aspiration. The corpus sits at
+ * 6.5% (93/1432); per loader, neoforge 0%, fabric 13%, cleanroom 15%, forge
+ * 17%; at the default target scope, 14/88 = 16%. What is left is genuinely
+ * subject-less — DokuWiki meta pages, site roots, `conventions/*` stubs.
  *
- * Be clear about what 60% buys: **this gate would not have caught the 56% state
- * that motivated it.** Catching that needs ~52%, two points of headroom, which
- * would fail on ordinary upstream churn. This is a collapse detector, not a
- * drift detector — it fires when the heuristic stops matching and the bucket
- * runs toward 100%. Detecting drift needs a per-build comparison against the
- * previous manifest, which is not built here.
+ * This ceiling used to be 60%, and its own comment conceded that **it would not
+ * have caught the 56% state that motivated it**: it was a collapse detector,
+ * not a drift detector. Three changes made a real gate affordable — splitting
+ * path segments on `:` and `_` (which reached 224 structurally unmatchable
+ * DokuWiki pages), matching containers only after specific subjects, and
+ * promoting `resources`/`toolchain`/`porting` to real categories. At 15% there
+ * is more than twice the current share in headroom for upstream churn, and a
+ * regression of the kind that produced 50% cannot pass.
  */
-const GENERAL_SHARE_LIMIT = 0.6;
+const GENERAL_SHARE_LIMIT = 0.15;
 
 /** Whole-percent share, for the gate's log lines. */
 function pct(part: number, whole: number): string {
@@ -492,6 +494,22 @@ async function main(options: IndexOptions = {}) {
         console.error('   --allow-general-share set; shipping regardless.\n');
       }
     }
+
+    // Full corpus lint. The two gates above only watch the taxonomy; this is
+    // what covers the rest of what a rebuild can silently republish unchanged —
+    // zero-width contamination, body-less sections, non-Minecraft versions,
+    // orphaned rows. v2.2.3 rebuilt the corpus and shipped every one of those
+    // untouched because nothing looked at the database after building it.
+    //
+    // Reads through its own read-only connection rather than closing the store
+    // first: the `finally` below owns that, and WAL allows the second reader.
+    const lint = lintCorpus(dbPath);
+    if (!reportLint(dbPath, lint)) {
+      if (!options.allowCorpusLintFailures) {
+        process.exit(5);
+      }
+      console.error('   --allow-corpus-lint-failures set; shipping regardless.\n');
+    }
   } catch (error) {
     console.error('\n💥 Indexing failed:', error);
     process.exit(1);
@@ -539,6 +557,7 @@ const options: IndexOptions = {
   equivalence: !args.includes('--no-equivalence'),
   allowOffTaxonomyCategories: args.includes('--allow-off-taxonomy-categories'),
   allowGeneralShare: args.includes('--allow-general-share'),
+  allowCorpusLintFailures: args.includes('--allow-corpus-lint-failures'),
 };
 
 // Show help
@@ -561,6 +580,9 @@ if (args.includes('--help') || args.includes('-h')) {
     `                      Ship a corpus with over ${Math.round(GENERAL_SHARE_LIMIT * 100)}% of documents in`
   );
   console.log("                      'general', the no-match fallback (exit 4)");
+  console.log('      --allow-corpus-lint-failures');
+  console.log('                      Ship a corpus failing the pre-publish lint — zero-width');
+  console.log('                      characters, body-less sections, bad versions (exit 5)');
   console.log('  -h, --help          Show this help message');
   console.log('');
   console.log('Examples:');

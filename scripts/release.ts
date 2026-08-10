@@ -15,6 +15,7 @@ import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { DBS, DB_IDS, type DbId } from '../src/dbs.js';
 import { readDbSchemaVersion } from '../src/mappings/schema.js';
+import { lintCorpus, reportLint } from './lint-corpus.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as {
@@ -136,6 +137,32 @@ if (missing.length > 0) {
       'CLEANROOM_RELEASE_DATA_DIR at a directory that already has them.'
   );
 }
+// Corpus lint, before a single manifest is written.
+//
+// This is the check that would have caught V8. The other verification here is
+// about *packaging* — hashes, versions, URL suffixes — and never opens a table,
+// so v2.2.3 published a docs.db carrying 9,867 known zero-width contaminations,
+// 359 null versions and a phantom `21.9`, all of them already diagnosed and
+// scheduled for that exact rebuild. It passed every gate because no gate looked.
+//
+// It runs whether or not this invocation rebuilt anything, because the failure
+// mode is a *carried-forward* database that no longer matches the code shipping
+// beside it.
+{
+  const docsDb = dbFile('docs');
+  if (fs.existsSync(docsDb)) {
+    const report = lintCorpus(docsDb);
+    if (!reportLint(docsDb, report)) {
+      fail(
+        `docs.db failed ${report.failed.length} corpus check(s); see above.\n` +
+          'Every user pays a full download for this file, so publishing a known-bad ' +
+          'metric spends the budget for the next fix as well. Rebuild with ' +
+          '`npm run index-docs:prod` and release again.'
+      );
+    }
+  }
+}
+
 const includedIds = DB_IDS;
 for (const id of includedIds) {
   run('npm', [

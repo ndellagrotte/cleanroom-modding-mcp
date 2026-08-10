@@ -9,6 +9,8 @@ import { describe, it, expect } from 'vitest';
 import {
   DOC_CATEGORIES,
   DOC_CATEGORY_ENUM,
+  DOC_ONLY_CATEGORIES,
+  docCategoryRouting,
   EXAMPLE_CATEGORIES,
   EXAMPLE_CATEGORY_INFO,
   CONCEPT_CATEGORIES,
@@ -37,6 +39,32 @@ describe('doc categories', () => {
 
   it('has no duplicates', () => {
     expect(new Set(DOC_CATEGORIES).size).toBe(DOC_CATEGORIES.length);
+  });
+
+  /**
+   * The cross-corpus contract. The tool descriptions route agents from
+   * `list_mod_categories` into `search_docs`; before the taxonomies converged,
+   * carrying a slug across that boundary produced a schema error (beta report
+   * V9). DOC_CATEGORIES is *defined* as a superset, so this can only fail if
+   * someone re-splits the definition.
+   */
+  it('accepts every mod-examples category', () => {
+    for (const slug of EXAMPLE_CATEGORIES) {
+      expect(DOC_CATEGORIES).toContain(slug);
+    }
+  });
+
+  it('routes every shared category to its own name in the examples corpus', () => {
+    for (const slug of EXAMPLE_CATEGORIES) {
+      expect(docCategoryRouting(slug)).toEqual({ kind: 'examples', category: slug });
+    }
+  });
+
+  it('gives every doc-only category somewhere to send the agent', () => {
+    for (const slug of DOC_ONLY_CATEGORIES) {
+      const routing = docCategoryRouting(slug);
+      expect(['free-text', 'porting-tools', 'not-in-1.12.2']).toContain(routing.kind);
+    }
   });
 });
 
@@ -102,38 +130,42 @@ describe('auditCategoryCoverage', () => {
     });
   });
 
-  it('reproduces the shipped corpus verdict (beta report N2)', () => {
-    // byCategory as recorded in examples.db metadata for av1-661190e3a39cb7c4.
+  it('reproduces the shipped corpus verdict', () => {
+    // Per-category counts read from the shipped examples.db. The earlier
+    // snapshot here recorded `capabilities` as empty; the LLM re-analysis has
+    // since populated it (21), so the corpus now has no empty category at all —
+    // only thin ones.
     const shipped: Record<string, number> = {
-      blocks: 238,
-      rendering: 157,
-      'tile-entities': 137,
-      'coremods-mixins': 123,
-      'cross-platform': 99,
-      events: 99,
-      items: 78,
-      registry: 64,
-      'api-design': 48,
-      animation: 45,
-      networking: 42,
-      config: 33,
-      gui: 29,
-      'storage-systems': 18,
-      particles: 14,
-      commands: 5,
-      entities: 5,
-      recipes: 5,
-      worldgen: 4,
-      sounds: 2,
+      'coremods-mixins': 195,
+      rendering: 170,
+      blocks: 163,
+      'tile-entities': 156,
+      events: 103,
+      items: 84,
+      'cross-platform': 80,
+      gui: 69,
+      registry: 56,
+      networking: 50,
+      'api-design': 30,
+      'storage-systems': 29,
+      capabilities: 21,
+      recipes: 20,
+      worldgen: 15,
+      config: 12,
+      entities: 8,
+      particles: 8,
+      commands: 7,
+      sounds: 5,
+      animation: 2,
     };
     const { empty, thin } = auditCategoryCoverage(shipped);
-    expect(empty).toEqual(['capabilities']);
+    expect(empty).toEqual([]);
     expect([...thin].map((t) => t.slug).sort()).toEqual([
+      'animation',
       'commands',
       'entities',
-      'recipes',
+      'particles',
       'sounds',
-      'worldgen',
     ]);
   });
 });
@@ -148,17 +180,36 @@ describe('concept categories', () => {
 
 describe('categorizeDocPath', () => {
   it('maps RTD 1.12.x segments', () => {
-    expect(categorizeDocPath(['concepts', 'registries'])).toBe('general');
+    // 'concepts' is a container, so the subject inside it wins.
+    expect(categorizeDocPath(['concepts', 'registries'])).toBe('registry');
     expect(categorizeDocPath(['gettingstarted'])).toBe('getting-started');
     expect(categorizeDocPath(['models', 'files'])).toBe('rendering');
-    expect(categorizeDocPath(['tileentities', 'tesr'])).toBe('blocks');
+    expect(categorizeDocPath(['tileentities', 'tesr'])).toBe('tile-entities');
   });
 
   it('maps Cleanroom wiki route segments (first hit wins)', () => {
     expect(categorizeDocPath(['forge-mod-development', 'event'])).toBe('events');
-    expect(categorizeDocPath(['forge-mod-development', 'mixin', 'preface'])).toBe('mixins');
+    expect(categorizeDocPath(['forge-mod-development', 'mixin', 'preface'])).toBe(
+      'coremods-mixins'
+    );
     expect(categorizeDocPath(['modularui', 'json', 'theme'])).toBe('rendering');
-    expect(categorizeDocPath(['forge-mod-development', 'sidedness'])).toBe('networking');
+    expect(categorizeDocPath(['forge-mod-development', 'sidedness'])).toBe('cross-platform');
+  });
+
+  it('prefers a specific segment over the container it sits in', () => {
+    // The whole point of the two-tier match: 'datastorage' has a container
+    // mapping, but 'capabilities' names the actual subject.
+    expect(categorizeDocPath(['datastorage', 'capabilities'])).toBe('capabilities');
+    expect(categorizeDocPath(['misc', 'config'])).toBe('config');
+    // …and the container still answers when nothing specific is present.
+    expect(categorizeDocPath(['datastorage'])).toBe('storage-systems');
+    expect(categorizeDocPath(['misc'])).toBe('general');
+  });
+
+  it('splits DokuWiki colon namespaces and underscore slugs', () => {
+    expect(categorizeDocPath(['tutorial:blocks'])).toBe('blocks');
+    expect(categorizeDocPath(['tutorial:blockentity_sync_itemstack'])).toBe('tile-entities');
+    expect(categorizeDocPath(['tutorial:mixin_injects'])).toBe('coremods-mixins');
   });
 
   it('always returns a DOC_CATEGORIES value', () => {

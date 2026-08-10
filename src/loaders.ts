@@ -40,6 +40,24 @@ export interface LoaderInfo {
 /** The one Minecraft version the target family develops against. */
 export const TARGET_VERSION = '1.12.2';
 
+/**
+ * A string shaped like a Minecraft release. Every Minecraft version since the
+ * 2011 full release is `1.x` or `1.x.y`.
+ *
+ * This is the guard that keeps non-Minecraft versions out of the
+ * `minecraft_version` column. The shipped corpus carries `26.1.2` for 100
+ * documents (Fabric's *docs-site* version, taken from
+ * `docs.fabricmc.net/26.1.2/…`), plus `26.1`, `26.2`, `0.6.6`, `0.19.0` scraped
+ * from Loom/Loader prose and a phantom `21.9` scraped from NeoForge's
+ * "Minecraft Version 21.9 and later…" — which is a ModDevGradle version, not a
+ * Minecraft one (beta report S8).
+ */
+export const MC_VERSION_PATTERN = /^1\.\d+(\.\d+)?$/;
+
+export function isMinecraftVersion(value: string | null | undefined): boolean {
+  return typeof value === 'string' && MC_VERSION_PATTERN.test(value);
+}
+
 export const LOADERS: Record<Loader, LoaderInfo> = {
   cleanroom: {
     id: 'cleanroom',
