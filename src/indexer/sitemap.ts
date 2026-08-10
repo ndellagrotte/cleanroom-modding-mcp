@@ -9,7 +9,7 @@
 import fetch from 'node-fetch';
 import { load } from 'cheerio';
 import { gunzipSync } from 'zlib';
-import { defaultVersionFor, LOADERS, type Loader } from '../loaders.js';
+import { defaultVersionFor, isMinecraftVersion, LOADERS, type Loader } from '../loaders.js';
 
 export interface SitemapEntry {
   url: string;
@@ -353,47 +353,93 @@ function getFabricWikiStaticUrls(): string[] {
   ];
 }
 
+/** Versions a document can be tagged with. Either half may be absent. */
+export interface DetectedVersions {
+  /** A real Minecraft version, or undefined when none can be established. */
+  minecraftVersion?: string;
+  /**
+   * The docs-site or loader version the page was published under — Fabric
+   * serves versioned snapshots at `docs.fabricmc.net/26.1.2/…`. Real metadata,
+   * but not a Minecraft version, and storing it in `minecraft_version` made 115
+   * documents unfilterable and put `26.1.2` in agent-facing version lists.
+   */
+  loaderVersion?: string;
+}
+
 /**
- * Detect Minecraft version from URL or content.
+ * Detect the versions a document belongs to, from its URL and content.
  *
  * Target-family loaders (cleanroom/forge) have a FIXED version — their entire
  * corpus is 1.12.2, so content sniffing (which can match Forge's own version
- * numbers like "14.23.5") is skipped entirely. Reference loaders keep the
- * URL → content heuristics, but the old hardcoded '1.21.10' fallback is gone:
- * an undetectable version stays undefined rather than mislabeled.
+ * numbers like "14.23.5") is skipped entirely.
+ *
+ * For reference loaders, every candidate is checked against
+ * `MC_VERSION_PATTERN` before it is accepted as a Minecraft version. A URL
+ * segment that is version-shaped but not Minecraft-shaped becomes the
+ * `loaderVersion` instead of being silently mislabeled; a content match that
+ * fails the shape is discarded outright, because prose is far too weak a signal
+ * to justify inventing a version from it.
+ *
+ * Nothing is fabricated. A document with no establishable Minecraft version
+ * keeps `undefined` — 359 pages in the corpus (`archive:changelog`, most wiki
+ * tutorials) genuinely have none, and guessing would be worse than disclosing.
  */
-export function detectMinecraftVersion(
-  url: string,
-  content: string,
-  loader?: Loader
-): string | undefined {
+export function detectVersions(url: string, content: string, loader?: Loader): DetectedVersions {
   const fixedVersion = loader ? defaultVersionFor(loader) : null;
   if (fixedVersion) {
-    return fixedVersion;
+    return { minecraftVersion: fixedVersion };
   }
 
-  // Check URL for version patterns
-  const urlVersionMatch = url.match(/\/(\d+\.\d+(?:\.\d+)?)\//);
-  if (urlVersionMatch) {
-    return urlVersionMatch[1];
+  const result: DetectedVersions = {};
+
+  // A version segment in the URL is the strongest signal available — but it is
+  // only a *Minecraft* version if it is shaped like one.
+  const urlVersion = url.match(/\/(\d+\.\d+(?:\.\d+)?)\//)?.[1];
+  if (urlVersion) {
+    if (isMinecraftVersion(urlVersion)) {
+      result.minecraftVersion = urlVersion;
+    } else {
+      result.loaderVersion = urlVersion;
+    }
   }
 
-  // Check content for version mentions
+  if (result.minecraftVersion) {
+    return result;
+  }
+
+  // Fall back to prose. Ordered most- to least-specific; the loose trailing
+  // patterns are why '21.9' and '0.6.6' reached the column, so a match that is
+  // not Minecraft-shaped is dropped rather than demoted to loaderVersion.
   const contentPatterns = [
-    /Minecraft\s+(\d+\.\d+(?:\.\d+)?)/i,
+    /Minecraft\s+(?:version\s+)?(\d+\.\d+(?:\.\d+)?)/i,
     /MC\s+(\d+\.\d+(?:\.\d+)?)/i,
     /version\s+(\d+\.\d+(?:\.\d+)?)/i,
     /for\s+(\d+\.\d+(?:\.\d+)?)/i,
   ];
 
   for (const pattern of contentPatterns) {
-    const match = content.match(pattern);
-    if (match) {
-      return match[1];
+    const match = content.match(pattern)?.[1];
+    if (match && isMinecraftVersion(match)) {
+      result.minecraftVersion = match;
+      break;
     }
   }
 
-  return undefined;
+  return result;
+}
+
+/**
+ * Minecraft version only.
+ *
+ * @deprecated Prefer `detectVersions`, which also reports the docs-site version
+ * instead of discarding it.
+ */
+export function detectMinecraftVersion(
+  url: string,
+  content: string,
+  loader?: Loader
+): string | undefined {
+  return detectVersions(url, content, loader).minecraftVersion;
 }
 
 /**

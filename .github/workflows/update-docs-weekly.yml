@@ -56,15 +56,26 @@ jobs:
       # ═══════════════════════════════════════════════════════════════════════════
 
       - name: Re-index Documentation (Full Rebuild)
+        id: index_docs
         run: |
-          # Remove existing database to ensure a fresh index
+          # Remove existing database to ensure a fresh index.
+          #
+          # Load-bearing, not hygiene: docs.db never enabled PRAGMA foreign_keys,
+          # so its ON DELETE CASCADEs are inert, and INSERT OR REPLACE reassigns
+          # document ids. Re-indexing over an existing file therefore orphans
+          # every child row it believes it is replacing.
           rm -f data/docs.db
 
-          # Run full index (no incremental flag)
+          # Run full index (no incremental flag). This also runs the corpus lint
+          # and exits 5 if the freshly built database fails it, so a bad corpus
+          # can never reach the manifest step below.
           pnpm run index-docs -- --sitemap --embeddings
         env:
           # Allow longer timeout and more memory for embedding generation
           NODE_OPTIONS: --max-old-space-size=8192
+
+      - name: Corpus Lint (docs.db)
+        run: pnpm run lint:corpus -- ./data/docs.db
 
       - name: Generate Documentation Database Manifest
         run: |
@@ -198,8 +209,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.get_release.outputs.tag }}
+          DOCS_INDEX_OUTCOME: ${{ steps.index_docs.outcome }}
         run: |
-          if [ -f data/docs.db ] && [ -f data/docs-manifest.json ]; then
+          # `if: always()` above exists so a mappings failure cannot discard a
+          # good docs rebuild — but it must not become a route for publishing a
+          # docs.db that failed its own gates. Upload only what actually passed.
+          if [ "$DOCS_INDEX_OUTCOME" != "success" ]; then
+            echo "::warning::docs indexing did not succeed ($DOCS_INDEX_OUTCOME) — skipping docs upload"
+          elif [ -f data/docs.db ] && [ -f data/docs-manifest.json ]; then
             echo "Uploading docs assets to release $TAG..."
             gh release upload "$TAG" data/docs.db data/docs-manifest.json --clobber
           else

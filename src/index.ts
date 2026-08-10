@@ -17,7 +17,9 @@ import { handleListTargets } from './tools/listTargets.js';
 import { handleSearchDocs } from './tools/searchDocs.js';
 import { handleExplainConcept } from './tools/explainConcept.js';
 import { autoUpdateAll } from './db-versioning.js';
-import { PACKAGE_NAME } from './dbs.js';
+import { migrateCorpusWithLogging } from './indexer/migrate.js';
+import { getDefaultDbPath } from './data-dir.js';
+import { DBS, PACKAGE_NAME } from './dbs.js';
 import { LOADER_IDS } from './loaders.js';
 import { DOC_CATEGORY_ENUM, DOC_CATEGORIES } from './categories.js';
 import { ModExamplesService } from './services/mod-examples-service.js';
@@ -128,9 +130,10 @@ const BASE_TOOLS = [
             'Documentation category to search within (default: all). This is a hard ' +
             'pre-filter, not a relevance boost, and several categories hold no 1.12.2 ' +
             'documents at all — the response names them and says where to look instead. ' +
-            '`general` is not a subject area: it is the fallback for pages whose URL named ' +
-            'no topic — about a third of the target corpus and half of the whole index — so ' +
-            'filtering by it excludes every categorized page without narrowing the subject.',
+            'Every `search_mod_examples` category is accepted here, so a category name ' +
+            'carries between the two tools unchanged. `general` is not a subject area: ' +
+            'it is the fallback for the ~6% of pages whose URL named no topic (site roots, ' +
+            'wiki meta pages), so it narrows nothing.',
           default: 'all',
         },
         minecraft_version: {
@@ -201,8 +204,9 @@ const BASE_TOOLS = [
           type: 'string',
           enum: DOC_CATEGORIES,
           description:
-            'Documentation category to filter by. Hard pre-filter; `general` is the fallback ' +
-            'bucket for pages whose URL named no topic, not a subject area.',
+            'Documentation category to filter by. Hard pre-filter; shares its vocabulary ' +
+            'with `search_mod_examples`. `general` is the ~6% fallback for pages whose URL ' +
+            'named no topic, not a subject area.',
         },
         limit: {
           type: 'number',
@@ -498,6 +502,13 @@ server.setRequestHandler(GetPromptRequestSchema, (request) => {
 
 // Start the server
 async function main() {
+  // Bring the installed corpus's derived columns up to date BEFORE the update
+  // check. Categories and versions are pure functions of the stored URL, so
+  // replaying them locally costs about a second — and re-stamping the schema
+  // means a migrated database satisfies the gate below and skips an 818 MiB
+  // download. A failure here leaves the file untouched and the download runs.
+  migrateCorpusWithLogging(getDefaultDbPath(DBS.docs.fileName));
+
   // Check for database updates on startup (skip if CLEANROOM_MCP_SKIP_AUTO_UPDATE is set)
   if (process.env.CLEANROOM_MCP_SKIP_AUTO_UPDATE) {
     console.error('[DbVersioning] Auto-update skipped (CLEANROOM_MCP_SKIP_AUTO_UPDATE is set)');

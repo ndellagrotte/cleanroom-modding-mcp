@@ -19,7 +19,7 @@
  */
 
 import {
-  DOC_CATEGORY_ROUTING,
+  docCategoryRouting,
   isDocCategory,
   type DocCategory,
   type ExampleCategory,
@@ -104,7 +104,7 @@ function exampleRouting(
   query: string,
   counts: ExampleCounts | undefined
 ): string {
-  const routing = DOC_CATEGORY_ROUTING[category];
+  const routing = docCategoryRouting(category);
 
   if (routing.kind === 'examples') {
     const count = counts?.byCategory[routing.category];
@@ -115,6 +115,15 @@ function exampleRouting(
           ? ` — ${count} curated ${plural(count, 'example')} from real 1.12.2 mods`
           : ' (that category is empty there too — search it without `category`)';
     return `- \`search_mod_examples(query: "${query}", category: "${routing.category}")\`${suffix}\n`;
+  }
+
+  if (routing.kind === 'porting-tools') {
+    // A corpus search is the wrong instrument here: the porting surface is
+    // curated, target-scoped, and answers the question directly.
+    return (
+      `- \`find_equivalent(query: "${query}")\` — curated Fabric/NeoForge → Cleanroom mappings\n` +
+      '- `get_porting_guide(guide: "porting-from-fabric" | "porting-from-neoforge" | "backporting")`\n'
+    );
   }
 
   const suffix = counts ? ` — ${counts.total} curated examples from real 1.12.2 mods` : '';
@@ -254,7 +263,7 @@ function formatEmptyCategory(
   category: DocCategory,
   exampleCounts: ExampleCounts | undefined
 ): string {
-  const routing = DOC_CATEGORY_ROUTING[category];
+  const routing = docCategoryRouting(category);
   const scope = scopeLabel(coverage);
 
   let out = `⚠️ **\`${category}\` holds 0 of the ${coverage.inScope} documents in scope ${scope}.**\n\n`;

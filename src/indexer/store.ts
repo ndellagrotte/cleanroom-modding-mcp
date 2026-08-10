@@ -8,7 +8,26 @@ import type { DocumentChunk } from './chunker.js';
 import type { CompiledEquivalenceEntry } from '../equivalence/types.js';
 
 /** Bump together with DBS.docs.schemaVersion in src/dbs.ts. */
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+
+/** Exported for the migration, which re-stamps it after adding the v3 column. */
+export const DOCS_SCHEMA_VERSION = SCHEMA_VERSION;
+
+/**
+ * Corpus revision — orthogonal to SCHEMA_VERSION.
+ *
+ * `schema_version` answers "can this build read the file at all", and a
+ * mismatch forces a full re-download. This counter answers "were the stored
+ * *values* produced by the current logic", and a mismatch runs
+ * `src/indexer/migrate.ts` in place instead. Bump it whenever a migration step
+ * is added there — categorization and version extraction are pure functions of
+ * `documents.url`, so replaying them locally costs a second and saves every
+ * user an 818 MiB download.
+ */
+export const CORPUS_REVISION = 1;
+
+/** Metadata key holding the corpus revision the stored values were produced by. */
+export const CORPUS_REVISION_KEY = 'corpus_revision';
 
 /** Raw equivalence row as stored (JSON columns kept as TEXT). */
 export interface EquivalenceDbRow {
@@ -94,6 +113,10 @@ export class DocumentStore {
 
   constructor(dbPath: string) {
     this.db = new Database(dbPath);
+    // Every other schema module in the project sets this; docs.db did not, so
+    // the ON DELETE CASCADE on sections/chunks/embeddings/code_blocks was inert
+    // and a document delete left its children orphaned.
+    this.db.pragma('foreign_keys = ON');
     this.initializeSchema();
   }
 
@@ -118,6 +141,10 @@ export class DocumentStore {
         category TEXT NOT NULL,
         loader TEXT NOT NULL,
         minecraft_version TEXT,
+        -- Docs-site / loader version ('26.1.2' from docs.fabricmc.net/26.1.2/).
+        -- Split out so minecraft_version holds only Minecraft versions: storing
+        -- both in one column made 115 documents unfilterable (S8).
+        loader_version TEXT,
         hash TEXT NOT NULL,
         indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -306,12 +333,12 @@ export class DocumentStore {
    * opens ever mutating a shipped DB's recorded version.
    */
   stampSchemaVersion() {
-    this.db
-      .prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
-      .run('schema_version', SCHEMA_VERSION.toString());
-    this.db
-      .prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)')
-      .run('last_updated', new Date().toISOString());
+    const stamp = this.db.prepare('INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)');
+    stamp.run('schema_version', SCHEMA_VERSION.toString());
+    // A freshly built corpus is by definition current, so the startup migration
+    // has nothing to do with it.
+    stamp.run(CORPUS_REVISION_KEY, CORPUS_REVISION.toString());
+    stamp.run('last_updated', new Date().toISOString());
   }
 
   /**
@@ -333,8 +360,8 @@ export class DocumentStore {
     this.coverageCache = null;
 
     const insert = this.db.prepare(`
-      INSERT OR REPLACE INTO documents (url, title, content, raw_html, category, loader, hash, minecraft_version, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+      INSERT OR REPLACE INTO documents (url, title, content, raw_html, category, loader, hash, minecraft_version, loader_version, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
     `);
 
     const result = insert.run(
@@ -345,7 +372,8 @@ export class DocumentStore {
       doc.category,
       doc.loader,
       doc.hash,
-      doc.minecraftVersion || null
+      doc.minecraftVersion || null,
+      doc.loaderVersion || null
     );
 
     const documentId = result.lastInsertRowid as number;

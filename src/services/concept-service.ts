@@ -109,7 +109,7 @@ const KNOWN_CONCEPTS: Record<
 > = {
   mixin: {
     aliases: ['mixins', 'injection', 'inject', '@mixin', '@inject', 'bytecode modification'],
-    category: 'mixins',
+    category: 'coremods-mixins',
   },
   registry: {
     aliases: ['registries', 'registration', 'register', 'identifier', 'registry key'],

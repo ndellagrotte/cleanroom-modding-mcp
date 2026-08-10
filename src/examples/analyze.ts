@@ -16,7 +16,11 @@
 
 import crypto from 'crypto';
 import { jsonrepair } from 'jsonrepair';
-import { EXAMPLE_CATEGORIES, buildCategoryPromptBlock } from '../categories.js';
+import {
+  EXAMPLE_CATEGORIES,
+  buildCategoryPromptBlock,
+  type ExampleCategory,
+} from '../categories.js';
 import type {
   Analysis,
   AnalyzeOutcome,
@@ -42,7 +46,7 @@ const CATEGORY_SET = new Set<string>(EXAMPLE_CATEGORIES);
  * match, so this table holds genuine synonyms and singular/plural variants —
  * not casing or punctuation, which `slugifyCategory` already absorbs.
  */
-const CATEGORY_ALIASES: Record<string, string> = {
+const CATEGORY_ALIASES: Record<string, ExampleCategory> = {
   // singular/plural
   block: 'blocks',
   item: 'items',

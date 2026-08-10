@@ -1,15 +1,27 @@
 # verify/02_schema.sh
 source verify/env.sh
 
-# 2.1 docs.db reports schema_version 2.
-v=$(sqlite3 "$DOCS_DB" "SELECT value FROM metadata WHERE key='schema_version';")
-[ "$v" = 2 ] && pass "docs.db schema_version==2" || fail "docs.db schema_version is '$v', want 2"
+# 2.1/2.2 The schema version is in lockstep across all three places that carry it.
+#
+# These checks used to pin the literal 2. The invariant DESIGN §5.1 actually
+# states is *lockstep* — store.ts, dbs.ts and the shipped database must agree —
+# and the version itself is expected to move whenever the DDL does (docs.db went
+# to 3 when `documents.loader_version` was added). Deriving the expected value
+# from store.ts keeps the oracle enforcing the real rule without needing an edit
+# at every bump, and still fails loudly if any one of the three drifts.
+want=$(grep -Eo 'SCHEMA_VERSION\s*=\s*[0-9]+' "$REPO/src/indexer/store.ts" | head -1 | grep -Eo '[0-9]+')
+[ -n "$want" ] \
+  && pass "store.ts declares SCHEMA_VERSION=$want" || fail "store.ts has no SCHEMA_VERSION constant"
 
-# 2.2 Source-of-truth constants agree (grep is exact; both must say 2).
-grep -Eq 'SCHEMA_VERSION\s*=\s*2\b' "$REPO/src/indexer/store.ts" \
-  && pass "store.ts SCHEMA_VERSION=2" || fail "store.ts SCHEMA_VERSION not 2"
-grep -Eq 'schemaVersion\s*:\s*2\b' "$REPO/src/dbs.ts" \
-  && pass "dbs.ts DBS.docs.schemaVersion=2 (lockstep)" || fail "dbs.ts docs.schemaVersion not 2"
+grep -Eq "schemaVersion\s*:\s*${want}\b" "$REPO/src/dbs.ts" \
+  && pass "dbs.ts DBS.docs.schemaVersion=$want (lockstep)" \
+  || fail "dbs.ts docs.schemaVersion not $want (lockstep with store.ts broken)"
+
+# The database is allowed to lag the source only until the next rebuild; that is
+# a real, reportable state, so it fails rather than being waved through.
+v=$(sqlite3 "$DOCS_DB" "SELECT value FROM metadata WHERE key='schema_version';")
+[ "$v" = "$want" ] && pass "docs.db schema_version==$want" \
+  || fail "docs.db schema_version is '$v', want $want — rebuild the corpus (pnpm run index-docs)"
 
 # 2.3 The "bump together" link-comment now exists in store.ts (DESIGN §5.1 says it must be added).
 grep -Eqi 'bump.*(together|lockstep|DBS\.docs)' "$REPO/src/indexer/store.ts" \

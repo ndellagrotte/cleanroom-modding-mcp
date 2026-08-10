@@ -8,7 +8,9 @@
  */
 
 import { createHash } from 'crypto';
-import { detectMinecraftVersion } from './sitemap.js';
+import { detectVersions } from './sitemap.js';
+import { stripZeroWidth } from './text.js';
+import { DOC_FALLBACK_CATEGORY } from '../categories.js';
 import type { Loader } from '../loaders.js';
 import type { CodeBlock, DocumentPage, DocumentSection } from './types.js';
 
@@ -88,7 +90,7 @@ function parseFrontmatter(lines: string[]): Frontmatter {
 
 /** Strip inline markdown syntax from prose/heading text. */
 function cleanInline(text: string): string {
-  return text
+  return stripZeroWidth(text)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, '') // images dropped
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1') // links → label
     .replace(HTML_TAG_ALLOWLIST, '')
@@ -226,6 +228,14 @@ export function parseMarkdownPage(input: MarkdownPageInput): DocumentPage {
     });
   }
   for (const section of opened) {
+    // A heading with no prose and no code is not a section — it is a divider.
+    // Storing one produced 46 body-less rows from this path in the shipped
+    // corpus, which then collide as duplicate `(document_id, content)` groups
+    // (S6). The `sections.length === 0` fallback below still covers a page that
+    // turns out to have nothing at all.
+    if (section.prose.length === 0 && section.codeBlocks.length === 0) {
+      continue;
+    }
     sections.push({
       heading: section.heading,
       level: section.level,
@@ -261,9 +271,9 @@ export function parseMarkdownPage(input: MarkdownPageInput): DocumentPage {
     title,
     content,
     rawHtml: markdown, // provenance: the column is never read at runtime
-    category: input.category ?? 'general',
+    category: input.category ?? DOC_FALLBACK_CATEGORY,
     loader: input.loader,
-    minecraftVersion: detectMinecraftVersion(input.url, content, input.loader),
+    ...detectVersions(input.url, content, input.loader),
     sections,
     metadata: {
       crawledAt: new Date(),

@@ -18,10 +18,7 @@
 
 import type { DocCoverageRow } from '../indexer/store.js';
 import { DOC_CATEGORIES, auditCoverage, type DocCategory } from '../categories.js';
-import { LOADERS, LOADER_IDS, scopeToLoaders, type Scope } from '../loaders.js';
-
-/** Versions shaped like a Minecraft release. Loader versions ('26.2') are not. */
-const MC_VERSION_PATTERN = /^1\.\d+(\.\d+)?$/;
+import { LOADERS, LOADER_IDS, MC_VERSION_PATTERN, scopeToLoaders, type Scope } from '../loaders.js';
 
 export interface CoverageFilter {
   scope: Scope;
@@ -126,10 +123,13 @@ function compareVersionsDesc(a: string, b: string): number {
 
 /**
  * Newest Minecraft-shaped version, falling back to the newest of whatever is
- * there. `minecraft_version` also holds loader versions ('26.2', '21.9' — beta
- * report S8), so a naive numeric max resolved `minecraft_version: 'latest'` to
- * '26.2', which matches almost nothing. Preferring the `1.x` family sidesteps
- * that without needing the corpus rebuilt.
+ * there.
+ *
+ * The indexer no longer writes loader versions into `minecraft_version` and the
+ * startup migration clears any that a shipped corpus still carries (S8), so on
+ * a current database the filter is a no-op. It stays because this code also
+ * reads corpora it did not build: without it a stray '26.2' resolves
+ * `minecraft_version: 'latest'` to a value matching almost nothing.
  */
 export function pickLatestVersion(versions: readonly string[]): string | undefined {
   const sorted = [...versions].sort(compareVersionsDesc);
@@ -182,8 +182,10 @@ export function summarizeCoverage(
       offTaxonomy += row.count;
     }
 
-    // '' is stored for 359 reference documents, and loader versions ('26.2')
-    // for ~110 more; neither is a Minecraft version an agent can filter by.
+    // 359 reference documents genuinely have no Minecraft version — wiki
+    // tutorials and changelogs that are not tied to one. They are counted as
+    // unversioned and disclosed rather than guessed at. Values that are present
+    // but not Minecraft-shaped are only possible on a pre-migration corpus.
     if (row.minecraftVersion && MC_VERSION_PATTERN.test(row.minecraftVersion)) {
       versions.add(row.minecraftVersion);
     } else {

@@ -32,7 +32,7 @@ const CORPUS = rows(
   ['forge', 'events', '1.12.2', 1],
   ['cleanroom', 'rendering', '1.12.2', 15],
   ['cleanroom', 'general', '1.12.2', 12],
-  ['cleanroom', 'mixins', '1.12.2', 5],
+  ['cleanroom', 'coremods-mixins', '1.12.2', 5],
   ['cleanroom', 'networking', '1.12.2', 1],
   ['cleanroom', 'events', '1.12.2', 1],
   ['neoforge', 'entities', '1.21.11', 46],
@@ -90,13 +90,23 @@ describe('summarizeCoverage — scope arithmetic', () => {
 describe('summarizeCoverage — categories', () => {
   it('names the categories a target-scope filter can never match', () => {
     const cov = summarizeCoverage(CORPUS, { scope: 'target' });
-    expect(cov.emptyCategories).toEqual(['entities', 'data-generation', 'commands']);
+    // Asserted as properties rather than as a literal list: the list is a
+    // function of the enum's size, so pinning it turns every future taxonomy
+    // change into an unrelated test edit.
+    for (const present of ['rendering', 'blocks', 'networking', 'coremods-mixins']) {
+      expect(cov.emptyCategories).not.toContain(present);
+    }
+    for (const absent of ['entities', 'commands', 'data-generation', 'gui', 'worldgen']) {
+      expect(cov.emptyCategories).toContain(absent);
+    }
   });
 
   it('keeps off-enum categories counted separately, never folded into general', () => {
     const cov = summarizeCoverage(CORPUS, { scope: 'reference' });
-    // `resources` 224 + `misc` 54 are unreachable by the `category` filter.
-    expect(cov.offTaxonomy).toBe(278);
+    // `misc` is unreachable by the `category` filter — a slug a corpus built by
+    // a different indexer version can still carry. (`resources` used to be one
+    // of these; it is a real category now.)
+    expect(cov.offTaxonomy).toBe(54);
     expect(categoryCount(cov, 'resources')).toBe(224);
     // 479 fabric + 20 neoforge — the off-enum rows did not leak in.
     expect(categoryCount(cov, 'general')).toBe(499);
@@ -104,7 +114,8 @@ describe('summarizeCoverage — categories', () => {
 
   it('marks enum membership so the formatter can explain unreachability', () => {
     const cov = summarizeCoverage(CORPUS, { scope: 'reference' });
-    expect(cov.categories.find((c) => c.category === 'resources')?.inEnum).toBe(false);
+    expect(cov.categories.find((c) => c.category === 'misc')?.inEnum).toBe(false);
+    expect(cov.categories.find((c) => c.category === 'resources')?.inEnum).toBe(true);
     expect(cov.categories.find((c) => c.category === 'items')?.inEnum).toBe(true);
   });
 
