@@ -44,9 +44,6 @@ const GENERAL_SHARE_LIMIT = 0.15;
 /** Per-loader ceiling. Looser: a single small corpus can legitimately drift. */
 const GENERAL_SHARE_LIMIT_PER_LOADER = 0.25;
 
-/** Duplicate `(document_id, content)` groups that are legitimate structure. */
-const ALLOWED_DUPLICATE_GROUPS = 8;
-
 export interface LintCheck {
   name: string;
   passed: boolean;
@@ -110,39 +107,91 @@ export function lintCorpus(dbPath: string): LintReport {
       ['sections', 'content'],
       ['documents', 'content'],
       ['chunks', 'content'],
+      ['documents', 'title'],
     ] as const) {
       if (!tableExists(db, table)) continue;
       const n = count(db, `SELECT count(*) c FROM ${table} WHERE ${ZERO_WIDTH_SQL(column)}`);
       check(`no zero-width chars in ${table}.${column}`, n === 0, String(n), '0');
     }
 
-    // --- S6: empty and duplicated sections ---------------------------------
+    // --- S6: empty, undersized and duplicated sections ---------------------
     if (tableExists(db, 'sections')) {
-      const empty = count(db, "SELECT count(*) c FROM sections WHERE trim(content) = ''");
+      const hasCodeBlocks = tableExists(db, 'code_blocks');
+      const withoutCode = hasCodeBlocks
+        ? 'AND NOT EXISTS (SELECT 1 FROM code_blocks cb WHERE cb.section_id = sections.id)'
+        : '';
+      const tooShort = count(
+        db,
+        `SELECT count(*) c FROM sections WHERE length(trim(content)) < 25 ${withoutCode}`
+      );
       check(
-        'no body-less sections',
-        empty === 0,
-        String(empty),
+        'no body-less or too-short sections',
+        tooShort === 0,
+        String(tooShort),
         '0',
-        'A heading with no prose and no code is a divider, not a section; storing one ' +
-          'creates duplicate (document_id, content) groups.'
+        'A prose section shorter than 25 characters carries no useful searchable context. ' +
+          'Code-only sections remain valid because their body is stored in code_blocks.'
       );
 
+      const codeFingerprint = hasCodeBlocks
+        ? `COALESCE((
+             SELECT group_concat(parts.part, char(30))
+             FROM (
+               SELECT cb.language || char(31) || cb.code || char(31) ||
+                      COALESCE(cb.caption, '') part
+               FROM code_blocks cb
+               WHERE cb.section_id = s.id
+               ORDER BY cb.id
+             ) parts
+           ), '')`
+        : "''";
       const dupes = count(
         db,
-        'SELECT count(*) c FROM (SELECT document_id, content FROM sections GROUP BY 1, 2 HAVING count(*) > 1)'
+        `WITH fingerprints AS (
+           SELECT s.document_id, s.heading, s.content, ${codeFingerprint} code_fingerprint
+           FROM sections s
+         )
+         SELECT count(*) c FROM (
+           SELECT document_id, heading, content, code_fingerprint
+           FROM fingerprints
+           GROUP BY 1, 2, 3, 4
+           HAVING count(*) > 1
+         )`
       );
       check(
-        'duplicate section groups within tolerance',
-        dupes <= ALLOWED_DUPLICATE_GROUPS,
+        'no unexpected duplicate section groups',
+        dupes === 0,
         String(dupes),
-        `<= ${ALLOWED_DUPLICATE_GROUPS}`,
-        'Some repetition is legitimate — a tutorial page can carry the same short body ' +
-          'under several distinct headings — so this is a ceiling, not zero.'
+        '0',
+        'Distinct headings or code blocks are legitimate repetition. Rows with identical ' +
+          'document, heading, prose, and ordered code are duplicate ingest output.'
       );
     }
 
     // --- S8: the version columns -------------------------------------------
+    const nullVersions = count(
+      db,
+      'SELECT count(*) c FROM documents WHERE minecraft_version IS NULL'
+    );
+    check(
+      'no NULL minecraft_version',
+      nullVersions === 0,
+      String(nullVersions),
+      '0',
+      'Every indexed source must resolve to a concrete Minecraft version.'
+    );
+
+    const phantomVersions = count(
+      db,
+      "SELECT count(*) c FROM documents WHERE minecraft_version = '21.9'"
+    );
+    check(
+      'no phantom minecraft_version 21.9',
+      phantomVersions === 0,
+      String(phantomVersions),
+      '0',
+      '21.9 is a ModDevGradle version, not a Minecraft release.'
+    );
     const badVersions = db
       .prepare(
         'SELECT minecraft_version v, count(*) c FROM documents ' +
@@ -179,9 +228,9 @@ export function lintCorpus(dbPath: string): LintReport {
     const share = general / total;
     check(
       `fallback category under ${Math.round(GENERAL_SHARE_LIMIT * 100)}% of the corpus`,
-      share <= GENERAL_SHARE_LIMIT,
+      share < GENERAL_SHARE_LIMIT,
       `${general}/${total} (${(share * 100).toFixed(1)}%)`,
-      `<= ${Math.round(GENERAL_SHARE_LIMIT * 100)}%`,
+      `< ${Math.round(GENERAL_SHARE_LIMIT * 100)}%`,
       "'general' is where a categorization regression lands silently — the off-taxonomy " +
         "check above cannot see it, because 'general' is itself a valid enum value."
     );

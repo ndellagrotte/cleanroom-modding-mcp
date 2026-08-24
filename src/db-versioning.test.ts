@@ -372,6 +372,41 @@ describe('DbVersioning distribution flow', () => {
     expect(await new DbVersioning(DBS.mappings).isUpdateAvailable()).toBe(true);
   });
 
+  it('skips a newer release when its database hash matches the installed bytes', async () => {
+    const { DbVersioning, DBS, dbPath } = await load();
+    const id: DbId = 'examples';
+    const content = dbContent(id);
+    const hash = dbHash(id);
+    fs.mkdirSync(tempDir, { recursive: true });
+    fs.writeFileSync(dbPath(id), content);
+    fs.writeFileSync(
+      path.join(tempDir, DBS[id].manifestName),
+      JSON.stringify({
+        version: '1.1.0',
+        schemaVersion: DBS[id].schemaVersion,
+        hash,
+      })
+    );
+
+    const fetchSpy = mockFetch([
+      { url: /\/releases$/, body: releasesFixture([id]) },
+      {
+        url: /examples-manifest\.json$/,
+        body: manifestFixture({ version: '1.2.0', hash }, id),
+      },
+      { url: /examples\.db$/, body: {}, binary: content },
+    ]);
+    vi.stubGlobal('fetch', fetchSpy);
+    const logSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    expect(await new DbVersioning(DBS[id]).autoUpdate()).toBe('up-to-date');
+    const fetchedUrls = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(fetchedUrls.some((url) => /\/examples\.db$/.test(url))).toBe(false);
+    expect(logSpy).toHaveBeenCalledWith(
+      '[DbVersioning:examples] examples.db unchanged (hash match), skipping'
+    );
+  });
+
   it('never auto-updates a locally built database', async () => {
     const { DbVersioning, DBS } = await load();
     fs.mkdirSync(tempDir, { recursive: true });
