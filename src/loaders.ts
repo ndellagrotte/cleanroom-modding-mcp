@@ -41,6 +41,13 @@ export interface LoaderInfo {
 export const TARGET_VERSION = '1.12.2';
 
 /**
+ * Explicit persistence value for reference documents whose source does not
+ * establish a Minecraft version. This is intentionally not accepted by
+ * isMinecraftVersion and is omitted from agent-facing version lists.
+ */
+export const UNKNOWN_MINECRAFT_VERSION = 'unknown';
+
+/**
  * A string shaped like a Minecraft release. Every Minecraft version since the
  * 2011 full release is `1.x` or `1.x.y`.
  *

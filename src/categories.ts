@@ -1,23 +1,16 @@
 /**
- * Category taxonomies — one home, ending the previous triplication of
- * inconsistent enums across tool schemas and helper functions.
+ * One category vocabulary for both agent-facing corpora.
  *
- * DOC_CATEGORIES must stay a superset of what the crawler actually emits
- * (it falls back to 'general' when a URL matches no known category). That is
- * enforced structurally below: DOC_CATEGORIES is *defined* as EXAMPLE_CATEGORIES
- * plus the doc-only values, so the two agent-facing vocabularies cannot drift.
- */
-
-/**
- * Categories for the curated mod-examples corpus, edited for the 1.12.2 era:
- * 'data-generation' removed (datagen does not exist in 1.12.2 — resources are
- * hand-written JSON), 'capabilities' and 'coremods-mixins' added.
+ * The tools route callers directly between documentation and mod examples, so
+ * different enums make a valid category from one tool fail schema validation
+ * in the other. Both exported aliases below are the same readonly value.
  *
- * This is the base vocabulary. It is hand-tuned against a corpus of real 1.12.2
- * mod code, every value is populated, and DOC_CATEGORIES extends it rather than
- * competing with it.
+ * `data-generation` is intentionally absent: it does not exist in 1.12.2.
+ * Modern datagen documentation is filed under `resources`, the useful
+ * cross-era subject. `datastorage` is retained as a real namespace category;
+ * specific children such as capabilities and saved data still win.
  */
-export const EXAMPLE_CATEGORIES = [
+export const CORPUS_CATEGORIES = [
   'blocks',
   'items',
   'entities',
@@ -39,61 +32,45 @@ export const EXAMPLE_CATEGORIES = [
   'sounds',
   'commands',
   'config',
-] as const;
-
-export type ExampleCategory = (typeof EXAMPLE_CATEGORIES)[number];
-
-/**
- * Narrow a DB-sourced slug to the taxonomy. `categories.slug` is seeded from
- * EXAMPLE_CATEGORIES but read back as a plain string, and a corpus built by a
- * different indexer version may carry slugs this build does not know.
- */
-export function isExampleCategory(value: string): value is ExampleCategory {
-  return (EXAMPLE_CATEGORIES as readonly string[]).includes(value);
-}
-
-/**
- * Subjects the scraped documentation corpora cover that the curated
- * mod-examples corpus has no counterpart for.
- *
- *  - `resources`       — resource/data packs, models, lang, tags, advancements
- *  - `toolchain`       — Gradle, Loom, mappings, debugging, publishing
- *  - `porting`         — version-migration primers; this project's core mission
- *  - `getting-started` — setup and first-mod material
- *  - `data-generation` — modern-only; kept so the corpus can be filtered *and*
- *                        so the `not-in-1.12.2` disclosure has somewhere to hang
- *  - `general`         — the documented fallback (see DOC_FALLBACK_CATEGORY)
- */
-export const DOC_ONLY_CATEGORIES = [
   'getting-started',
-  'data-generation',
   'resources',
+  'datastorage',
   'toolchain',
   'porting',
   'general',
 ] as const;
 
-export type DocOnlyCategory = (typeof DOC_ONLY_CATEGORIES)[number];
+export const EXAMPLE_CATEGORIES = CORPUS_CATEGORIES;
+export const DOC_CATEGORIES = CORPUS_CATEGORIES;
+
+export type ExampleCategory = (typeof EXAMPLE_CATEGORIES)[number];
+export type DocCategory = (typeof DOC_CATEGORIES)[number];
+
+export function isExampleCategory(value: string): value is ExampleCategory {
+  return (EXAMPLE_CATEGORIES as readonly string[]).includes(value);
+}
+
+export function isDocCategory(value: string): value is DocCategory {
+  return isExampleCategory(value);
+}
 
 /**
- * Categories for indexed documentation pages.
- *
- * Defined as a superset of EXAMPLE_CATEGORIES so that `EXAMPLE_CATEGORIES ⊆
- * DOC_CATEGORIES` is a fact of the type system rather than a test assertion.
- * The tool descriptions route agents between `search_docs` and
- * `search_mod_examples`; before this, an agent that read a category name off
- * `list_mod_categories` and passed it to `search_docs` got a schema error.
+ * Shared vocabulary entries whose primary destination is docs or a dedicated
+ * porting tool rather than the 1.12.2 examples corpus.
  */
-export const DOC_CATEGORIES = [...EXAMPLE_CATEGORIES, ...DOC_ONLY_CATEGORIES] as const;
+export const DOC_ONLY_CATEGORIES = [
+  'getting-started',
+  'resources',
+  'datastorage',
+  'toolchain',
+  'porting',
+  'general',
+] as const satisfies readonly DocCategory[];
+
+export type DocOnlyCategory = (typeof DOC_ONLY_CATEGORIES)[number];
 
 /** Schema enum for doc-search tools ('all' disables the filter). */
 export const DOC_CATEGORY_ENUM = [...DOC_CATEGORIES, 'all'] as const;
-
-export type DocCategory = (typeof DOC_CATEGORIES)[number];
-
-export function isDocCategory(value: string): value is DocCategory {
-  return (DOC_CATEGORIES as readonly string[]).includes(value);
-}
 
 /**
  * Display metadata for the mod-examples categories, seeded into the DB's
@@ -165,6 +142,36 @@ export const EXAMPLE_CATEGORY_INFO: Record<
   sounds: { name: 'Sounds', description: 'Sound events and registration', icon: '🔊' },
   commands: { name: 'Commands', description: 'ICommand implementations', icon: '⌨️' },
   config: { name: 'Config', description: '@Config and configuration handling', icon: '⚙️' },
+  'getting-started': {
+    name: 'Getting Started',
+    description: 'Development setup and first-mod workflows',
+    icon: '🚀',
+  },
+  resources: {
+    name: 'Resources',
+    description: 'Resource packs, models, language files, tags, and loot',
+    icon: '📄',
+  },
+  datastorage: {
+    name: 'Data Storage',
+    description: 'Persistent data APIs and data-storage namespaces',
+    icon: '💾',
+  },
+  toolchain: {
+    name: 'Toolchain',
+    description: 'Gradle, mappings, debugging, testing, and publishing',
+    icon: '🔧',
+  },
+  porting: {
+    name: 'Porting',
+    description: 'Version migration and cross-loader adaptation',
+    icon: '↔',
+  },
+  general: {
+    name: 'General',
+    description: 'Documentation without a narrower subject category',
+    icon: '📚',
+  },
 };
 
 /**
@@ -334,14 +341,9 @@ export const DOC_ONLY_ROUTING: Record<DocOnlyCategory, DocCategoryRouting> = {
   'getting-started': { kind: 'free-text' },
   general: { kind: 'free-text' },
   resources: { kind: 'free-text' },
+  datastorage: { kind: 'free-text' },
   toolchain: { kind: 'free-text' },
   porting: { kind: 'porting-tools' },
-  'data-generation': {
-    kind: 'not-in-1.12.2',
-    reason:
-      'data generation does not exist in Minecraft 1.12.2 — models, blockstates, recipes and ' +
-      'loot tables are hand-written JSON under `src/main/resources`',
-  },
 };
 
 /**
@@ -365,7 +367,10 @@ export const DOC_ONLY_ROUTING: Record<DocOnlyCategory, DocCategoryRouting> = {
  * all.
  */
 export function docCategoryRouting(category: DocCategory): DocCategoryRouting {
-  return isExampleCategory(category) ? { kind: 'examples', category } : DOC_ONLY_ROUTING[category];
+  if ((DOC_ONLY_CATEGORIES as readonly string[]).includes(category)) {
+    return DOC_ONLY_ROUTING[category as DocOnlyCategory];
+  }
+  return { kind: 'examples', category };
 }
 
 /**
@@ -488,6 +493,11 @@ const PATH_SEGMENT_CATEGORIES: Record<string, DocCategory> = {
   // api design
   'api-design': 'api-design',
   api: 'api-design',
+  behaviour: 'api-design',
+  behavior: 'api-design',
+  'game-object': 'api-design',
+  mtms: 'api-design',
+  permissionapi: 'api-design',
   // cross platform
   'cross-platform': 'cross-platform',
   sides: 'cross-platform',
@@ -535,9 +545,7 @@ const PATH_SEGMENT_CATEGORIES: Record<string, DocCategory> = {
   install: 'getting-started',
   installation: 'getting-started',
   terms: 'getting-started',
-  // data generation
-  'data-generation': 'data-generation',
-  datagen: 'data-generation',
+  loadstages: 'getting-started',
   // resources
   resource: 'resources',
   lang: 'resources',
@@ -550,6 +558,10 @@ const PATH_SEGMENT_CATEGORIES: Record<string, DocCategory> = {
   loot: 'resources',
   statistics: 'resources',
   stats: 'resources',
+  internationalization: 'resources',
+  localization: 'resources',
+  oredict: 'registry',
+  oredictionary: 'registry',
   // toolchain
   gradle: 'toolchain',
   mappings: 'toolchain',
@@ -564,8 +576,12 @@ const PATH_SEGMENT_CATEGORIES: Record<string, DocCategory> = {
   'ide-tips-and-tricks': 'toolchain',
   plugins: 'toolchain',
   dependencies: 'toolchain',
+  jarsigning: 'toolchain',
+  locations: 'toolchain',
+  versioning: 'toolchain',
   // porting
   migration: 'porting',
+  porting: 'porting',
 };
 
 /**
@@ -580,9 +596,11 @@ const PATH_SEGMENT_CATEGORIES: Record<string, DocCategory> = {
  * real subject.
  */
 const CONTAINER_SEGMENT_CATEGORIES: Record<string, DocCategory> = {
-  datastorage: 'storage-systems',
+  datastorage: 'datastorage',
   serialization: 'storage-systems',
   resources: 'resources',
+  'data-generation': 'resources',
+  datagen: 'resources',
   datamaps: 'config',
   loader: 'toolchain',
   loom: 'toolchain',

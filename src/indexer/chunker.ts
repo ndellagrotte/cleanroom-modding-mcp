@@ -67,9 +67,7 @@ export class DocumentChunker {
    * Create title/intro chunk
    */
   private createTitleChunk(doc: DocumentPage, order: number): DocumentChunk {
-    // First N characters as intro, cut on a word boundary — a raw substring
-    // ends mid-token, and this chunk is a search result in its own right.
-    const intro = this.truncateAtWord(doc.content, this.options.maxChunkSize);
+    const intro = this.truncateAtBoundary(doc.content, this.options.maxChunkSize);
 
     return {
       id: `${this.hashString(doc.url)}-title`,
@@ -176,12 +174,41 @@ export class DocumentChunker {
     return chunks;
   }
 
-  /** Cut at or before `limit`, on a word boundary rather than mid-token. */
-  private truncateAtWord(text: string, limit: number): string {
+  /** Cut at a sentence boundary when possible, otherwise at a whole token. */
+  private truncateAtBoundary(text: string, limit: number): string {
     if (text.length <= limit) return text;
-    const slice = text.slice(0, limit);
-    const lastBoundary = slice.search(/\s\S*$/);
-    return (lastBoundary > 0 ? slice.slice(0, lastBoundary) : slice).trim();
+    const end = this.findNaturalEnd(text, 0, limit, Math.min(this.options.minChunkSize, limit));
+    return text.slice(0, end).trim();
+  }
+
+  /**
+   * Resolve an exclusive chunk end. Sentence/paragraph boundaries win; a
+   * whitespace token boundary is the fallback. One token longer than the limit
+   * stays whole rather than being corrupted.
+   */
+  private findNaturalEnd(text: string, start: number, limit: number, minSize: number): number {
+    const hardEnd = Math.min(start + limit, text.length);
+    if (hardEnd >= text.length) return text.length;
+
+    const eligibleStart = Math.min(start + minSize, hardEnd);
+    const window = text.slice(eligibleStart, hardEnd);
+    const boundaries = window.matchAll(/[.!?](?:["')\]]*)?(?=\s|$)|\n{2,}/g);
+    let sentenceEnd = -1;
+    for (const match of boundaries) {
+      sentenceEnd = eligibleStart + (match.index ?? 0) + match[0].length;
+    }
+    if (sentenceEnd > eligibleStart) {
+      return sentenceEnd;
+    }
+
+    for (let i = hardEnd; i > eligibleStart; i--) {
+      if (/\s/.test(text[i] ?? '')) {
+        return i;
+      }
+    }
+
+    const nextWhitespace = text.slice(hardEnd).search(/\s/);
+    return nextWhitespace === -1 ? text.length : hardEnd + nextWhitespace;
   }
 
   /**
@@ -233,18 +260,7 @@ export class DocumentChunker {
     let start = 0;
 
     while (start < text.length) {
-      let end = Math.min(start + maxChunkSize, text.length);
-
-      // Prefer to close the chunk on a sentence or line boundary.
-      if (end < text.length) {
-        const sentenceEnd = text.lastIndexOf('.', end);
-        const newlineEnd = text.lastIndexOf('\n', end);
-        const breakPoint = Math.max(sentenceEnd, newlineEnd);
-
-        if (breakPoint > start + minChunkSize) {
-          end = breakPoint + 1;
-        }
-      }
+      const end = this.findNaturalEnd(text, start, maxChunkSize, minChunkSize);
 
       const chunk = text.slice(start, end).trim();
       if (chunk.length >= minChunkSize) {

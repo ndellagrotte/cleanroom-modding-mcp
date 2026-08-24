@@ -35,7 +35,7 @@ const CORPUS = rows(
   ['cleanroom', 'networking', '1.12.2', 1],
   ['cleanroom', 'events', '1.12.2', 1],
   ['neoforge', 'entities', '1.21.11', 46],
-  ['neoforge', 'data-generation', '1.21.4', 36],
+  ['neoforge', 'resources', '1.21.4', 36],
   ['neoforge', 'misc', '1.21.4', 224],
   ['neoforge', 'general', '21.9', 20],
   ['neoforge', 'items', '', 422],
@@ -92,7 +92,7 @@ describe('formatDocCoverage — the footer', () => {
   it('names the categories a filter can never match at this scope', () => {
     const out = formatDocCoverage(request(), coverage('target'));
     expect(out).toMatch(/\*\*0 documents:\*\*.*entities/);
-    expect(out).toMatch(/\*\*0 documents:\*\*.*data-generation/);
+    expect(out).toMatch(/\*\*0 documents:\*\*.*datastorage/);
   });
 
   it('advertises only versions reachable in scope', () => {
@@ -232,28 +232,6 @@ describe('formatDocSearchDiagnostics — empty category', () => {
     );
     expect(out).toContain('search_mod_examples');
     expect(out).not.toMatch(/\d+ curated/);
-  });
-});
-
-describe('formatDocSearchDiagnostics — data-generation is not a corpus gap', () => {
-  const out = formatDocSearchDiagnostics(
-    request({ category: 'data-generation', resultCount: 0 }),
-    coverage('target', { category: 'data-generation' }),
-    EXAMPLES
-  );
-
-  it('explains that the concept does not exist in 1.12.2', () => {
-    expect(out).toMatch(/does not exist in Minecraft 1\.12\.2/);
-    expect(out).toMatch(/hand-written JSON/);
-  });
-
-  it('does not present it as a documentation gap that indexing could fix', () => {
-    expect(out).toContain('That is not a corpus gap');
-    expect(out).not.toMatch(/gap in the scraped documentation/);
-  });
-
-  it('still says no query can succeed', () => {
-    expect(out).toMatch(/No phrasing of this query will find/);
   });
 });
 

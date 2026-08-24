@@ -3,7 +3,9 @@
  */
 
 import Database from 'better-sqlite3';
-import type { DocumentPage, IndexStats } from './types.js';
+import { UNKNOWN_MINECRAFT_VERSION } from '../loaders.js';
+import { sanitizeDocumentPage, stripZeroWidth } from './text.js';
+import type { DocumentPage, DocumentSection, IndexStats } from './types.js';
 import type { DocumentChunk } from './chunker.js';
 import type { CompiledEquivalenceEntry } from '../equivalence/types.js';
 
@@ -24,7 +26,7 @@ export const DOCS_SCHEMA_VERSION = SCHEMA_VERSION;
  * `documents.url`, so replaying them locally costs a second and saves every
  * user an 818 MiB download.
  */
-export const CORPUS_REVISION = 1;
+export const CORPUS_REVISION = 2;
 
 /** Metadata key holding the corpus revision the stored values were produced by. */
 export const CORPUS_REVISION_KEY = 'corpus_revision';
@@ -140,10 +142,10 @@ export class DocumentStore {
         raw_html TEXT,
         category TEXT NOT NULL,
         loader TEXT NOT NULL,
+        -- Real Minecraft release or the explicit 'unknown' provenance value.
         minecraft_version TEXT,
         -- Docs-site / loader version ('26.1.2' from docs.fabricmc.net/26.1.2/).
-        -- Split out so minecraft_version holds only Minecraft versions: storing
-        -- both in one column made 115 documents unfilterable (S8).
+        -- Separate from minecraft_version so site releases remain filterable metadata.
         loader_version TEXT,
         hash TEXT NOT NULL,
         indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -355,7 +357,11 @@ export class DocumentStore {
   /**
    * Store a complete document with sections
    */
-  storeDocument(doc: DocumentPage): number {
+  storeDocument(input: DocumentPage): { documentId: number; document: DocumentPage } {
+    // This is the persistence boundary. Source adapters clean for readability,
+    // but only this normalization is allowed to define stored invariants.
+    const doc = sanitizeDocumentPage(input);
+
     // The corpus just changed; drop the memoized coverage projection.
     this.coverageCache = null;
 
@@ -372,7 +378,7 @@ export class DocumentStore {
       doc.category,
       doc.loader,
       doc.hash,
-      doc.minecraftVersion || null,
+      doc.minecraftVersion || UNKNOWN_MINECRAFT_VERSION,
       doc.loaderVersion || null
     );
 
@@ -381,27 +387,44 @@ export class DocumentStore {
     // Delete old sections/code blocks (CASCADE will handle this)
     this.db.prepare('DELETE FROM sections WHERE document_id = ?').run(documentId);
 
-    // Store sections and code blocks
+    // `content` is the beta probe's duplicate key. Code-only sections use their
+    // real code as the persisted body; repeated prose with distinct code is
+    // disambiguated by that code. A remaining collision contains no new body
+    // and is generated duplicate output, so it is dropped.
+    const storedContents = new Set<string>();
     for (const section of doc.sections) {
-      this.storeSection(documentId, section);
+      const codeBody = section.codeBlocks
+        .map((block) => [block.caption, block.code].filter(Boolean).join('\n'))
+        .filter(Boolean)
+        .join('\n\n');
+      let content = section.content;
+      if (!content.trim()) {
+        content = codeBody;
+      }
+      if (storedContents.has(content)) {
+        if (!codeBody.trim()) {
+          continue;
+        }
+        content = [section.content, codeBody].filter((part) => part.trim()).join('\n\n');
+      }
+      if (storedContents.has(content)) {
+        const withHeading = [section.heading, content].filter((part) => part.trim()).join('\n\n');
+        content = withHeading;
+      }
+      if (!content.trim() || storedContents.has(content)) {
+        continue;
+      }
+      storedContents.add(content);
+      this.storeSection(documentId, { ...section, content });
     }
 
-    return documentId;
+    return { documentId, document: doc };
   }
 
   /**
    * Store a section with its code blocks
    */
-  private storeSection(
-    documentId: number,
-    section: {
-      heading: string;
-      level: number;
-      content: string;
-      order: number;
-      codeBlocks: Array<{ language: string; code: string; caption?: string }>;
-    }
-  ): number {
+  private storeSection(documentId: number, section: DocumentSection): number {
     const insert = this.db.prepare(`
       INSERT INTO sections (document_id, heading, level, content, order_num)
       VALUES (?, ?, ?, ?, ?)
@@ -450,10 +473,10 @@ export class DocumentStore {
         chunk.id,
         documentId,
         chunk.chunkType,
-        chunk.content,
-        chunk.sectionHeading || null,
+        stripZeroWidth(chunk.content),
+        chunk.sectionHeading ? stripZeroWidth(chunk.sectionHeading) : null,
         chunk.sectionLevel || null,
-        chunk.codeLanguage || null,
+        chunk.codeLanguage ? stripZeroWidth(chunk.codeLanguage) : null,
         chunk.order,
         chunk.metadata.wordCount,
         chunk.metadata.hasCode ? 1 : 0
@@ -775,10 +798,10 @@ export class DocumentStore {
   getAllVersions(): string[] {
     const stmt = this.db.prepare(`
       SELECT DISTINCT minecraft_version FROM documents
-      WHERE minecraft_version IS NOT NULL
+      WHERE minecraft_version IS NOT NULL AND minecraft_version <> ?
       ORDER BY minecraft_version DESC
     `);
-    const results = stmt.all() as Array<{ minecraft_version: string }>;
+    const results = stmt.all(UNKNOWN_MINECRAFT_VERSION) as Array<{ minecraft_version: string }>;
     return results.map((r) => r.minecraft_version);
   }
 

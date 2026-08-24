@@ -52,6 +52,14 @@ describe('DocumentChunker.splitText', () => {
     }
   });
 
+  it('never closes a chunk mid-token and prefers sentence endings', () => {
+    const chunks = sectionChunks(PROSE, { maxChunkSize: 450 });
+    for (const chunk of chunks.slice(0, -1)) {
+      expect(/[.!?]$/.test(chunk)).toBe(true);
+      expect(PROSE.includes(chunk)).toBe(true);
+    }
+  });
+
   it('emits no fragment below minChunkSize', () => {
     const chunks = sectionChunks(PROSE, { minChunkSize: 50 });
     expect(chunks.length).toBeGreaterThan(1);

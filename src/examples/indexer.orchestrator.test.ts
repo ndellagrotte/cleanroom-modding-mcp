@@ -515,7 +515,7 @@ describe('category coverage gate', () => {
     const res = await runIndexer(ws.dir, withoutOverride(ws.baseArgs));
 
     expect(res.code).toBe(3);
-    expect(res.out).toContain('EMPTY CATEGORIES');
+    expect(res.out).toContain('EMPTY IMPLEMENTATION CATEGORIES');
     expect(res.out).toContain('capabilities');
     expect(res.out).toContain('--allow-empty-categories');
     // The DB is still written — same partial-corpus semantics as the budget cap;

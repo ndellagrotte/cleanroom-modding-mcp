@@ -41,29 +41,22 @@ describe('doc categories', () => {
     expect(new Set(DOC_CATEGORIES).size).toBe(DOC_CATEGORIES.length);
   });
 
-  /**
-   * The cross-corpus contract. The tool descriptions route agents from
-   * `list_mod_categories` into `search_docs`; before the taxonomies converged,
-   * carrying a slug across that boundary produced a schema error (beta report
-   * V9). DOC_CATEGORIES is *defined* as a superset, so this can only fail if
-   * someone re-splits the definition.
-   */
-  it('accepts every mod-examples category', () => {
-    for (const slug of EXAMPLE_CATEGORIES) {
-      expect(DOC_CATEGORIES).toContain(slug);
-    }
+  it('uses exactly the same category set as mod examples', () => {
+    expect(DOC_CATEGORIES).toEqual(EXAMPLE_CATEGORIES);
   });
 
-  it('routes every shared category to its own name in the examples corpus', () => {
-    for (const slug of EXAMPLE_CATEGORIES) {
+  it('routes implementation categories to the same examples category', () => {
+    for (const slug of EXAMPLE_CATEGORIES.filter(
+      (category) => !DOC_ONLY_CATEGORIES.includes(category as never)
+    )) {
       expect(docCategoryRouting(slug)).toEqual({ kind: 'examples', category: slug });
     }
   });
 
-  it('gives every doc-only category somewhere to send the agent', () => {
+  it('gives every docs-primary category somewhere to send the agent', () => {
     for (const slug of DOC_ONLY_CATEGORIES) {
       const routing = docCategoryRouting(slug);
-      expect(['free-text', 'porting-tools', 'not-in-1.12.2']).toContain(routing.kind);
+      expect(['free-text', 'porting-tools']).toContain(routing.kind);
     }
   });
 });
@@ -159,7 +152,14 @@ describe('auditCategoryCoverage', () => {
       animation: 2,
     };
     const { empty, thin } = auditCategoryCoverage(shipped);
-    expect(empty).toEqual([]);
+    expect(empty).toEqual([
+      'getting-started',
+      'resources',
+      'datastorage',
+      'toolchain',
+      'porting',
+      'general',
+    ]);
     expect([...thin].map((t) => t.slug).sort()).toEqual([
       'animation',
       'commands',
@@ -202,7 +202,7 @@ describe('categorizeDocPath', () => {
     expect(categorizeDocPath(['datastorage', 'capabilities'])).toBe('capabilities');
     expect(categorizeDocPath(['misc', 'config'])).toBe('config');
     // …and the container still answers when nothing specific is present.
-    expect(categorizeDocPath(['datastorage'])).toBe('storage-systems');
+    expect(categorizeDocPath(['datastorage'])).toBe('datastorage');
     expect(categorizeDocPath(['misc'])).toBe('general');
   });
 

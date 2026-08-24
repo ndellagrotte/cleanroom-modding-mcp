@@ -56,7 +56,7 @@ describe('extractCategoryFromUrl', () => {
         'coremods-mixins'
       );
       expect(extractCategoryFromUrl('https://wiki.fabricmc.net/tutorial:datagen_loot')).toBe(
-        'data-generation'
+        'resources'
       );
     });
 
@@ -97,6 +97,9 @@ describe('extractCategoryFromUrl', () => {
       ).toBe('resources');
       expect(extractCategoryFromUrl('https://docs.fabricmc.net/develop/loom/')).toBe('toolchain');
       expect(extractCategoryFromUrl('https://docs.neoforged.net/primer/1.21.1/')).toBe('porting');
+      expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/datastorage/')).toBe(
+        'datastorage'
+      );
     });
 
     it('leaves a container with no subject in general', () => {
@@ -108,7 +111,7 @@ describe('extractCategoryFromUrl', () => {
 
   it('maps stage-1 aliases onto their taxonomy home', () => {
     expect(extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/datagen/recipes/')).toBe(
-      'data-generation'
+      'recipes'
     );
     expect(
       extractCategoryFromUrl('https://docs.neoforged.net/docs/1.21.1/blockentities/ber/')
@@ -133,6 +136,21 @@ describe('extractCategoryFromUrl', () => {
     expect(extractCategoryFromUrl('https://cleanroommc.com/wiki/mixin/getting-started')).toBe(
       'coremods-mixins'
     );
+  });
+
+  it('maps subject-bearing target pages instead of leaving them in general', () => {
+    const expected = new Map([
+      ['https://cleanroommc.com/wiki/cleanroom-mod-development/porting', 'porting'],
+      ['https://cleanroommc.com/wiki/forge-mod-development/behaviour', 'api-design'],
+      ['https://docs.minecraftforge.net/en/1.12.x/concepts/internationalization/', 'resources'],
+      ['https://docs.minecraftforge.net/en/1.12.x/concepts/jarsigning/', 'toolchain'],
+      ['https://docs.minecraftforge.net/en/1.12.x/conventions/loadstages/', 'getting-started'],
+      ['https://docs.minecraftforge.net/en/1.12.x/utilities/oredictionary/', 'registry'],
+      ['https://docs.minecraftforge.net/en/1.12.x/utilities/permissionapi/', 'api-design'],
+    ]);
+    for (const [url, category] of expected) {
+      expect(extractCategoryFromUrl(url)).toBe(category);
+    }
   });
 
   it('descends past container segments when stage 1 finds no category', () => {

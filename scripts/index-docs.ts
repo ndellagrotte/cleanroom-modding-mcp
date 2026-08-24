@@ -10,7 +10,7 @@
  * - Incremental updates
  */
 
-import { mkdir } from 'fs/promises';
+import { mkdir, rm } from 'fs/promises';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
@@ -50,8 +50,6 @@ interface IndexOptions {
   allowOffTaxonomyCategories?: boolean;
   /** Ship a corpus whose 'general' share exceeds GENERAL_SHARE_LIMIT (exit 4 otherwise). */
   allowGeneralShare?: boolean;
-  /** Ship a corpus failing the full corpus lint (exit 5 otherwise). */
-  allowCorpusLintFailures?: boolean;
 }
 
 /**
@@ -183,6 +181,13 @@ async function main(options: IndexOptions = {}) {
   await mkdir(dataDir, { recursive: true });
 
   const dbPath = join(dataDir, DBS.docs.fileName);
+  if (options.force) {
+    // A production force build is a real rebuild, not an upsert over a corpus
+    // that can retain disappeared documents and orphaned derived rows.
+    await Promise.all(
+      [dbPath, `${dbPath}-wal`, `${dbPath}-shm`].map((file) => rm(file, { force: true }))
+    );
+  }
   const store = new DocumentStore(dbPath);
 
   try {
@@ -322,11 +327,10 @@ async function main(options: IndexOptions = {}) {
           }
         }
 
-        // Store document
-        const documentId = store.storeDocument(doc);
-
-        // Create and store chunks
-        const chunks = chunker.chunkDocument(doc);
+        // Normalize at the store boundary, then chunk that exact normalized
+        // page so persisted sections and derived search chunks cannot diverge.
+        const { documentId, document } = store.storeDocument(doc);
+        const chunks = chunker.chunkDocument(document);
         store.storeChunks(chunks, documentId);
 
         // Collect chunks for embedding generation (but process in small batches)
@@ -505,10 +509,7 @@ async function main(options: IndexOptions = {}) {
     // first: the `finally` below owns that, and WAL allows the second reader.
     const lint = lintCorpus(dbPath);
     if (!reportLint(dbPath, lint)) {
-      if (!options.allowCorpusLintFailures) {
-        process.exit(5);
-      }
-      console.error('   --allow-corpus-lint-failures set; shipping regardless.\n');
+      process.exit(5);
     }
   } catch (error) {
     console.error('\n💥 Indexing failed:', error);
@@ -557,7 +558,6 @@ const options: IndexOptions = {
   equivalence: !args.includes('--no-equivalence'),
   allowOffTaxonomyCategories: args.includes('--allow-off-taxonomy-categories'),
   allowGeneralShare: args.includes('--allow-general-share'),
-  allowCorpusLintFailures: args.includes('--allow-corpus-lint-failures'),
 };
 
 // Show help
@@ -580,9 +580,6 @@ if (args.includes('--help') || args.includes('-h')) {
     `                      Ship a corpus with over ${Math.round(GENERAL_SHARE_LIMIT * 100)}% of documents in`
   );
   console.log("                      'general', the no-match fallback (exit 4)");
-  console.log('      --allow-corpus-lint-failures');
-  console.log('                      Ship a corpus failing the pre-publish lint — zero-width');
-  console.log('                      characters, body-less sections, bad versions (exit 5)');
   console.log('  -h, --help          Show this help message');
   console.log('');
   console.log('Examples:');

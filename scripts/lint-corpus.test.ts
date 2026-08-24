@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import { lintCorpus } from './lint-corpus.js';
 import { DBS } from '../src/dbs.js';
+import { EXAMPLE_CATEGORIES } from '../src/categories.js';
 
 /**
  * A gate that cannot fail is not a gate. v2.2.3 passed every check the release
@@ -151,19 +152,21 @@ describe('lintCorpus', () => {
       'INSERT INTO sections (document_id, heading, level, content, order_num) VALUES (?,?,?,?,?)'
     ).run(1, 'Items', 2, 'A complete section body for item registration.', 1);
     db.close();
-    expect(failedNames()).toContain('no unexpected duplicate section groups');
+    expect(failedNames()).toContain('no duplicate (document_id, content) groups');
   });
 
   it('fails on a loader version stored as a Minecraft version', () => {
     seed({ minecraftVersion: '26.1.2' });
-    expect(failedNames()).toContain('minecraft_version holds only Minecraft versions');
+    expect(failedNames()).toContain(
+      'minecraft_version holds only Minecraft versions or explicit unknown'
+    );
   });
 
   it('fails on the phantom 21.9 independently of the shape check', () => {
     seed({ minecraftVersion: '21.9' });
     const failed = failedNames();
     expect(failed).toContain('no phantom minecraft_version 21.9');
-    expect(failed).toContain('minecraft_version holds only Minecraft versions');
+    expect(failed).toContain('minecraft_version holds only Minecraft versions or explicit unknown');
   });
 
   it('fails on a NULL minecraft_version', () => {
@@ -171,9 +174,29 @@ describe('lintCorpus', () => {
     expect(failedNames()).toContain('no NULL minecraft_version');
   });
 
+  it('accepts explicit unknown provenance without advertising it as a version', () => {
+    seed({ minecraftVersion: 'unknown' });
+    expect(lintCorpus(dbPath).failed).toEqual([]);
+  });
+
   it('fails on a category outside the enum', () => {
-    seed({ category: 'datastorage' });
+    seed({ category: 'misc' });
     expect(failedNames()).toContain('every category is in DOC_CATEGORIES');
+  });
+
+  it('fails when the examples DB category registry drifts from the shared schema', () => {
+    seed();
+    const examplesPath = path.join(dir, 'examples.db');
+    const examples = new Database(examplesPath);
+    examples.exec('CREATE TABLE categories (slug TEXT NOT NULL UNIQUE)');
+    for (const category of EXAMPLE_CATEGORIES.slice(1)) {
+      examples.prepare('INSERT INTO categories (slug) VALUES (?)').run(category);
+    }
+    examples.close();
+
+    expect(lintCorpus(dbPath, examplesPath).failed.map((check) => check.name)).toContain(
+      'mod-example DB categories equal the shared tool schema'
+    );
   });
 
   it('fails when the fallback category swallows the corpus', () => {

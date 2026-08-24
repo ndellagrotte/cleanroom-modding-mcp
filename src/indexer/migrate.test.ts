@@ -130,21 +130,21 @@ describe('migrateCorpus', () => {
     migrateCorpus(dbPath);
 
     const row = versionsFor('https://docs.fabricmc.net/26.1.2/develop/');
-    expect(row.minecraft_version).toBeNull();
+    expect(row.minecraft_version).toBe('unknown');
     expect(row.loader_version).toBe('26.1.2');
   });
 
-  it('clears version values the current rules reject', () => {
+  it('marks rejected or unsupported version provenance as unknown', () => {
     seed();
     migrateCorpus(dbPath);
 
     // '21.9' is a ModDevGradle version scraped from prose, not a Minecraft one.
     expect(
       versionsFor('https://docs.neoforged.net/toolchain/docs/plugins/ng/').minecraft_version
-    ).toBeNull();
-    expect(
-      versionsFor('https://wiki.fabricmc.net/tutorial:mixin_injects').minecraft_version
-    ).toBeNull();
+    ).toBe('unknown');
+    expect(versionsFor('https://wiki.fabricmc.net/tutorial:mixin_injects').minecraft_version).toBe(
+      'unknown'
+    );
   });
 
   it('keeps a real Minecraft version the URL cannot re-derive', () => {

@@ -25,7 +25,7 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import { extractCategoryFromUrl } from '../categories.js';
 import { detectVersions } from './sitemap.js';
-import { detectLoaderFromUrl, isMinecraftVersion } from '../loaders.js';
+import { detectLoaderFromUrl, isMinecraftVersion, UNKNOWN_MINECRAFT_VERSION } from '../loaders.js';
 import { CORPUS_REVISION, CORPUS_REVISION_KEY, DOCS_SCHEMA_VERSION } from './store.js';
 
 /** Env flag mirroring CLEANROOM_MCP_SKIP_AUTO_UPDATE, for the same reasons. */
@@ -141,14 +141,13 @@ export function migrateCorpus(dbPath: string): MigrationResult {
           minecraft_version: string | null;
           loader_version: string | null;
         };
-        const mc = next.minecraftVersion ?? null;
+        const mc = next.minecraftVersion ?? UNKNOWN_MINECRAFT_VERSION;
         const lv = next.loaderVersion ?? null;
-        // Only overwrite a stored Minecraft version when the URL establishes
-        // one. A page whose version was scraped from prose keeps it unless the
-        // URL disagrees — but a stored value the current rules reject (a loader
-        // version like '26.1.2', or the phantom '21.9') is always cleared.
+        // URL evidence wins. Otherwise a previously established real Minecraft
+        // version survives; rejected loader/plugin values become explicit
+        // `unknown`, never NULL and never an invented 1.12.2.
         const keepStoredMc =
-          mc === null &&
+          mc === UNKNOWN_MINECRAFT_VERSION &&
           current.minecraft_version !== null &&
           isMinecraftVersion(current.minecraft_version);
         const nextMc = keepStoredMc ? current.minecraft_version : mc;

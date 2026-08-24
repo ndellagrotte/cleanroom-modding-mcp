@@ -89,9 +89,8 @@ describe('formatCategoryTable', () => {
   });
 
   it('still reconciles the counts to the corpus total', () => {
-    // 21 categories × 50, minus the two overrides, plus 120 uncategorized.
     const out = formatCategoryTable(categories({ capabilities: 0, sounds: 2 }), 120);
-    expect(out).toContain(`${19 * 50 + 2 + 120} examples total`);
+    expect(out).toContain(`${(EXAMPLE_CATEGORIES.length - 2) * 50 + 2 + 120} examples total`);
     expect(out).toContain('120 are uncategorized');
   });
 });

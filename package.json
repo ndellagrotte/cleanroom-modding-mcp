@@ -64,7 +64,7 @@
     "prebuild": "pnpm run clean",
     "prebuild:prod": "pnpm run clean",
     "postinstall": "node scripts/postinstall.js",
-    "prepublishOnly": "pnpm run typecheck && pnpm run lint && pnpm run test -- --run && pnpm run build:prod",
+    "prepublishOnly": "pnpm run typecheck && pnpm run lint && pnpm run test -- --run && pnpm run lint:corpus && pnpm run build:prod",
     "release": "tsx scripts/release.ts",
     "release:repair": "tsx scripts/release.ts --assets-only",
     "validate": "pnpm run typecheck && pnpm run lint && pnpm run test",

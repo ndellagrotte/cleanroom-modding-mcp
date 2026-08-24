@@ -78,7 +78,11 @@ import {
   readDbSchemaVersion,
 } from '../src/examples/schema.js';
 import { acquireRepo } from '../src/examples/acquire.js';
-import { THIN_CATEGORY_THRESHOLD, auditCategoryCoverage } from '../src/categories.js';
+import {
+  DOC_ONLY_CATEGORIES,
+  THIN_CATEGORY_THRESHOLD,
+  auditCategoryCoverage,
+} from '../src/categories.js';
 import { selectSnippets } from '../src/examples/select.js';
 import {
   analyzeSnippet,
@@ -944,18 +948,18 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  // Coverage gate (beta report N2). EXAMPLE_CATEGORIES is the `search_mod_examples`
-  // filter enum, so a category with zero examples is a filter value the shipped
-  // server accepts and can never satisfy — the agent reads the empty result as
-  // "the corpus has no such patterns" rather than "this slice was never indexed".
-  // A warn was already printed for this before the corpus shipped anyway; it is
-  // a gate now.
-  if (coverage.empty.length > 0 && !opts.allowEmptyCategories) {
+  // Documentation-primary bridge categories intentionally remain in the
+  // shared tool vocabulary even when this 1.12.2 code corpus has no examples
+  // for them. Implementation categories must still be populated.
+  const implementationEmpty = coverage.empty.filter(
+    (category) => !DOC_ONLY_CATEGORIES.includes(category as never)
+  );
+  if (implementationEmpty.length > 0 && !opts.allowEmptyCategories) {
     log(
       'error',
-      `EMPTY CATEGORIES (${coverage.empty.length}): ${coverage.empty.join(', ')} — the corpus above ` +
-        `offers these as \`category\` filter values with nothing behind them. Release automation ` +
-        `must refuse to ship it.`
+      `EMPTY IMPLEMENTATION CATEGORIES (${implementationEmpty.length}): ${implementationEmpty.join(', ')} — ` +
+        'the corpus offers these as implementation filters with nothing behind them. Release ' +
+        'automation must refuse to ship it.'
     );
     log(
       'error',

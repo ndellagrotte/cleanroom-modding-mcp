@@ -118,7 +118,7 @@ const KNOWN_CONCEPTS: Record<
   },
   registry: {
     aliases: ['registries', 'registration', 'register', 'identifier', 'registry key'],
-    category: 'general',
+    category: 'registry',
   },
   entrypoint: {
     aliases: ['entrypoints', 'mod initializer', 'initializer', 'onInitialize', 'main class'],
@@ -138,7 +138,7 @@ const KNOWN_CONCEPTS: Record<
   },
   blockentity: {
     aliases: ['block entity', 'tile entity', 'tileentity', 'block with data'],
-    category: 'blocks',
+    category: 'tile-entities',
   },
   item: {
     aliases: ['items', 'itemstack', 'custom item', 'item settings'],
@@ -154,11 +154,11 @@ const KNOWN_CONCEPTS: Record<
   },
   recipe: {
     aliases: ['recipes', 'crafting', 'smelting', 'recipe type', 'recipe serializer'],
-    category: 'data-generation',
+    category: 'recipes',
   },
   datagen: {
     aliases: ['data generation', 'data gen', 'generators', 'provider'],
-    category: 'data-generation',
+    category: 'resources',
   },
   render: {
     aliases: ['rendering', 'renderer', 'draw', 'model', 'texture', 'shader'],
@@ -166,7 +166,7 @@ const KNOWN_CONCEPTS: Record<
   },
   screen: {
     aliases: ['gui', 'menu', 'handled screen', 'screen handler', 'container'],
-    category: 'rendering',
+    category: 'gui',
   },
   command: {
     aliases: ['commands', 'brigadier', 'argument', 'command registration'],
@@ -174,11 +174,11 @@ const KNOWN_CONCEPTS: Record<
   },
   tag: {
     aliases: ['tags', 'item tag', 'block tag', 'tagging'],
-    category: 'data-generation',
+    category: 'resources',
   },
   loot: {
     aliases: ['loot table', 'loottable', 'drops', 'loot pool'],
-    category: 'data-generation',
+    category: 'resources',
   },
   sound: {
     aliases: ['sounds', 'audio', 'sound event', 'custom sound'],

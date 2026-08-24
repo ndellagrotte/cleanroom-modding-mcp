@@ -37,7 +37,7 @@ const CORPUS = rows(
   ['cleanroom', 'events', '1.12.2', 1],
   ['neoforge', 'entities', '1.21.11', 46],
   ['neoforge', 'commands', '1.21.11', 15],
-  ['neoforge', 'data-generation', '1.21.4', 36],
+  ['neoforge', 'resources', '1.21.4', 36],
   ['neoforge', 'resources', '1.21.4', 224],
   ['neoforge', 'misc', '', 54],
   ['neoforge', 'general', '21.9', 20],
@@ -96,7 +96,7 @@ describe('summarizeCoverage — categories', () => {
     for (const present of ['rendering', 'blocks', 'networking', 'coremods-mixins']) {
       expect(cov.emptyCategories).not.toContain(present);
     }
-    for (const absent of ['entities', 'commands', 'data-generation', 'gui', 'worldgen']) {
+    for (const absent of ['entities', 'commands', 'datastorage', 'gui', 'worldgen']) {
       expect(cov.emptyCategories).toContain(absent);
     }
   });
@@ -107,7 +107,7 @@ describe('summarizeCoverage — categories', () => {
     // a different indexer version can still carry. (`resources` used to be one
     // of these; it is a real category now.)
     expect(cov.offTaxonomy).toBe(54);
-    expect(categoryCount(cov, 'resources')).toBe(224);
+    expect(categoryCount(cov, 'resources')).toBe(260);
     // 479 fabric + 20 neoforge — the off-enum rows did not leak in.
     expect(categoryCount(cov, 'general')).toBe(499);
   });

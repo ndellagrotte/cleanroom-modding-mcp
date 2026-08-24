@@ -25,8 +25,8 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { DOC_CATEGORIES, DOC_FALLBACK_CATEGORY } from '../src/categories.js';
-import { MC_VERSION_PATTERN } from '../src/loaders.js';
+import { DOC_CATEGORIES, DOC_FALLBACK_CATEGORY, EXAMPLE_CATEGORIES } from '../src/categories.js';
+import { MC_VERSION_PATTERN, UNKNOWN_MINECRAFT_VERSION } from '../src/loaders.js';
 import { DBS } from '../src/dbs.js';
 
 /**
@@ -80,7 +80,10 @@ function count(db: Database.Database, sql: string): number {
   return (db.prepare(sql).get() as CountRow).c;
 }
 
-export function lintCorpus(dbPath: string): LintReport {
+export function lintCorpus(
+  dbPath: string,
+  examplesDbPath: string = path.join(path.dirname(dbPath), DBS.examples.fileName)
+): LintReport {
   const db = new Database(dbPath, { readonly: true });
   const checks: LintCheck[] = [];
 
@@ -133,38 +136,22 @@ export function lintCorpus(dbPath: string): LintReport {
           'Code-only sections remain valid because their body is stored in code_blocks.'
       );
 
-      const codeFingerprint = hasCodeBlocks
-        ? `COALESCE((
-             SELECT group_concat(parts.part, char(30))
-             FROM (
-               SELECT cb.language || char(31) || cb.code || char(31) ||
-                      COALESCE(cb.caption, '') part
-               FROM code_blocks cb
-               WHERE cb.section_id = s.id
-               ORDER BY cb.id
-             ) parts
-           ), '')`
-        : "''";
       const dupes = count(
         db,
-        `WITH fingerprints AS (
-           SELECT s.document_id, s.heading, s.content, ${codeFingerprint} code_fingerprint
-           FROM sections s
-         )
-         SELECT count(*) c FROM (
-           SELECT document_id, heading, content, code_fingerprint
-           FROM fingerprints
-           GROUP BY 1, 2, 3, 4
+        `SELECT count(*) c FROM (
+           SELECT document_id, content
+           FROM sections
+           GROUP BY 1, 2
            HAVING count(*) > 1
          )`
       );
       check(
-        'no unexpected duplicate section groups',
+        'no duplicate (document_id, content) groups',
         dupes === 0,
         String(dupes),
         '0',
-        'Distinct headings or code blocks are legitimate repetition. Rows with identical ' +
-          'document, heading, prose, and ordered code are duplicate ingest output.'
+        'Repeated body rows are generated duplicate ingest output. Code-only sections persist ' +
+          'their code as body content so distinct code sections remain distinct.'
       );
     }
 
@@ -178,7 +165,7 @@ export function lintCorpus(dbPath: string): LintReport {
       nullVersions === 0,
       String(nullVersions),
       '0',
-      'Every indexed source must resolve to a concrete Minecraft version.'
+      `Every indexed source must resolve to a real version or '${UNKNOWN_MINECRAFT_VERSION}'.`
     );
 
     const phantomVersions = count(
@@ -198,13 +185,15 @@ export function lintCorpus(dbPath: string): LintReport {
           'WHERE minecraft_version IS NOT NULL GROUP BY 1'
       )
       .all() as Array<{ v: string; c: number }>;
-    const offending = badVersions.filter((r) => !MC_VERSION_PATTERN.test(r.v));
+    const offending = badVersions.filter(
+      (r) => r.v !== UNKNOWN_MINECRAFT_VERSION && !MC_VERSION_PATTERN.test(r.v)
+    );
     check(
-      'minecraft_version holds only Minecraft versions',
+      'minecraft_version holds only Minecraft versions or explicit unknown',
       offending.length === 0,
       offending.length === 0 ? 'clean' : offending.map((r) => `${r.v} (${r.c})`).join(', '),
-      'every value matches /^1.x[.y]$/',
-      'Docs-site and loader versions belong in loader_version.'
+      `every value matches /^1.x[.y]$/ or equals '${UNKNOWN_MINECRAFT_VERSION}'`,
+      'Docs-site and loader versions belong in loader_version; unsupported provenance is explicit.'
     );
 
     // --- V9: the taxonomy ---------------------------------------------------
@@ -223,6 +212,35 @@ export function lintCorpus(dbPath: string): LintReport {
       'A category outside the enum is a document no `category` filter can reach. ' +
         'Extend PATH_SEGMENT_CATEGORIES in src/categories.ts.'
     );
+
+    const docsEnum = [...DOC_CATEGORIES].sort();
+    const examplesEnum = [...EXAMPLE_CATEGORIES].sort();
+    check(
+      'docs and mod-example tool category sets agree',
+      JSON.stringify(docsEnum) === JSON.stringify(examplesEnum),
+      `${docsEnum.length} docs / ${examplesEnum.length} examples`,
+      'identical sets'
+    );
+
+    if (fs.existsSync(examplesDbPath)) {
+      const examplesDb = new Database(examplesDbPath, { readonly: true });
+      try {
+        const dbCategories = (
+          examplesDb.prepare('SELECT slug FROM categories ORDER BY slug').all() as Array<{
+            slug: string;
+          }>
+        ).map((row) => row.slug);
+        check(
+          'mod-example DB categories equal the shared tool schema',
+          JSON.stringify(dbCategories) === JSON.stringify(examplesEnum),
+          dbCategories.join(', '),
+          examplesEnum.join(', '),
+          'Rebuild or migrate examples.db whenever the shared category vocabulary changes.'
+        );
+      } finally {
+        examplesDb.close();
+      }
+    }
 
     const general = categories.find((r) => r.category === DOC_FALLBACK_CATEGORY)?.c ?? 0;
     const share = general / total;

@@ -381,8 +381,8 @@ export interface DetectedVersions {
  * to justify inventing a version from it.
  *
  * Nothing is fabricated. A document with no establishable Minecraft version
- * keeps `undefined` — 359 pages in the corpus (`archive:changelog`, most wiki
- * tutorials) genuinely have none, and guessing would be worse than disclosing.
+ * returns `undefined`; the persistence boundary records that provenance as the
+ * explicit `unknown` value rather than a NULL or a guessed 1.12.2.
  */
 export function detectVersions(url: string, content: string, loader?: Loader): DetectedVersions {
   const fixedVersion = loader ? defaultVersionFor(loader) : null;
@@ -407,14 +407,12 @@ export function detectVersions(url: string, content: string, loader?: Loader): D
     return result;
   }
 
-  // Fall back to prose. Ordered most- to least-specific; the loose trailing
-  // patterns are why '21.9' and '0.6.6' reached the column, so a match that is
-  // not Minecraft-shaped is dropped rather than demoted to loaderVersion.
+  // Fall back only to prose that explicitly names Minecraft. Generic
+  // "version" / "for" phrases matched loader, Gradle and plugin releases;
+  // several happened to look like 1.x and therefore survived shape checking.
   const contentPatterns = [
     /Minecraft\s+(?:version\s+)?(\d+\.\d+(?:\.\d+)?)/i,
-    /MC\s+(\d+\.\d+(?:\.\d+)?)/i,
-    /version\s+(\d+\.\d+(?:\.\d+)?)/i,
-    /for\s+(\d+\.\d+(?:\.\d+)?)/i,
+    /\bMC\s+(\d+\.\d+(?:\.\d+)?)/i,
   ];
 
   for (const pattern of contentPatterns) {
