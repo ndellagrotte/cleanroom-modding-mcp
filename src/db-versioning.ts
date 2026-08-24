@@ -209,27 +209,10 @@ export class DbVersioning {
         return false;
       }
 
-      // If we previously tried and failed to download this exact version+hash,
-      // skip re-downloading to prevent an infinite loop caused by a broken release.
-      if (this.isVersionMarkedFailed(remote)) {
-        console.error(
-          `[DbVersioning:${this.spec.id}] Skipping update: version ${remote.version} previously failed hash verification (broken release asset)`
-        );
-        return false;
-      }
-
-      if (!local) {
-        return true;
-      }
-
       // Schema force-redownload: an installed DB whose schema_version doesn't
-      // match this build is unusable regardless of manifest versions — force a
-      // replacement with the remote asset even when the version comparison says
-      // "equal". This is the generic path that carries the docs.db 1->2 bump.
+      // match this build is unusable regardless of manifest versions.
       if (fs.existsSync(this.dbPath)) {
         const dbSchema = readDbSchemaVersion(this.dbPath);
-        // null = present-but-unreadable/corrupt/pre-versioning — treat as a mismatch (the
-        // documented contract) and force a replacement rather than trusting a broken file.
         if (dbSchema !== this.spec.schemaVersion) {
           console.error(
             `[DbVersioning:${this.spec.id}] Installed DB has schema v${dbSchema ?? 'unknown'} but this build ` +
@@ -239,15 +222,41 @@ export class DbVersioning {
         }
       }
 
-      const comparison = this.compareVersions(local.version, remote.version);
-      if (comparison < 0) {
-        console.error(
-          `[DbVersioning:${this.spec.id}] Update available: ${local.version} -> ${remote.version}`
-        );
-        return true;
+      const versionChanged = !local || this.compareVersions(local.version, remote.version) < 0;
+      if (!versionChanged) {
+        return false;
       }
 
-      return false;
+      // Release versions also carry dist/ changes. Before replacing a database
+      // solely because its manifest version advanced, compare the bytes that
+      // are actually installed. Matching bytes need only new local metadata.
+      if (fs.existsSync(this.dbPath)) {
+        const installedHash = await this.calculateFileHash(this.dbPath);
+        if (installedHash === remote.hash) {
+          this.saveManifest(remote);
+          if (fs.existsSync(this.failedMarkerPath)) {
+            fs.unlinkSync(this.failedMarkerPath);
+          }
+          console.error(
+            `[DbVersioning:${this.spec.id}] ${this.spec.fileName} unchanged (hash match), skipping`
+          );
+          return false;
+        }
+      }
+
+      // If we previously tried and failed to download this exact version+hash,
+      // skip re-downloading to prevent an infinite loop caused by a broken release.
+      if (this.isVersionMarkedFailed(remote)) {
+        console.error(
+          `[DbVersioning:${this.spec.id}] Skipping update: version ${remote.version} previously failed hash verification (broken release asset)`
+        );
+        return false;
+      }
+
+      console.error(
+        `[DbVersioning:${this.spec.id}] Update available: ${local?.version ?? 'not installed'} -> ${remote.version}`
+      );
+      return true;
     } catch (error) {
       console.error(`[DbVersioning:${this.spec.id}] Error checking for updates:`, error);
       return false;

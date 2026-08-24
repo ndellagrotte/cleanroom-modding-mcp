@@ -13,6 +13,7 @@ import {
   auditCategoryCoverage,
 } from '../categories.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { formatQualityScore } from '../services/search-utils.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Availability guidance (aligned with the NOT_INSTALLED convention, Phase 3)
@@ -150,8 +151,25 @@ export const MOD_EXAMPLES_TOOLS = [
   {
     name: 'get_mod_patterns',
     description:
-      'Get all available pattern types with counts. Useful for discovering specific implementation patterns.',
-    inputSchema: { type: 'object' as const, properties: {} },
+      'Get the most common implementation pattern types with counts. Output is bounded and reports how many pattern types were suppressed.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        limit: {
+          type: 'number',
+          description: 'Maximum pattern types to return (1-200). Default: 40',
+          minimum: 1,
+          maximum: 200,
+          default: 40,
+        },
+        min_count: {
+          type: 'number',
+          description: 'Minimum examples required for a pattern type. Default: 2',
+          minimum: 1,
+          default: 2,
+        },
+      },
+    },
   },
 ];
 
@@ -322,7 +340,7 @@ export function handleSearchModExamples(params: SearchModExamplesParams): CallTo
         output = `Found ${examples.length} canonical mod example${examples.length > 1 ? 's' : ''}:\n\n`;
         examples.forEach((ex, i) => {
           output += `### ${i + 1}. ${ex.title}\n`;
-          output += `**ID:** ${ex.id} | **Mod:** ${ex.modName} (${ex.license}) | **Quality:** ${(ex.qualityScore * 100).toFixed(0)}%`;
+          output += `**ID:** ${ex.id} | **Mod:** ${ex.modName} (${ex.license}) | **Quality:** ${formatQualityScore(ex.qualityScore)}`;
           if (ex.isFeatured) output += ' | ⭐ Featured';
           output += '\n';
           output += `**Loader:** ${ex.loader} | **Category:** ${ex.categoryName || ex.category || 'Uncategorized'} | **Pattern:** ${ex.patternType} | **Complexity:** ${ex.complexity}\n`;
@@ -453,7 +471,7 @@ export function handleListCanonicalMods(params: ListCanonicalModsParams): CallTo
         output += `| Total Examples | ${stats.examples} |\n`;
         output += `| Relationships | ${stats.relations} |\n`;
         output += `| Featured Examples | ${stats.featuredExamples} |\n`;
-        output += `| Avg Quality Score | ${(stats.avgQualityScore * 100).toFixed(0)}% |\n\n`;
+        output += `| Avg Quality Score | ${formatQualityScore(stats.avgQualityScore)} |\n\n`;
       }
 
       output += '## Available Mods\n\n';
@@ -514,20 +532,31 @@ export function handleListModCategories(): CallToolResult {
     };
   }
 }
+export interface GetModPatternsParams {
+  limit?: number;
+  min_count?: number;
+}
 
-export function handleGetModPatterns(): CallToolResult {
+export function handleGetModPatterns(params: GetModPatternsParams = {}): CallToolResult {
   try {
     if (!ModExamplesService.isAvailable()) {
       return notAvailableResult();
     }
 
+    const limit = Math.min(Math.max(Math.floor(params.limit ?? 40), 1), 200);
+    const minCount = Math.max(Math.floor(params.min_count ?? 2), 1);
     const service = new ModExamplesService();
     try {
-      const patterns = service.getPatternTypes();
+      const page = service.getPatternTypes(limit, minCount);
       let output = '# Pattern Types\n\n';
       output += 'Specific implementation patterns found in indexed mods:\n\n';
+      output += `Showing ${page.patterns.length} of ${page.totalTypes} pattern types; ${page.singletonTypes.toLocaleString('en-US')} have a single example.`;
+      if (minCount > 1) {
+        output += ` ${page.eligibleTypes.toLocaleString('en-US')} meet \`min_count\` ≥ ${minCount}.`;
+      }
+      output += '\n\n';
       output += '| Pattern Type | Example Count |\n|--------------|---------------|\n';
-      patterns.forEach((p) => (output += `| \`${p.type}\` | ${p.count} |\n`));
+      page.patterns.forEach((p) => (output += `| \`${p.type}\` | ${p.count} |\n`));
       output += '\n**Usage:** `search_mod_examples` with `pattern_type` parameter\n';
       return { content: [{ type: 'text', text: output }] };
     } finally {

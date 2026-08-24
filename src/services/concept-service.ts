@@ -6,7 +6,12 @@
 
 import { DocumentStore } from '../indexer/store.js';
 import { EmbeddingGenerator } from '../indexer/embeddings.js';
-import { tokenizeQuery } from './search-utils.js';
+import {
+  canonicalSections,
+  canonicalSummary,
+  cleanDocumentationText,
+  tokenizeQuery,
+} from './search-utils.js';
 import { getDefaultDbPath } from '../data-dir.js';
 import { DBS } from '../dbs.js';
 import { LOADERS, perspectiveToLoaders, type Loader } from '../loaders.js';
@@ -426,8 +431,8 @@ export class ConceptService {
     );
     console.error(`[ConceptService] Found ${scoredChunks.length} relevant chunks`);
 
-    // Aggregate content from chunks
-    const aggregatedContent = this.aggregateContent(scoredChunks);
+    // Summary and detail rendering share the canonical section cleanup used by
+    // search_docs, rather than formatting raw overlapping chunks independently.
 
     // Extract key points
     const keyPoints = this.extractKeyPoints(scoredChunks, normalizedConcept);
@@ -446,9 +451,8 @@ export class ConceptService {
     // Build resources list
     const resources = this.buildResourcesList(scoredChunks);
 
-    // Generate summary and details
-    const summary = this.generateSummary(aggregatedContent, normalizedConcept, keyPoints, loader);
-    const details = this.generateDetails(aggregatedContent, scoredChunks);
+    const summary = this.generateSummary(scoredChunks, normalizedConcept, keyPoints, loader);
+    const details = this.generateDetails(scoredChunks);
 
     // Cross-loader difference banner via EXACT topic map (never alias expansion — R7).
     const crossLoader = this.lookupCrossLoaderDifferences(normalizedConcept);
@@ -646,37 +650,22 @@ export class ConceptService {
   }
 
   /**
-   * Aggregate content from scored chunks
+   * Extract complete, deduplicated section bodies in rank order.
    */
-  private aggregateContent(chunks: ScoredChunk[]): string {
-    const seenContent = new Set<string>();
-    const contentParts: string[] = [];
-
-    for (const chunk of chunks.slice(0, 15)) {
-      // Deduplicate by content hash
-      const contentKey = chunk.content.substring(0, 100);
-      if (seenContent.has(contentKey)) continue;
-      seenContent.add(contentKey);
-
-      // Clean and add content
-      const cleaned = this.cleanContent(chunk.content);
-      if (cleaned.length > 50) {
-        contentParts.push(cleaned);
-      }
-    }
-
-    return contentParts.join('\n\n');
-  }
-
-  /**
-   * Clean content by removing noise
-   */
-  private cleanContent(content: string): string {
-    return content
-      .replace(/[\u{1F1E6}-\u{1F1FF}]{2}/gu, '') // Remove flag emojis
-      .replace(/\n{3,}/g, '\n\n')
-      .replace(/[ \t]+/g, ' ')
-      .trim();
+  private canonicalContent(
+    chunks: ScoredChunk[],
+    limit: number
+  ): Array<{
+    heading: string;
+    content: string;
+  }> {
+    return canonicalSections(
+      chunks.map((chunk) => ({
+        heading: chunk.sectionHeading || chunk.documentTitle || 'Overview',
+        content: cleanDocumentationText(chunk.content),
+      })),
+      limit
+    );
   }
 
   /**
@@ -686,17 +675,15 @@ export class ConceptService {
     const keyPoints: string[] = [];
     const seenPoints = new Set<string>();
 
-    for (const chunk of chunks.slice(0, 10)) {
-      // Extract sentences that mention the concept
-      const sentences = chunk.content.split(/[.!?]+/);
+    for (const section of this.canonicalContent(chunks.slice(0, 20), 10)) {
+      const sentences = section.content.split(/[.!?]+/);
       for (const sentence of sentences) {
         const trimmed = sentence.trim();
-        if (trimmed.length < 20 || trimmed.length > 200) continue;
+        if (trimmed.length < 20 || trimmed.length > 200 || /^[a-z]/.test(trimmed)) continue;
 
         const lowerSentence = trimmed.toLowerCase();
         if (lowerSentence.includes(concept) || this.containsKeyTerms(lowerSentence, concept)) {
-          // Normalize for deduplication
-          const key = trimmed.substring(0, 50).toLowerCase();
+          const key = cleanDocumentationText(trimmed).toLowerCase();
           if (!seenPoints.has(key)) {
             seenPoints.add(key);
             keyPoints.push(trimmed);
@@ -883,78 +870,43 @@ export class ConceptService {
   }
 
   /**
-   * Generate summary from aggregated content
+   * Generate a summary through the same complete-sentence selector as
+   * search_docs. The document's lead section (its heading equals its title) is
+   * preferred over ranked subsections, which keeps Overview prose authoritative.
    */
   private generateSummary(
-    content: string,
+    chunks: ScoredChunk[],
     concept: string,
     keyPoints: string[],
     loader: Loader
   ): string {
-    // Find the most relevant introductory sentence
-    const sentences = content.split(/[.!?]+/).filter((s) => s.trim().length > 20);
+    const prioritized = [...chunks].sort((a, b) => {
+      const aLead = a.sectionHeading === a.documentTitle ? 0 : 1;
+      const bLead = b.sectionHeading === b.documentTitle ? 0 : 1;
+      return aLead - bLead;
+    });
+    const sections = this.canonicalContent(prioritized, 12);
+    const summary = canonicalSummary(
+      [...sections.map((section) => section.content), ...keyPoints],
+      [concept],
+      300
+    );
 
-    for (const sentence of sentences) {
-      const lower = sentence.toLowerCase();
-      if (
-        lower.includes(concept) &&
-        (lower.includes('is') ||
-          lower.includes('are') ||
-          lower.includes('allows') ||
-          lower.includes('provides'))
-      ) {
-        return sentence.trim() + '.';
-      }
-    }
-
-    // Fallback: use first key point or first sentence
-    if (keyPoints.length > 0 && keyPoints[0]) {
-      return keyPoints[0] + (keyPoints[0].endsWith('.') ? '' : '.');
-    }
-
-    if (sentences.length > 0 && sentences[0]) {
-      return sentences[0].trim() + '.';
-    }
-
-    return `${concept} is a concept ${this.loaderPhrase(loader)}.`;
+    return summary || `${concept} is a concept ${this.loaderPhrase(loader)}.`;
   }
 
   /**
-   * Generate detailed explanation
+   * Generate detailed explanation from canonical sections. One body per
+   * heading removes overlapping chunks and rejects mid-sentence fragments.
    */
-  private generateDetails(_content: string, chunks: ScoredChunk[]): string {
-    const parts: string[] = [];
-    const seenContent = new Set<string>();
-
-    // Group by section heading for better organization
-    const sectionMap = new Map<string, string[]>();
-
-    for (const chunk of chunks.slice(0, 12)) {
-      const heading = chunk.sectionHeading || 'Overview';
-      const contentKey = chunk.content.substring(0, 80);
-
-      if (seenContent.has(contentKey)) continue;
-      seenContent.add(contentKey);
-
-      const cleaned = this.cleanContent(chunk.content);
-      if (cleaned.length > 50) {
-        let sectionContents = sectionMap.get(heading);
-        if (!sectionContents) {
-          sectionContents = [];
-          sectionMap.set(heading, sectionContents);
-        }
-        sectionContents.push(cleaned);
-      }
-    }
-
-    // Build organized details
-    for (const [heading, contents] of sectionMap) {
-      if (contents.length > 0) {
-        parts.push(`**${heading}:**\n${contents.slice(0, 2).join('\n\n')}`);
-      }
-    }
-
-    return parts.slice(0, 5).join('\n\n---\n\n');
+  private generateDetails(chunks: ScoredChunk[]): string {
+    return this.canonicalContent(chunks.slice(0, 30), 8)
+      .map((section) => {
+        const summary = canonicalSummary([section.content], [], 600);
+        return summary ? `**${section.heading}:**\n${summary}` : '';
+      })
+      .filter(Boolean)
+      .join('\n\n---\n\n');
   }
 
   /**

@@ -24,6 +24,20 @@ describe('search_mod_examples tool schema', () => {
   });
 });
 
+describe('get_mod_patterns tool schema', () => {
+  it('exposes bounded defaults for limit and min_count', () => {
+    const tool = MOD_EXAMPLES_TOOLS.find((candidate) => candidate.name === 'get_mod_patterns');
+    expect(tool).toBeDefined();
+    if (!tool) throw new Error('get_mod_patterns tool missing');
+    const properties = tool.inputSchema.properties as {
+      limit: { default: number; minimum: number; maximum: number };
+      min_count: { default: number; minimum: number };
+    };
+    expect(properties.limit).toMatchObject({ default: 40, minimum: 1, maximum: 200 });
+    expect(properties.min_count).toMatchObject({ default: 2, minimum: 1 });
+  });
+});
+
 describe('tool copy', () => {
   it('no longer advertises the dead Create / Botania / AE2 corpus', () => {
     const text = JSON.stringify(MOD_EXAMPLES_TOOLS);

@@ -1244,10 +1244,19 @@ export class DocumentStore {
       loader?: string | string[];
       minecraftVersion?: string;
       category?: string;
+      documentId?: number;
       limit?: number;
     } = {}
   ) {
-    const { hasCode = true, language, loader, minecraftVersion, category, limit = 30 } = options;
+    const {
+      hasCode = true,
+      language,
+      loader,
+      minecraftVersion,
+      category,
+      documentId,
+      limit = 30,
+    } = options;
 
     type ChunkResult = {
       id: string;
@@ -1292,6 +1301,10 @@ export class DocumentStore {
         `;
 
         const params: (string | number)[] = [ftsQuery];
+        if (documentId !== undefined) {
+          sql += ' AND d.id = ?';
+          params.push(documentId);
+        }
 
         if (hasCode) {
           sql += ' AND c.has_code = 1';
@@ -1359,7 +1372,10 @@ export class DocumentStore {
       for (const pattern of likePatterns.slice(0, 3)) {
         params.push(pattern, pattern);
       }
-
+      if (documentId !== undefined) {
+        sql += ' AND d.id = ?';
+        params.push(documentId);
+      }
       if (hasCode) {
         sql += ' AND c.has_code = 1';
       }

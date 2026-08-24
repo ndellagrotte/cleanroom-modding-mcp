@@ -367,26 +367,34 @@ export function handleGetClassDetails(params: GetClassDetailsParams): CallToolRe
       // Fields
       if (params.include_fields !== false) {
         const fields = service.getClassFields(cls.id);
-        output += `\n## Fields (${fields.length})\n\n`;
 
-        if (fields.length === 0) {
-          output += '_No fields with mappings found._\n';
+        if (fields.length === 0 && cls.mappingSet !== 'mcp') {
+          output += `\n## Fields unavailable for Minecraft ${cls.minecraftVersion}\n\n`;
+          output +=
+            '_The installed modern Parchment/Mojang mapping data contains no field rows for this class. ' +
+            'The class result above is therefore not a complete member listing._\n';
         } else {
-          for (const field of fields) {
-            output += `- **\`${field.name}\`**`;
-            if (field.descriptor) {
-              output += ` (\`${field.descriptor}\`)`;
+          output += `\n## Fields (${fields.length})\n\n`;
+
+          if (fields.length === 0) {
+            output += '_No fields with mappings found._\n';
+          } else {
+            for (const field of fields) {
+              output += `- **\`${field.name}\`**`;
+              if (field.descriptor) {
+                output += ` (\`${field.descriptor}\`)`;
+              }
+              if (field.srgName) {
+                output += ` — SRG: \`${field.srgName}\``;
+              }
+              if (field.notchName) {
+                output += ` — notch: \`${field.notchName}\``;
+              }
+              if (field.javadoc) {
+                output += `\n  ${field.javadoc}`;
+              }
+              output += '\n';
             }
-            if (field.srgName) {
-              output += ` — SRG: \`${field.srgName}\``;
-            }
-            if (field.notchName) {
-              output += ` — notch: \`${field.notchName}\``;
-            }
-            if (field.javadoc) {
-              output += `\n  ${field.javadoc}`;
-            }
-            output += '\n';
           }
         }
       }

@@ -167,8 +167,7 @@ const BASE_TOOLS = [
       'how many documents are in scope, so a thin result set reads as corpus size rather than ' +
       'a bad query. This tool only ever returns what the documentation shows — ' +
       'for idiomatic, production-tested implementations taken from real 1.12.2 mods, prefer ' +
-      '`search_mod_examples` (curated mod-examples corpus; listed once the examples database ' +
-      'has downloaded). ' +
+      '`search_mod_examples` (curated mod-examples corpus). ' +
       'See also `search_docs` for prose documentation rather than code.',
     inputSchema: {
       type: 'object',
@@ -386,7 +385,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     case 'get_mod_patterns': {
-      return handleGetModPatterns();
+      return handleGetModPatterns({
+        limit: args?.limit as number | undefined,
+        min_count: args?.min_count as number | undefined,
+      });
     }
 
     // Mappings tools (only work if database is available)

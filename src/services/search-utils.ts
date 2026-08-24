@@ -3,6 +3,8 @@
  * Handles tokenization, synonyms, query expansion, and relevance scoring
  */
 
+import { stripZeroWidth } from '../indexer/text.js';
+
 /**
  * Common English stopwords to filter out
  */
@@ -534,8 +536,190 @@ export function deduplicateAndRank<T extends DeduplicableItem>(
 }
 
 /**
- * Normalize a score to 0-100 range
+ * Text cleanup shared by every documentation renderer. Zero-width removal must
+ * happen before whitespace collapse: otherwise an anchor artefact can keep two
+ * visually identical passages distinct during deduplication.
  */
+export function cleanDocumentationText(text: string): string {
+  return stripZeroWidth(text)
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+export interface DocumentationSection {
+  heading: string;
+  content: string;
+}
+
+function normalizedContentKey(text: string): string {
+  return cleanDocumentationText(text).toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * Remove the heading copied into the start of a stored chunk. A section body
+ * that is empty, shorter than its heading, or starts in the middle of a
+ * sentence is not useful enough to render.
+ */
+export function meaningfulSectionBody(content: string, heading: string): string | null {
+  const cleanedHeading = cleanDocumentationText(heading);
+  let body = cleanDocumentationText(content);
+  const firstBreak = body.indexOf('\n');
+
+  if (
+    cleanedHeading &&
+    firstBreak >= 0 &&
+    body.slice(0, firstBreak).trim().toLowerCase() === cleanedHeading.toLowerCase()
+  ) {
+    body = body.slice(firstBreak + 1).trim();
+  }
+
+  body = body.replace(/^#{1,6}\s+[^\n]+\n+/, '').trim();
+  if (body.length < 20 || body.length <= cleanedHeading.length || /^[a-z]/.test(body)) {
+    return null;
+  }
+  return body;
+}
+
+/**
+ * Canonical section deduplication for search_docs and explain_concept.
+ * One meaningful body per heading avoids rendering overlapping chunks as
+ * repeated sections while still allowing a broken first chunk to be skipped.
+ */
+export function canonicalSections<T extends DocumentationSection>(
+  sections: readonly T[],
+  limit: number = Number.POSITIVE_INFINITY
+): T[] {
+  const seenHeadings = new Set<string>();
+  const seenBodies = new Set<string>();
+  const selected: T[] = [];
+
+  for (const section of sections) {
+    const body = meaningfulSectionBody(section.content, section.heading);
+    if (!body) continue;
+
+    const headingKey = normalizedContentKey(section.heading);
+    const bodyKey = normalizedContentKey(body);
+    if (seenHeadings.has(headingKey) || seenBodies.has(bodyKey)) continue;
+
+    seenHeadings.add(headingKey);
+    seenBodies.add(bodyKey);
+    selected.push({ ...section, heading: cleanDocumentationText(section.heading), content: body });
+    if (selected.length >= limit) break;
+  }
+
+  return selected;
+}
+
+/**
+ * Bound prose without cutting a sentence, token, or word. The requested length
+ * is soft only for a single token that crosses it; returning that token whole
+ * is preferable to manufacturing a partial identifier.
+ */
+export function truncateAtBoundary(text: string, maxLength: number): string {
+  const cleaned = cleanDocumentationText(text);
+  if (cleaned.length <= maxLength) return cleaned;
+
+  const window = cleaned.slice(0, maxLength + 1);
+  let sentenceEnd = -1;
+  const endings = /[.!?](?=\s|$)/g;
+  for (const match of window.matchAll(endings)) {
+    sentenceEnd = match.index + 1;
+  }
+  if (sentenceEnd >= maxLength * 0.45) {
+    return cleaned.slice(0, sentenceEnd).trim();
+  }
+
+  const boundary = Math.max(window.lastIndexOf('\n'), window.lastIndexOf(' '));
+  if (boundary > 0) {
+    return `${cleaned.slice(0, boundary).trimEnd()}...`;
+  }
+
+  const nextBoundary = cleaned.slice(maxLength).search(/\s/);
+  if (nextBoundary >= 0) {
+    return `${cleaned.slice(0, maxLength + nextBoundary).trimEnd()}...`;
+  }
+  return cleaned;
+}
+
+interface SummaryCandidate {
+  text: string;
+  matches: number;
+  sourceOrder: number;
+  sentenceOrder: number;
+}
+
+function summarySentences(text: string): string[] {
+  const sentences: string[] = [];
+  let start = 0;
+  const endings = /[.!?](?=\s|$)/g;
+  for (const match of text.matchAll(endings)) {
+    const end = match.index + 1;
+    sentences.push(text.slice(start, end).trim());
+    start = end;
+  }
+  if (start < text.length) sentences.push(text.slice(start).trim());
+
+  return sentences.filter((sentence) => sentence.length >= 20 && !/^[a-z]/.test(sentence));
+}
+
+/**
+ * Canonical summary selection. Sources are priority ordered; query terms break
+ * that priority only when another complete sentence matches more of them.
+ */
+export function canonicalSummary(
+  sources: readonly string[],
+  terms: readonly string[],
+  maxLength: number
+): string {
+  const normalizedTerms = terms.map((term) => term.toLowerCase()).filter((term) => term.length > 1);
+  const candidates: SummaryCandidate[] = [];
+
+  sources.forEach((source, sourceOrder) => {
+    const cleaned = cleanDocumentationText(source);
+    const firstLineEnd = cleaned.indexOf('\n');
+    const firstLine =
+      firstLineEnd > 0 && firstLineEnd < 120 ? cleaned.slice(0, firstLineEnd).trim() : '';
+    const inferredHeading = firstLine && !/[.!?]$/.test(firstLine) ? firstLine : '';
+    const body = inferredHeading
+      ? meaningfulSectionBody(cleaned, inferredHeading)
+      : cleaned.length >= 20 && !/^[a-z]/.test(cleaned)
+        ? cleaned
+        : null;
+    if (!body) return;
+
+    summarySentences(body).forEach((sentence, sentenceOrder) => {
+      const lower = sentence.toLowerCase();
+      candidates.push({
+        text: sentence,
+        matches: normalizedTerms.reduce((count, term) => count + (lower.includes(term) ? 1 : 0), 0),
+        sourceOrder,
+        sentenceOrder,
+      });
+    });
+  });
+
+  candidates.sort(
+    (a, b) =>
+      b.matches - a.matches || a.sourceOrder - b.sourceOrder || a.sentenceOrder - b.sentenceOrder
+  );
+  const best = candidates[0];
+  return best ? truncateAtBoundary(best.text, maxLength) : '';
+}
+
+/** Normalize pooled internal relevance to the public 0-100 scale. */
 export function normalizeScore(score: number, maxPossible: number = 200): number {
-  return Math.min(100, Math.round((score / maxPossible) * 100));
+  const normalized = Math.max(0, Math.min(100, (score / maxPossible) * 100));
+  return Math.round(normalized * 10) / 10;
+}
+
+/** Public numeric scores always use one decimal and the same percentage scale. */
+export function formatPublicScore(score: number, maxPossible: number = 200): string {
+  return `${normalizeScore(score, maxPossible).toFixed(1)}%`;
+}
+
+export function formatQualityScore(score: number): string {
+  return `${(Math.max(0, Math.min(1, score)) * 100).toFixed(1)}%`;
 }

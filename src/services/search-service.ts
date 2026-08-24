@@ -5,10 +5,14 @@
 
 import { DocumentStore } from '../indexer/store.js';
 import { EmbeddingGenerator } from '../indexer/embeddings.js';
-import { stripZeroWidth } from '../indexer/text.js';
 import {
-  tokenizeQuery,
+  canonicalSections,
+  canonicalSummary,
   calculateRelevanceScore,
+  cleanDocumentationText,
+  formatPublicScore,
+  tokenizeQuery,
+  truncateAtBoundary,
   urlPathKey,
   type TokenizedQuery,
   type ScoredResult,
@@ -671,13 +675,13 @@ export class SearchService {
   ): SearchResult {
     const doc = result.item;
 
-    // Get sections for this document
+    // Get and deduplicate meaningful sections before choosing the summary. A
+    // section can contain the intact lead even when the strategy's winning
+    // chunk is an overlapping fragment.
     const sections = this.getSectionsForDocument(doc.id, query);
 
-    // Generate snippet from content (cleaned)
     const cleanContent = this.cleanContent(doc.content);
-    const snippet = this.generateSnippet(cleanContent, query, 300);
-
+    const snippet = this.generateSnippet(cleanContent, sections, query, 300);
     return {
       title: doc.title,
       url: doc.url,
@@ -695,21 +699,13 @@ export class SearchService {
    * Clean content by removing UI/navigation noise
    */
   private cleanContent(content: string): string {
-    // Defensive, and the reason this fix reaches users before they download
-    // anything: every shipped docs.db carries zero-width characters in stored
-    // headings and chunks, and stripping at render neutralizes them without a
-    // migration or a re-download.
-    let cleaned = stripZeroWidth(content);
+    let cleaned = cleanDocumentationText(content);
 
     for (const pattern of NOISE_PATTERNS) {
       cleaned = cleaned.replace(pattern, '');
     }
 
-    // Remove excessive whitespace
-    cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
-    cleaned = cleaned.replace(/[ \t]+/g, ' ');
-
-    return cleaned.trim();
+    return cleanDocumentationText(cleaned);
   }
 
   /**
@@ -724,6 +720,7 @@ export class SearchService {
     // Get all chunks for this document
     const chunks = this.store.searchChunksAdvanced('', [`%${query.tokens[0] || ''}%`], {
       hasCode: false,
+      documentId,
       limit: 100,
     });
 
@@ -742,98 +739,50 @@ export class SearchService {
       }))
       .filter((c) => c.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, 5);
-
-    // Group by section heading
-    const seenHeadings = new Set<string>();
-    for (const { chunk } of docChunks) {
-      const heading = chunk.section_heading || 'Overview';
-      if (!seenHeadings.has(heading)) {
-        seenHeadings.add(heading);
-        const cleanedContent = this.cleanContent(chunk.content);
-        sections.push({
-          heading,
-          content: this.truncateCodeAware(cleanedContent, 400),
-          hasCode: chunk.has_code === 1,
-        });
-      }
+      .slice(0, 20);
+    const candidates = docChunks
+      .map(({ chunk }) => ({
+        heading: chunk.section_heading || 'Overview',
+        content: this.cleanContent(chunk.content),
+        hasCode: chunk.has_code === 1,
+        isCodeChunk: chunk.chunk_type === 'code',
+      }))
+      .sort((a, b) => Number(a.isCodeChunk) - Number(b.isCodeChunk));
+    for (const section of canonicalSections(candidates, 5)) {
+      sections.push({
+        heading: section.heading,
+        hasCode: section.hasCode,
+        content: section.isCodeChunk
+          ? this.truncateCodeAware(section.content, 400)
+          : truncateAtBoundary(section.content, 400),
+      });
     }
 
     return sections;
   }
 
   /**
-   * Generate a relevant snippet from content
+   * Generate a relevant snippet from complete, meaningful section bodies.
    */
-  private generateSnippet(content: string, query: TokenizedQuery, maxLength: number): string {
-    const contentLower = content.toLowerCase();
+  private generateSnippet(
+    content: string,
+    sections: Array<{ heading: string; content: string; hasCode: boolean }>,
+    query: TokenizedQuery,
+    maxLength: number
+  ): string {
+    const matches = (text: string) =>
+      query.tokens.reduce(
+        (score, token, index) =>
+          score +
+          (text.toLowerCase().includes(token.toLowerCase()) ? query.tokens.length - index : 0),
+        0
+      );
+    const sectionSummaries = sections
+      .map((section) => canonicalSummary([section.content], query.tokens, maxLength))
+      .filter(Boolean)
+      .sort((a, b) => matches(b) - matches(a) || a.length - b.length);
 
-    // Try to find a section containing query tokens
-    for (const token of query.tokens) {
-      if (token.length < 3) continue;
-
-      const index = contentLower.indexOf(token.toLowerCase());
-      if (index !== -1) {
-        // Extract context around the match
-        const start = Math.max(0, index - 100);
-        const end = Math.min(content.length, index + token.length + 200);
-
-        let snippet = content.substring(start, end);
-
-        // Clean up start
-        if (start > 0) {
-          const firstSpace = snippet.indexOf(' ');
-          if (firstSpace > 0 && firstSpace < 20) {
-            snippet = '...' + snippet.substring(firstSpace + 1);
-          } else {
-            snippet = '...' + snippet;
-          }
-        }
-
-        // Clean up end
-        if (end < content.length) {
-          const lastSpace = snippet.lastIndexOf(' ');
-          if (lastSpace > snippet.length - 20) {
-            snippet = snippet.substring(0, lastSpace) + '...';
-          } else {
-            snippet = snippet + '...';
-          }
-        }
-
-        const cleaned = snippet.trim();
-        if (cleaned.length > 20) {
-          return this.markLeadingFragments(cleaned);
-        }
-      }
-    }
-
-    // Fallback: return beginning of content. The repair above only runs when
-    // the match forced a cut (`start > 0`); a chunk short enough to be returned
-    // whole reaches here unrepaired, which is how "ot entry:" shipped as a
-    // complete summary.
-    return this.markLeadingFragments(this.truncateCodeAware(content, maxLength));
-  }
-
-  /**
-   * Mark a passage that begins partway through a sentence.
-   *
-   * Chunks built before the splitter snapped to word boundaries can open
-   * mid-word — the shipped corpus holds `"Registering Custom
-   * Objects\n\not entry:"`, where the body is the tail of "loot entry:" (beta
-   * report S6). The missing prefix is not recoverable at render time, because
-   * it is not in the chunk. What *is* fixable is presenting the fragment as
-   * though it were the start of a sentence: an ellipsis tells the reader the
-   * text was cut, which is the honest rendering of a truncated passage and
-   * costs nothing on a corpus built by the current chunker.
-   *
-   * Applied per paragraph because the chunk body follows its heading, so the
-   * fragment is rarely the first thing in the string.
-   */
-  private markLeadingFragments(text: string): string {
-    return text
-      .split('\n\n')
-      .map((part) => (/^\s*[a-z][a-z]*[\s,.;:)]/.test(part) ? `...${part.trimStart()}` : part))
-      .join('\n\n');
+    return canonicalSummary([...sectionSummaries, content], query.tokens, maxLength);
   }
 
   /**
@@ -849,8 +798,6 @@ export class SearchService {
     // Try to end at a complete statement
     const lastSemicolon = truncated.lastIndexOf(';');
     const lastBrace = truncated.lastIndexOf('}');
-    const lastPeriod = truncated.lastIndexOf('.');
-    const lastNewline = truncated.lastIndexOf('\n');
 
     // For code: prefer ending at semicolon or brace
     const codeEnd = Math.max(lastSemicolon, lastBrace);
@@ -858,23 +805,8 @@ export class SearchService {
       return truncated.substring(0, codeEnd + 1).trim();
     }
 
-    // For prose: prefer ending at sentence
-    if (lastPeriod > maxLength * 0.6) {
-      return truncated.substring(0, lastPeriod + 1);
-    }
-
-    // Prefer ending at newline
-    if (lastNewline > maxLength * 0.7) {
-      return truncated.substring(0, lastNewline).trim() + '...';
-    }
-
-    // Last resort: end at word boundary
-    const lastSpace = truncated.lastIndexOf(' ');
-    if (lastSpace > maxLength * 0.8) {
-      return truncated.substring(0, lastSpace) + '...';
-    }
-
-    return truncated + '...';
+    // Prose uses the canonical boundary logic shared with concept summaries.
+    return truncateAtBoundary(content, maxLength);
   }
 
   // getStats() was removed in favour of getCoverage(). It reported global
@@ -906,7 +838,7 @@ export class SearchService {
         output += `**Minecraft Version:** ${result.minecraftVersion}\n`;
       }
 
-      output += `**Relevance:** ${result.relevanceScore} (${result.matchReasons.slice(0, 3).join(', ')})\n\n`;
+      output += `**Relevance:** ${formatPublicScore(result.relevanceScore)} (${result.matchReasons.slice(0, 3).join(', ')})\n\n`;
 
       if (result.snippet) {
         output += `**Summary:**\n${result.snippet}\n\n`;

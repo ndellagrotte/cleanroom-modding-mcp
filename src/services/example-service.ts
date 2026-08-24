@@ -13,10 +13,14 @@ import {
   type DocCoverage,
 } from './corpus-coverage.js';
 import {
-  tokenizeQuery,
+  canonicalSummary,
   calculateRelevanceScore,
+  cleanDocumentationText,
   deduplicateAndRank,
+  formatPublicScore,
   languageMatches,
+  tokenizeQuery,
+  truncateAtBoundary,
   type TokenizedQuery,
   type ScoredResult,
 } from './search-utils.js';
@@ -567,16 +571,16 @@ export class ExampleService {
       relevanceScore: score,
       matchReasons,
       context: {
-        sectionHeading: block.section_heading,
-        sectionContent: this.truncateContent(block.section_content, 500),
-        documentTitle: block.document_title,
+        sectionHeading: cleanDocumentationText(block.section_heading),
+        sectionContent: truncateAtBoundary(block.section_content, 500),
+        documentTitle: cleanDocumentationText(block.document_title),
         documentUrl: block.document_url,
         category: block.category,
       },
       metadata: {
         loader: block.loader,
         minecraftVersion: block.minecraft_version,
-        caption: block.caption || undefined,
+        caption: block.caption ? cleanDocumentationText(block.caption) : undefined,
       },
     };
   }
@@ -586,47 +590,14 @@ export class ExampleService {
    */
   private generateDescription(block: CodeBlockResult): string {
     if (block.caption) {
-      return block.caption;
+      return truncateAtBoundary(block.caption, 200);
     }
 
-    // Try to extract first meaningful sentence from section content
-    const sentences = block.section_content.split(/[.!?]+/);
-    if (sentences.length > 0 && sentences[0] && sentences[0].trim().length > 10) {
-      const firstSentence = sentences[0].trim();
-      if (firstSentence.length <= 200) {
-        return firstSentence;
-      }
-      return firstSentence.substring(0, 197) + '...';
-    }
-
-    return `Code example from "${block.section_heading}" in ${block.document_title}`;
-  }
-
-  /**
-   * Truncate content intelligently at sentence boundaries
-   */
-  private truncateContent(content: string, maxLength: number): string {
-    if (content.length <= maxLength) {
-      return content;
-    }
-
-    const truncated = content.substring(0, maxLength);
-    const lastPeriod = truncated.lastIndexOf('.');
-    const lastQuestion = truncated.lastIndexOf('?');
-    const lastExclamation = truncated.lastIndexOf('!');
-
-    const lastSentenceEnd = Math.max(lastPeriod, lastQuestion, lastExclamation);
-
-    if (lastSentenceEnd > maxLength * 0.7) {
-      return truncated.substring(0, lastSentenceEnd + 1);
-    }
-
-    const lastSpace = truncated.lastIndexOf(' ');
-    if (lastSpace > maxLength * 0.8) {
-      return truncated.substring(0, lastSpace) + '...';
-    }
-
-    return truncated + '...';
+    const summary = canonicalSummary([block.section_content], [], 200);
+    return (
+      summary ||
+      `Code example from "${cleanDocumentationText(block.section_heading)}" in ${cleanDocumentationText(block.document_title)}`
+    );
   }
 
   /**
@@ -678,7 +649,7 @@ export class ExampleService {
       }
 
       output += `**URL:** ${example.context.documentUrl}\n`;
-      output += `**Relevance:** ${example.relevanceScore} (${example.matchReasons.slice(0, 3).join(', ')})\n\n`;
+      output += `**Relevance:** ${formatPublicScore(example.relevanceScore)} (${example.matchReasons.slice(0, 3).join(', ')})\n\n`;
 
       output += `\`\`\`${example.language}\n${example.code}\n\`\`\`\n\n`;
 

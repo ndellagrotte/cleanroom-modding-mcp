@@ -151,6 +151,7 @@ describe.runIf(DIST_OK)('MCP server protocol (spawned stdio)', () => {
     const snippet = tools.find((t) => t.name === 'get_doc_snippet')!;
     expect(snippet.description).toMatch(/documentation/i);
     expect(snippet.description).toMatch(/search_mod_examples/);
+    expect(snippet.description).not.toContain('once the examples database has downloaded');
 
     // The pre-2.2.0 name stays dispatchable as an unlisted alias. Asserting it *resolves* is
     // the routing check: an unknown tool rejects (index.ts throws), whereas a handler with no

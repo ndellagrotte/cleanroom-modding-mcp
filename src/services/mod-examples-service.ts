@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import { getDefaultDbPath } from '../data-dir.js';
 import { DBS } from '../dbs.js';
 import { readDbSchemaVersion } from '../examples/schema.js';
+import { formatQualityScore } from './search-utils.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // INTERFACES
@@ -110,6 +111,13 @@ export interface CategoryInfo {
   exampleCount: number;
 }
 
+export interface PatternTypePage {
+  patterns: Array<{ type: string; count: number }>;
+  totalTypes: number;
+  eligibleTypes: number;
+  singletonTypes: number;
+}
+
 /** Raw example row as SELECTed by search/get (JSON columns still strings). */
 interface RawExampleRow {
   id: number;
@@ -137,6 +145,32 @@ interface RawExampleRow {
   minecraftConcepts: string;
   qualityScore: number;
   isFeatured: number;
+  textRelevance?: number;
+}
+
+function isIdentifierLikeTerm(term: string): boolean {
+  return (
+    /^I[A-Z][A-Za-z0-9_$]*$/.test(term) || /^[A-Za-z_$]*[a-z0-9][A-Z][A-Za-z0-9_$]*$/.test(term)
+  );
+}
+
+function rankWithinRelevanceBands(rows: RawExampleRow[], limit: number): RawExampleRow[] {
+  const bestRelevance = rows[0]?.textRelevance;
+  if (bestRelevance === undefined) return rows.slice(0, limit);
+
+  const bandWidth = Math.max(Math.abs(bestRelevance) * 0.02, 0.05);
+  return [...rows]
+    .sort((a, b) => {
+      const aBand = Math.floor(((a.textRelevance ?? 0) - bestRelevance) / bandWidth);
+      const bBand = Math.floor(((b.textRelevance ?? 0) - bestRelevance) / bandWidth);
+      return (
+        aBand - bBand ||
+        b.qualityScore - a.qualityScore ||
+        b.isFeatured - a.isFeatured ||
+        (a.textRelevance ?? 0) - (b.textRelevance ?? 0)
+      );
+    })
+    .slice(0, limit);
 }
 
 const EXAMPLE_COLUMNS = `
@@ -343,95 +377,97 @@ export class ModExamplesService {
       limit = 10,
     } = options;
 
+    const searchTerm = query?.trim() ?? '';
+    const searchTerms = searchTerm
+      .split(/\s+/)
+      .map((term) => term.replace(/"/g, ''))
+      .filter((term) => term.length > 1);
+    const identifierTerms = searchTerms.filter(isIdentifierLikeTerm);
+    const proseTerms = searchTerms.filter((term) => !isIdentifierLikeTerm(term));
+    const usesFts = proseTerms.length > 0;
+
     let sql = `
       SELECT DISTINCT
         ${EXAMPLE_COLUMNS}
+        ${usesFts ? ', bm25(examples_fts) as textRelevance' : ''}
       FROM examples e
       JOIN mods m ON e.mod_id = m.id
       LEFT JOIN categories c ON e.category_id = c.id
     `;
+    if (usesFts) {
+      sql += ` JOIN examples_fts fts ON fts.rowid = e.id`;
+    }
+    if (tags && tags.length > 0) {
+      sql += ` JOIN example_tags et ON et.example_id = e.id JOIN tags t ON t.id = et.tag_id`;
+    }
 
     const conditions: string[] = [];
     const params: unknown[] = [];
 
-    // Drives both the FTS JOIN and the ORDER BY below — bm25() is only a legal
-    // ordering term when the statement actually carries a MATCH.
-    const searchTerm = query?.trim() ?? '';
-
-    if (searchTerm) {
-      sql += ` JOIN examples_fts fts ON fts.rowid = e.id`;
+    if (usesFts) {
       conditions.push(`examples_fts MATCH ?`);
-      // Strip `"` from tokens — it is FTS5's string delimiter, and an embedded
-      // quote produces a malformed MATCH ("unterminated string").
-      const ftsQuery = searchTerm
-        .split(/\s+/)
-        .map((t) => t.replace(/"/g, ''))
-        .filter((t) => t.length > 1)
-        .map((t) => `"${t}"*`)
-        .join(' OR ');
-      params.push(ftsQuery || `"${searchTerm.replace(/"/g, '')}"`);
+      // Identifier-like terms are intentionally absent from prose FTS. They
+      // can independently admit a result only through code or keywords.
+      params.push(proseTerms.map((term) => `"${term}"*`).join(' OR '));
+    } else if (identifierTerms.length > 0) {
+      for (const identifier of identifierTerms) {
+        conditions.push(`(instr(e.code, ?) > 0 OR instr(e.keywords, ?) > 0)`);
+        params.push(identifier, identifier);
+      }
     }
 
     if (modName) {
       conditions.push(`LOWER(m.name) = LOWER(?)`);
       params.push(modName);
     }
-
     if (loader) {
       conditions.push(`m.loader = ?`);
       params.push(loader);
     }
-
     if (minecraftVersion) {
-      // minecraft_versions is a JSON array string, e.g. '["1.12.2"]'.
       conditions.push(`m.minecraft_versions LIKE ?`);
       params.push(`%"${minecraftVersion}"%`);
     }
-
     if (category) {
       conditions.push(`c.slug = ?`);
       params.push(category);
     }
-
     if (patternType) {
       conditions.push(`e.pattern_type = ?`);
       params.push(patternType);
     }
-
     if (complexity) {
       conditions.push(`e.complexity = ?`);
       params.push(complexity);
     }
-
     if (minQualityScore > 0) {
       conditions.push(`e.quality_score >= ?`);
       params.push(minQualityScore);
     }
-
     if (featured !== undefined) {
       conditions.push(`e.is_featured = ?`);
       params.push(featured ? 1 : 0);
     }
-
     if (tags && tags.length > 0) {
-      sql += ` JOIN example_tags et ON et.example_id = e.id JOIN tags t ON t.id = et.tag_id`;
       conditions.push(`t.slug IN (${tags.map(() => '?').join(', ')})`);
       params.push(...tags);
     }
-
     if (conditions.length > 0) {
       sql += ` WHERE ${conditions.join(' AND ')}`;
     }
 
-    // With a text query, rank by FTS relevance first (bm25 is ascending — lower is
-    // a better match) and use quality only to break relevance ties. Ordering by
-    // quality alone lets a passing mention in a high-scoring example outrank an
-    // exact match in a lower-scoring one.
-    sql += searchTerm
-      ? ` ORDER BY bm25(examples_fts), e.quality_score DESC, e.is_featured DESC LIMIT ?`
-      : ` ORDER BY e.quality_score DESC, e.is_featured DESC LIMIT ?`;
-    params.push(limit);
+    if (usesFts) {
+      // Text relevance is primary between bands; quality and curation break
+      // ties only inside a narrow band of near-equivalent BM25 scores.
+      const candidateLimit = Math.max(limit * 5, 50);
+      sql += ` ORDER BY textRelevance ASC LIMIT ?`;
+      params.push(candidateLimit);
+      const rows = this.db.prepare(sql).all(...params) as RawExampleRow[];
+      return this.enrichExamples(rankWithinRelevanceBands(rows, limit));
+    }
 
+    sql += ` ORDER BY e.quality_score DESC, e.is_featured DESC LIMIT ?`;
+    params.push(limit);
     const rows = this.db.prepare(sql).all(...params) as RawExampleRow[];
     return this.enrichExamples(rows);
   }
@@ -482,19 +518,41 @@ export class ModExamplesService {
     return this.searchExamples({ featured: true, minQualityScore: 0.7, limit });
   }
 
-  /** Get available pattern types. */
-  getPatternTypes(): Array<{ type: string; count: number }> {
-    return this.db
-      .prepare(
-        `
-      SELECT pattern_type as type, COUNT(*) as count
-      FROM examples
-      WHERE pattern_type IS NOT NULL
-      GROUP BY pattern_type
-      ORDER BY count DESC
-    `
+  /** Get a bounded page of pattern types plus suppression statistics. */
+  getPatternTypes(limit = 40, minCount = 2): PatternTypePage {
+    const countsCte = `
+      WITH pattern_counts AS (
+        SELECT pattern_type as type, COUNT(*) as count
+        FROM examples
+        WHERE pattern_type IS NOT NULL
+        GROUP BY pattern_type
       )
-      .all() as Array<{ type: string; count: number }>;
+    `;
+    const stats = this.db
+      .prepare(
+        `${countsCte}
+         SELECT COUNT(*) as totalTypes,
+                SUM(CASE WHEN count >= ? THEN 1 ELSE 0 END) as eligibleTypes,
+                SUM(CASE WHEN count = 1 THEN 1 ELSE 0 END) as singletonTypes
+         FROM pattern_counts`
+      )
+      .get(minCount) as {
+      totalTypes: number;
+      eligibleTypes: number;
+      singletonTypes: number;
+    };
+    const patterns = this.db
+      .prepare(
+        `${countsCte}
+         SELECT type, count
+         FROM pattern_counts
+         WHERE count >= ?
+         ORDER BY count DESC, type ASC
+         LIMIT ?`
+      )
+      .all(minCount, limit) as Array<{ type: string; count: number }>;
+
+    return { patterns, ...stats };
   }
 
   /**
@@ -624,8 +682,7 @@ export class ModExamplesService {
     output += `**Category:** ${example.categoryName || example.category || 'Uncategorized'}\n`;
     output += `**Pattern:** ${example.patternType}\n`;
     output += `**Complexity:** ${example.complexity}\n`;
-    output += `**Quality Score:** ${(example.qualityScore * 100).toFixed(0)}%\n`;
-
+    output += `**Quality Score:** ${formatQualityScore(example.qualityScore)}\n`;
     if (example.isFeatured) {
       output += `**Featured:** Yes (curated high-quality example)\n`;
     }

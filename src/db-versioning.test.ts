@@ -407,6 +407,42 @@ describe('DbVersioning distribution flow', () => {
     );
   });
 
+  it('downloads zero database bytes for a dist-only release version bump', async () => {
+    const { autoUpdateAll, dbPath } = await load();
+    fs.mkdirSync(tempDir, { recursive: true });
+    for (const id of DB_IDS) {
+      fs.writeFileSync(dbPath(id), dbContent(id));
+      fs.writeFileSync(
+        path.join(tempDir, DBS[id].manifestName),
+        JSON.stringify({
+          version: '1.1.0',
+          schemaVersion: DBS[id].schemaVersion,
+          hash: dbHash(id),
+        })
+      );
+    }
+
+    const manifestRoutes = DB_IDS.map((id) => ({
+      url: new RegExp(`/${DBS[id].manifestName.replace(/\./g, '\\.')}$`),
+      body: manifestFixture({ version: '1.2.0' }, id),
+    }));
+    const fetchSpy = mockFetch([
+      { url: /\/releases$/, body: releasesFixture() },
+      ...manifestRoutes,
+    ]);
+    vi.stubGlobal('fetch', fetchSpy);
+
+    expect(await autoUpdateAll()).toEqual({ updated: [], failed: [] });
+    const fetchedUrls = fetchSpy.mock.calls.map((call) => String(call[0]));
+    for (const id of DB_IDS) {
+      expect(fetchedUrls.some((url) => url.endsWith(`/${DBS[id].fileName}`))).toBe(false);
+      const reconciled = JSON.parse(
+        fs.readFileSync(path.join(tempDir, DBS[id].manifestName), 'utf-8')
+      ) as { version: string; hash: string };
+      expect(reconciled).toMatchObject({ version: '1.2.0', hash: dbHash(id) });
+    }
+  });
+
   it('never auto-updates a locally built database', async () => {
     const { DbVersioning, DBS } = await load();
     fs.mkdirSync(tempDir, { recursive: true });

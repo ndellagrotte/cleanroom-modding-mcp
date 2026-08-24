@@ -14,10 +14,14 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  deduplicateAndRank,
-  languageMatches,
-  urlPathKey,
   BACKFILL_REASON,
+  canonicalSections,
+  canonicalSummary,
+  deduplicateAndRank,
+  formatPublicScore,
+  languageMatches,
+  truncateAtBoundary,
+  urlPathKey,
   type ScoredResult,
 } from './search-utils.js';
 
@@ -246,5 +250,51 @@ describe('languageMatches', () => {
   it('rejects a missing block language when one is requested', () => {
     expect(languageMatches(null, 'java')).toBe(false);
     expect(languageMatches(undefined, 'java')).toBe(false);
+  });
+});
+
+describe('canonical documentation summaries', () => {
+  it('skips empty fragments and keeps the first complete body for each heading', () => {
+    expect(
+      canonicalSections([
+        {
+          heading: 'Registering Custom Objects',
+          content: 'Registering Custom Objects\n\not entry:',
+        },
+        {
+          heading: 'Registering Custom Objects',
+          content:
+            "Registering Custom Objects\n\nIn addition to vanilla's, you can also register custom conditions.",
+        },
+      ])
+    ).toEqual([
+      {
+        heading: 'Registering Custom Objects',
+        content: "In addition to vanilla's, you can also register custom conditions.",
+      },
+    ]);
+  });
+
+  it('treats periods inside identifiers as part of the sentence', () => {
+    expect(
+      canonicalSummary(
+        ['Call LootTableList.register(value) to register the table. A later sentence.'],
+        ['register'],
+        200
+      )
+    ).toBe('Call LootTableList.register(value) to register the table.');
+  });
+
+  it('never truncates in the middle of a word', () => {
+    const result = truncateAtBoundary(
+      'A sentence with SuperLongIdentifierToken and more text.',
+      30
+    );
+    expect(result).toBe('A sentence with...');
+  });
+
+  it('formats public relevance on a bounded one-decimal percentage scale', () => {
+    expect(formatPublicScore(67.69613042271394)).toBe('33.8%');
+    expect(formatPublicScore(500)).toBe('100.0%');
   });
 });
