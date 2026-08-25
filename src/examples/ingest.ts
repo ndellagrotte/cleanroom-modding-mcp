@@ -4,17 +4,71 @@
  * Writes analyzed+linked records into a fresh examples.db in a single
  * transaction (FTS stays in sync via the schema triggers), records provenance
  * metadata, and — via runIngest — ingests into a temp path then atomically
- * renames, so no partial DB is ever visible at the runtime path (DESIGN §6.5,
- * mirroring scripts/index-java-api.ts).
+ * renames, so no partial DB is ever visible at the runtime path.
  *
- * example_relations is intentionally left empty in v1 (DESIGN §13.5); the table
- * is retained for a later relation pass.
+ * Pattern labels are normalized and clustered here rather than in the LLM
+ * prompt, keeping cached analyses reusable and making every rebuild deterministic.
  */
 
 import fs from 'fs';
 import { EXAMPLE_CATEGORIES, EXAMPLE_CATEGORY_INFO } from '../categories.js';
-import { initializeExamplesDb } from './schema.js';
+import Database from 'better-sqlite3';
+import { EXAMPLES_SCHEMA, EXAMPLES_SCHEMA_VERSION, initializeExamplesDb } from './schema.js';
+import { canonicalizePatternType } from './patterns.js';
 import type { ExampleRecord, IngestCounts, IngestMeta } from './model.js';
+
+const INSERT_RELATIONS_SQL = `
+  WITH candidates AS (
+    SELECT
+      source.id AS source_id,
+      target.id AS target_id,
+      CASE
+        WHEN source.mod_id = target.mod_id AND source.file_path = target.file_path THEN 3
+        WHEN source.pattern_type = target.pattern_type THEN 2
+        ELSE 1
+      END AS priority,
+      CASE
+        WHEN source.mod_id = target.mod_id AND source.file_path = target.file_path THEN
+          'Another example from the same source file.'
+        WHEN source.pattern_type = target.pattern_type THEN
+          'Shares the canonical pattern ' || char(96) || source.pattern_type || char(96) || '.'
+        ELSE 'A complementary example from the same mod.'
+      END AS description,
+      CASE
+        WHEN source.mod_id = target.mod_id AND source.file_path = target.file_path THEN 0.95
+        WHEN source.pattern_type = target.pattern_type THEN 0.85
+        ELSE 0.65
+      END AS strength,
+      target.quality_score,
+      ABS(COALESCE(target.start_line, 0) - COALESCE(source.start_line, 0)) AS line_distance
+    FROM examples source
+    JOIN examples target
+      ON source.id <> target.id
+     AND (
+       (source.mod_id = target.mod_id AND source.file_path = target.file_path)
+       OR source.pattern_type = target.pattern_type
+       OR source.mod_id = target.mod_id
+     )
+  ),
+  ranked AS (
+    SELECT *,
+      ROW_NUMBER() OVER (
+        PARTITION BY source_id
+        ORDER BY priority DESC, quality_score DESC, line_distance ASC, target_id ASC
+      ) AS relation_rank
+    FROM candidates
+  )
+  INSERT INTO example_relations
+    (source_id, target_id, relation_type, description, strength)
+  SELECT
+    source_id,
+    target_id,
+    CASE WHEN priority = 1 THEN 'complements' ELSE 'similar_to' END,
+    description,
+    strength
+  FROM ranked
+  WHERE relation_rank <= 6
+`;
 
 export interface ModMeta {
   name: string;
@@ -101,6 +155,10 @@ export function ingest(
     const insertExampleTag = db.prepare(
       `INSERT OR IGNORE INTO example_tags (example_id, tag_id) VALUES (?, ?)`
     );
+    const insertPatternAlias = db.prepare(
+      `INSERT INTO pattern_aliases (alias_pattern, canonical_pattern, example_count) VALUES (?, ?, ?)`
+    );
+    const insertRelations = db.prepare(INSERT_RELATIONS_SQL);
     const insertMetadata = db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)`);
 
     const counts: IngestCounts = {
@@ -112,6 +170,9 @@ export function ingest(
       apiReferences: 0,
       srgResolved: 0,
       apiResolved: 0,
+      patternAliases: 0,
+      canonicalPatterns: 0,
+      relations: 0,
       byLoader: {},
       uncategorized: 0,
       byCategory: {},
@@ -157,6 +218,7 @@ export function ingest(
         counts.tags++;
         return id;
       };
+      const patternAliases = new Map<string, { canonical: string; count: number }>();
 
       for (const rec of records) {
         const mid = modId.get(rec.modRepo);
@@ -170,6 +232,13 @@ export function ingest(
         } else {
           counts.uncategorized++;
         }
+        const pattern = canonicalizePatternType(rec.patternType);
+        const existingAlias = patternAliases.get(pattern.alias);
+        if (existingAlias) {
+          existingAlias.count++;
+        } else {
+          patternAliases.set(pattern.alias, { canonical: pattern.canonical, count: 1 });
+        }
         const res = insertExample.run(
           mid,
           cid,
@@ -182,7 +251,7 @@ export function ingest(
           rec.language,
           rec.caption,
           rec.explanation,
-          rec.patternType,
+          pattern.canonical,
           rec.complexity,
           JSON.stringify(rec.bestPractices),
           JSON.stringify(rec.potentialPitfalls),
@@ -219,6 +288,12 @@ export function ingest(
           insertExampleTag.run(exampleId, ensureTag(tag));
         }
       }
+      for (const [alias, pattern] of [...patternAliases].sort(([a], [b]) => a.localeCompare(b))) {
+        insertPatternAlias.run(alias, pattern.canonical, pattern.count);
+      }
+      counts.patternAliases = patternAliases.size;
+      counts.canonicalPatterns = new Set([...patternAliases.values()].map((p) => p.canonical)).size;
+      counts.relations = insertRelations.run().changes;
 
       insertMetadata.run('analysis_version', meta.analysisVersion);
       insertMetadata.run('prompt_version', meta.promptVersion);
@@ -235,6 +310,118 @@ export function ingest(
     });
 
     return run();
+  } finally {
+    db.close();
+  }
+}
+
+export interface DataSideUpgradeCounts {
+  examples: number;
+  patternAliases: number;
+  canonicalPatterns: number;
+  relations: number;
+}
+
+/**
+ * Upgrade a populated v2 corpus without re-running its LLM analyses. Schema v3
+ * changes only derived data, so preserving example rows also preserves stable
+ * IDs used by clients and review fixtures.
+ */
+export function upgradeExamplesDataSide(dbPath: string): DataSideUpgradeCounts {
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  db.pragma('synchronous = NORMAL');
+  db.pragma('foreign_keys = ON');
+  db.exec(EXAMPLES_SCHEMA);
+
+  try {
+    return db.transaction(() => {
+      const rawPatterns = db
+        .prepare(
+          `SELECT pattern_type AS patternType, COUNT(*) AS exampleCount
+           FROM examples
+           WHERE pattern_type IS NOT NULL
+           GROUP BY pattern_type
+           ORDER BY pattern_type`
+        )
+        .all() as Array<{ patternType: string; exampleCount: number }>;
+      const aliases = new Map<string, { canonical: string; count: number }>();
+
+      db.exec(`
+        DROP TABLE IF EXISTS temp.pattern_map;
+        CREATE TEMP TABLE pattern_map (
+          raw_pattern TEXT PRIMARY KEY,
+          canonical_pattern TEXT NOT NULL
+        );
+        DELETE FROM pattern_aliases;
+        DELETE FROM example_relations;
+      `);
+      const insertMap = db.prepare(
+        `INSERT INTO pattern_map (raw_pattern, canonical_pattern) VALUES (?, ?)`
+      );
+      for (const raw of rawPatterns) {
+        const pattern = canonicalizePatternType(raw.patternType);
+        insertMap.run(raw.patternType, pattern.canonical);
+        const existing = aliases.get(pattern.alias);
+        if (existing) {
+          existing.count += raw.exampleCount;
+        } else {
+          aliases.set(pattern.alias, {
+            canonical: pattern.canonical,
+            count: raw.exampleCount,
+          });
+        }
+      }
+      db.exec(`
+        UPDATE examples
+        SET pattern_type = (
+          SELECT canonical_pattern
+          FROM pattern_map
+          WHERE raw_pattern = examples.pattern_type
+        )
+        WHERE pattern_type IN (SELECT raw_pattern FROM pattern_map)
+      `);
+
+      const insertAlias = db.prepare(
+        `INSERT INTO pattern_aliases (alias_pattern, canonical_pattern, example_count)
+         VALUES (?, ?, ?)`
+      );
+      for (const [alias, pattern] of aliases) {
+        insertAlias.run(alias, pattern.canonical, pattern.count);
+      }
+      const relationCount = db.prepare(INSERT_RELATIONS_SQL).run().changes;
+      const canonicalPatterns = new Set([...aliases.values()].map((value) => value.canonical)).size;
+      const exampleRow = db.prepare(`SELECT COUNT(*) AS count FROM examples`).get() as {
+        count: number;
+      };
+      const result: DataSideUpgradeCounts = {
+        examples: exampleRow.count,
+        patternAliases: aliases.size,
+        canonicalPatterns,
+        relations: relationCount,
+      };
+
+      const previousCounts = db.prepare(`SELECT value FROM metadata WHERE key = 'counts'`).get() as
+        | { value: string }
+        | undefined;
+      const counts =
+        previousCounts === undefined
+          ? result
+          : { ...(JSON.parse(previousCounts.value) as Record<string, unknown>), ...result };
+      db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)`).run(
+        'counts',
+        JSON.stringify(counts)
+      );
+      db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)`).run(
+        'schema_version',
+        String(EXAMPLES_SCHEMA_VERSION)
+      );
+      db.prepare(`INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)`).run(
+        'indexed_at',
+        new Date().toISOString()
+      );
+      return result;
+    })();
   } finally {
     db.close();
   }

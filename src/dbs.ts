@@ -75,7 +75,7 @@ export const DBS: Record<DbId, DbSpec> = {
     manifestName: 'examples-manifest.json',
     required: false,
     // Bump together with EXAMPLES_SCHEMA_VERSION in src/examples/schema.ts.
-    schemaVersion: 2,
+    schemaVersion: 3,
     description: 'Curated code examples from canonical open-source 1.12.2 mods',
     icon: '🧩',
   },

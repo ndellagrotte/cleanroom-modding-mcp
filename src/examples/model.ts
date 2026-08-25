@@ -249,6 +249,9 @@ export interface IngestCounts {
   apiReferences: number;
   srgResolved: number;
   apiResolved: number;
+  patternAliases: number;
+  canonicalPatterns: number;
+  relations: number;
   byLoader: Record<string, number>;
   /** Examples ingested with no category — the metric `categories` never was. */
   uncategorized: number;

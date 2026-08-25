@@ -3,7 +3,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import Database from 'better-sqlite3';
-import { isUpToDate, runIngest, type ModMeta, type SkipState } from './ingest.js';
+import {
+  isUpToDate,
+  runIngest,
+  upgradeExamplesDataSide,
+  type ModMeta,
+  type SkipState,
+} from './ingest.js';
 import type { ExampleRecord, IngestMeta } from './model.js';
 
 const META: IngestMeta = {
@@ -89,6 +95,90 @@ describe('runIngest', () => {
       value: 'av1-test',
     });
     db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('normalizes aliases, stores canonical patterns, and creates deterministic relations', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-v3-'));
+    const dbPath = path.join(dir, 'examples.db');
+    const records = [
+      record({ filePath: 'A.java', patternType: 'block-getActualState-override' }),
+      record({ filePath: 'B.java', patternType: 'block-actual-state-noop' }),
+      record({ filePath: 'C.java', patternType: 'nbtn-guarded-inventory-initialization' }),
+    ];
+    const counts = runIngest({ dbPath, records, mods: [MOD], meta: META });
+
+    expect(counts.canonicalPatterns).toBe(2);
+    expect(counts.patternAliases).toBe(3);
+    expect(counts.relations).toBe(6);
+
+    const db = new Database(dbPath, { readonly: true });
+    const patterns = db
+      .prepare('SELECT DISTINCT pattern_type FROM examples ORDER BY pattern_type')
+      .all() as Array<{ pattern_type: string }>;
+    expect(patterns.map((row) => row.pattern_type)).toEqual(['block-state', 'nbt-serialization']);
+    expect(
+      db
+        .prepare(
+          "SELECT canonical_pattern FROM pattern_aliases WHERE alias_pattern='block-get-actual-state-override'"
+        )
+        .get()
+    ).toEqual({ canonical_pattern: 'block-state' });
+    expect(
+      db
+        .prepare("SELECT alias_pattern FROM pattern_aliases WHERE alias_pattern LIKE '%nbtn%'")
+        .get()
+    ).toBeUndefined();
+    const relationCount = db.prepare('SELECT COUNT(*) AS count FROM example_relations').get() as {
+      count: number;
+    };
+    expect(relationCount.count).toBe(6);
+    db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('upgrades existing analyses in place while preserving example IDs', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-upgrade-'));
+    const dbPath = path.join(dir, 'examples.db');
+    runIngest({
+      dbPath,
+      records: [
+        record({ filePath: 'A.java', patternType: 'legacy-a' }),
+        record({ filePath: 'B.java', patternType: 'legacy-b' }),
+      ],
+      mods: [MOD],
+      meta: META,
+    });
+
+    const before = new Database(dbPath);
+    before.exec(`
+      UPDATE examples
+      SET pattern_type = CASE id
+        WHEN 1 THEN 'block-getActualState-override'
+        ELSE 'nbtn-guarded-inventory-initialization'
+      END;
+      DELETE FROM pattern_aliases;
+      DELETE FROM example_relations;
+      UPDATE metadata SET value = '2' WHERE key = 'schema_version';
+    `);
+    before.close();
+
+    const counts = upgradeExamplesDataSide(dbPath);
+    expect(counts).toMatchObject({
+      examples: 2,
+      patternAliases: 2,
+      canonicalPatterns: 2,
+      relations: 2,
+    });
+    const after = new Database(dbPath, { readonly: true });
+    expect(after.prepare('SELECT id FROM examples ORDER BY id').all()).toEqual([
+      { id: 1 },
+      { id: 2 },
+    ]);
+    expect(after.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()).toEqual({
+      value: '3',
+    });
+    after.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 

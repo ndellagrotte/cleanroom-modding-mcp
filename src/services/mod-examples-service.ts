@@ -2,7 +2,7 @@
  * Mod Examples Service — query curated code examples from canonical open-source
  * 1.12.2 mods (the eight-repo roster in data/examples-roster.json).
  *
- * The database is built by scripts/index-mod-examples.ts (schema v2,
+ * The database is built by scripts/index-mod-examples.ts (schema v3,
  * src/examples/schema.ts) and only read here. SRG cross-links and framework-API
  * references are resolved at index time and stored, so the runtime service opens
  * no sibling database and degrades gracefully when the mappings/API corpora are
@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import { getDefaultDbPath } from '../data-dir.js';
 import { DBS } from '../dbs.js';
 import { readDbSchemaVersion } from '../examples/schema.js';
+import { normalizePatternType } from '../examples/patterns.js';
 import { formatQualityScore } from './search-utils.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -433,8 +434,16 @@ export class ModExamplesService {
       params.push(category);
     }
     if (patternType) {
-      conditions.push(`e.pattern_type = ?`);
-      params.push(patternType);
+      const normalizedPattern = normalizePatternType(patternType);
+      conditions.push(
+        `(
+          e.pattern_type = ?
+          OR e.pattern_type = (
+            SELECT canonical_pattern FROM pattern_aliases WHERE alias_pattern = ?
+          )
+        )`
+      );
+      params.push(normalizedPattern, normalizedPattern);
     }
     if (complexity) {
       conditions.push(`e.complexity = ?`);
@@ -470,6 +479,95 @@ export class ModExamplesService {
     params.push(limit);
     const rows = this.db.prepare(sql).all(...params) as RawExampleRow[];
     return this.enrichExamples(rows);
+  }
+
+  /**
+   * Count otherwise-matching examples hidden only by the quality threshold.
+   * This intentionally ignores `limit`: the disclosure describes the corpus,
+   * not merely the unfilled slots in the returned page.
+   */
+  countSuppressedByMinQuality(options: ModExampleSearchOptions): number {
+    const minQualityScore = options.minQualityScore ?? 0;
+    if (minQualityScore <= 0) return 0;
+
+    const searchTerms = (options.query?.trim() ?? '')
+      .split(/\s+/)
+      .map((term) => term.replace(/"/g, ''))
+      .filter((term) => term.length > 1);
+    const identifierTerms = searchTerms.filter(isIdentifierLikeTerm);
+    const proseTerms = searchTerms.filter((term) => !isIdentifierLikeTerm(term));
+    const usesFts = proseTerms.length > 0;
+
+    let sql = `
+      SELECT COUNT(DISTINCT e.id) AS count
+      FROM examples e
+      JOIN mods m ON e.mod_id = m.id
+      LEFT JOIN categories c ON e.category_id = c.id
+    `;
+    if (usesFts) {
+      sql += ` JOIN examples_fts fts ON fts.rowid = e.id`;
+    }
+    if (options.tags && options.tags.length > 0) {
+      sql += ` JOIN example_tags et ON et.example_id = e.id JOIN tags t ON t.id = et.tag_id`;
+    }
+
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (usesFts) {
+      conditions.push(`examples_fts MATCH ?`);
+      params.push(proseTerms.map((term) => `"${term}"*`).join(' OR '));
+    } else {
+      for (const identifier of identifierTerms) {
+        conditions.push(`(instr(e.code, ?) > 0 OR instr(e.keywords, ?) > 0)`);
+        params.push(identifier, identifier);
+      }
+    }
+    if (options.modName) {
+      conditions.push(`LOWER(m.name) = LOWER(?)`);
+      params.push(options.modName);
+    }
+    if (options.loader) {
+      conditions.push(`m.loader = ?`);
+      params.push(options.loader);
+    }
+    if (options.minecraftVersion) {
+      conditions.push(`m.minecraft_versions LIKE ?`);
+      params.push(`%"${options.minecraftVersion}"%`);
+    }
+    if (options.category) {
+      conditions.push(`c.slug = ?`);
+      params.push(options.category);
+    }
+    if (options.patternType) {
+      const normalizedPattern = normalizePatternType(options.patternType);
+      conditions.push(
+        `(
+          e.pattern_type = ?
+          OR e.pattern_type = (
+            SELECT canonical_pattern FROM pattern_aliases WHERE alias_pattern = ?
+          )
+        )`
+      );
+      params.push(normalizedPattern, normalizedPattern);
+    }
+    if (options.complexity) {
+      conditions.push(`e.complexity = ?`);
+      params.push(options.complexity);
+    }
+    if (options.featured !== undefined) {
+      conditions.push(`e.is_featured = ?`);
+      params.push(options.featured ? 1 : 0);
+    }
+    if (options.tags && options.tags.length > 0) {
+      conditions.push(`t.slug IN (${options.tags.map(() => '?').join(', ')})`);
+      params.push(...options.tags);
+    }
+    conditions.push(`e.quality_score < ?`);
+    params.push(minQualityScore);
+    sql += ` WHERE ${conditions.join(' AND ')}`;
+
+    const row = this.db.prepare(sql).get(...params) as { count: number };
+    return row.count;
   }
 
   /** Get a specific example by ID with full details. */

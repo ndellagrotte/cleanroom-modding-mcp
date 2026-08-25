@@ -33,11 +33,11 @@ describe('golden DB shape & content', () => {
     expect(sq<{ c: number }>("SELECT COUNT(*) c FROM mods WHERE loader='cleanroom'").c).toBe(1);
   });
 
-  it('leaves example_relations empty in v1', () => {
+  it('has no relations when examples share neither mod nor pattern', () => {
     expect(sq<{ c: number }>('SELECT COUNT(*) c FROM example_relations').c).toBe(0);
   });
 
-  it('records provenance metadata incl. schema_version 2', () => {
+  it('records provenance metadata incl. schema_version 3', () => {
     const db = new Database(goldenDb, { readonly: true });
     for (const k of [
       'schema_version',
@@ -52,7 +52,7 @@ describe('golden DB shape & content', () => {
       expect(db.prepare('SELECT 1 FROM metadata WHERE key=?').get(k)).toBeDefined();
     }
     expect(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()).toEqual({
-      value: '2',
+      value: '3',
     });
     db.close();
   });

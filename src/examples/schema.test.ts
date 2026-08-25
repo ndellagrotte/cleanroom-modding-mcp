@@ -17,11 +17,11 @@ beforeAll(() => {
 
 afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-describe('examples schema v2', () => {
-  it('pairs EXAMPLES_SCHEMA_VERSION with DBS.examples.schemaVersion at 2', () => {
-    expect(EXAMPLES_SCHEMA_VERSION).toBe(2);
-    expect(DBS.examples.schemaVersion).toBe(2);
-    expect(readDbSchemaVersion(dbPath)).toBe(2);
+describe('examples schema v3', () => {
+  it('pairs EXAMPLES_SCHEMA_VERSION with DBS.examples.schemaVersion at 3', () => {
+    expect(EXAMPLES_SCHEMA_VERSION).toBe(3);
+    expect(DBS.examples.schemaVersion).toBe(3);
+    expect(readDbSchemaVersion(dbPath)).toBe(3);
   });
 
   it('creates the frozen table set', () => {
@@ -39,6 +39,7 @@ describe('examples schema v2', () => {
       'example_tags',
       'examples',
       'metadata',
+      'pattern_aliases',
       'mods',
       'tags',
     ]) {
@@ -108,6 +109,8 @@ describe('examples schema v2', () => {
     expect(covered('examples', 'is_featured')).toBe(true);
     expect(covered('examples', 'pattern_type')).toBe(true);
     expect(covered('example_relations', 'source_id')).toBe(true);
+    expect(covered('example_relations', 'target_id')).toBe(true);
+    expect(covered('pattern_aliases', 'canonical_pattern')).toBe(true);
     expect(covered('example_imports', 'example_id')).toBe(true);
     expect(covered('api_references', 'example_id')).toBe(true);
     expect(covered('api_references', 'srg_name')).toBe(true);

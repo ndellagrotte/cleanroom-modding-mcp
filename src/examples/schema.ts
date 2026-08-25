@@ -1,5 +1,5 @@
 /**
- * Mod-examples database schema (v2) — the single source of truth for the DDL.
+ * Mod-examples database schema (v3) — the single source of truth for the DDL.
  *
  * The legacy examples pipeline (and its DDL) were never committed and are lost;
  * this schema is reconstructed from the service's SELECTs (authoritative by
@@ -11,17 +11,16 @@
  * DB there is no on-device build path — this DB is always distributed prebuilt
  * (DESIGN.md §2, §6.3).
  *
- * v2 additions over the observed legacy schema (marked below): mods.license,
- * api_references.{srg_name,resolved_name,api_fqn,api_kind}, the metadata table.
+ * v2 added provenance and resolved API references. v3 adds canonical pattern
+ * aliases and deterministic relations.
  */
-
 import fs from 'fs';
 import Database from 'better-sqlite3';
 
 export { readDbSchemaVersion } from '../mappings/schema.js';
 
 /** Bump together with DBS.examples.schemaVersion in src/dbs.ts. */
-export const EXAMPLES_SCHEMA_VERSION = 2;
+export const EXAMPLES_SCHEMA_VERSION = 3;
 
 export const EXAMPLES_SCHEMA = `
 -- Metadata table for schema versioning and provenance (NEW in v2; the legacy DB
@@ -78,6 +77,12 @@ CREATE TABLE IF NOT EXISTS examples (
   is_featured INTEGER                -- 0/1
 );
 
+CREATE TABLE IF NOT EXISTS pattern_aliases (
+  alias_pattern TEXT PRIMARY KEY,    -- normalized LLM-produced label
+  canonical_pattern TEXT NOT NULL,   -- bounded value stored in examples.pattern_type
+  example_count INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS example_relations (
   source_id INTEGER NOT NULL REFERENCES examples(id) ON DELETE CASCADE,
   target_id INTEGER NOT NULL REFERENCES examples(id) ON DELETE CASCADE,
@@ -122,6 +127,8 @@ CREATE INDEX IF NOT EXISTS idx_examples_quality     ON examples(quality_score);
 CREATE INDEX IF NOT EXISTS idx_examples_featured    ON examples(is_featured);
 CREATE INDEX IF NOT EXISTS idx_examples_pattern     ON examples(pattern_type);
 CREATE INDEX IF NOT EXISTS idx_relations_source     ON example_relations(source_id);
+CREATE INDEX IF NOT EXISTS idx_relations_target     ON example_relations(target_id);
+CREATE INDEX IF NOT EXISTS idx_pattern_alias_canon  ON pattern_aliases(canonical_pattern);
 CREATE INDEX IF NOT EXISTS idx_imports_example      ON example_imports(example_id);
 CREATE INDEX IF NOT EXISTS idx_apirefs_example      ON api_references(example_id);
 CREATE INDEX IF NOT EXISTS idx_apirefs_srg          ON api_references(srg_name) WHERE srg_name IS NOT NULL;
@@ -153,7 +160,7 @@ CREATE TRIGGER IF NOT EXISTS examples_au AFTER UPDATE ON examples BEGIN
 END;
 `;
 
-/** Create (or open) a mod-examples database and apply the v2 schema. */
+/** Create (or open) a mod-examples database and apply the v3 schema. */
 export function initializeExamplesDb(dbPath: string): Database.Database {
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');

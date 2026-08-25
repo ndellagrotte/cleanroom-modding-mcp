@@ -1,7 +1,7 @@
 #!/usr/bin/env npx tsx
 /* eslint-disable no-console */
 /**
- * Mod Examples Indexer — builds examples.db (schema v2).
+ * Mod Examples Indexer — builds examples.db (schema v3).
  *
  * Fully in-repo, reproducible pipeline (DESIGN.md Phase 5): for each roster repo
  * it downloads a pinned-SHA zipball, selects method/class snippets under the
@@ -98,7 +98,12 @@ import {
 } from '../src/examples/analyze.js';
 import { openAnalysisCache, hashSnippet, type AnalysisCache } from '../src/examples/cache.js';
 import { resolveApiReferences, toExampleRecord } from '../src/examples/srg-link.js';
-import { runIngest, isUpToDate, type ModMeta } from '../src/examples/ingest.js';
+import {
+  runIngest,
+  isUpToDate,
+  upgradeExamplesDataSide,
+  type ModMeta,
+} from '../src/examples/ingest.js';
 import type {
   Analysis,
   AnalyzedSnippet,
@@ -597,6 +602,39 @@ async function main(): Promise<number> {
   const rosterPins: Record<string, string> = {};
   for (const r of roster.repos) rosterPins[r.repo] = r.sha;
 
+  // Schema v3 changes only derived values. Preserve the reviewed v2 analyses
+  // and their stable example IDs instead of making a paid endpoint reproduce
+  // identical prose during the one-time data-side upgrade.
+  if (
+    opts.force &&
+    fs.existsSync(opts.dbPath) &&
+    readDbSchemaVersion(opts.dbPath) === EXAMPLES_SCHEMA_VERSION - 1
+  ) {
+    banner('Data-side schema upgrade');
+    const counts = upgradeExamplesDataSide(opts.dbPath);
+    const stat = fs.statSync(opts.dbPath);
+    const localManifest = {
+      version: '0.0.0-local',
+      timestamp: new Date().toISOString(),
+      type: 'full',
+      hash: crypto.createHash('sha256').update(fs.readFileSync(opts.dbPath)).digest('hex'),
+      size: stat.size,
+      downloadUrl: '',
+      changelog: `Built locally by index-mod-examples.ts (schema ${EXAMPLES_SCHEMA_VERSION} data-side upgrade)`,
+      source: LOCAL_BUILD_SOURCE,
+    };
+    fs.writeFileSync(
+      path.join(path.dirname(opts.dbPath), DBS.examples.manifestName),
+      JSON.stringify(localManifest, null, 2)
+    );
+    log(
+      'success',
+      `Upgraded ${counts.examples} examples: ${counts.patternAliases} aliases → ` +
+        `${counts.canonicalPatterns} canonical patterns; ${counts.relations} related edges.`
+    );
+    return 0;
+  }
+
   // ── Estimate mode: project spend, then exit 0. Zero calls, zero writes. ────
   if (opts.estimate) {
     await runEstimate(opts, roster, prompt, analysisVersion, pricing);
@@ -912,6 +950,9 @@ async function main(): Promise<number> {
   log('info', `  Tags:             ${counts.tags}`);
   log('info', `  Imports:          ${counts.imports}`);
   log('info', `  API references:   ${counts.apiReferences}`);
+  log('info', `  Pattern aliases:  ${counts.patternAliases}`);
+  log('info', `  Canonical types:  ${counts.canonicalPatterns}`);
+  log('info', `  Related edges:    ${counts.relations}`);
   log('info', `  SRG resolved:     ${counts.srgResolved}`);
   log('info', `  Framework linked: ${counts.apiResolved}`);
   for (const [loader, n] of Object.entries(counts.byLoader)) {

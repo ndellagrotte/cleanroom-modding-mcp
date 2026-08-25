@@ -295,6 +295,10 @@ export function formatEmptyModExampleSearch(
 // TOOL HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
+export function formatQualitySuppression(minQuality: number, suppressed: number): string {
+  return `**Quality filter:** \`min_quality\` ≥ ${minQuality} suppressed ${suppressed.toLocaleString('en-US')} otherwise-matching example${suppressed === 1 ? '' : 's'}.`;
+}
+
 export interface SearchModExamplesParams {
   query?: string;
   mod?: string;
@@ -315,7 +319,7 @@ export function handleSearchModExamples(params: SearchModExamplesParams): CallTo
 
     const service = new ModExamplesService();
     try {
-      const examples = service.searchExamples({
+      const searchOptions = {
         query: params.query,
         modName: params.mod,
         loader: params.loader,
@@ -325,7 +329,9 @@ export function handleSearchModExamples(params: SearchModExamplesParams): CallTo
         minQualityScore: params.min_quality ?? 0.5,
         featured: params.featured_only,
         limit: Math.min(Math.max(params.limit || 5, 1), 20),
-      });
+      };
+      const examples = service.searchExamples(searchOptions);
+      const suppressedByMinQuality = service.countSuppressedByMinQuality(searchOptions);
 
       let output = '';
       if (examples.length === 0) {
@@ -349,6 +355,7 @@ export function handleSearchModExamples(params: SearchModExamplesParams): CallTo
           output += `→ Use \`get_mod_example\` with ID ${ex.id} for full details\n\n---\n\n`;
         });
       }
+      output += `\n${formatQualitySuppression(searchOptions.minQualityScore, suppressedByMinQuality)}\n`;
       return { content: [{ type: 'text', text: output }] };
     } finally {
       service.close();

@@ -5,6 +5,7 @@ import {
   handleGetModExample,
   formatCategoryTable,
   formatEmptyModExampleSearch,
+  formatQualitySuppression,
 } from './modExamples.js';
 import { EXAMPLE_CATEGORIES } from '../categories.js';
 import type { CategoryInfo } from '../services/mod-examples-service.js';
@@ -150,6 +151,14 @@ describe('formatEmptyModExampleSearch', () => {
     const rows = categories({}).filter((c) => c.slug !== 'capabilities');
     const out = formatEmptyModExampleSearch({ category: 'capabilities' }, rows, 0);
     expect(out).toMatch(/never return results/i);
+  });
+});
+
+describe('quality suppression disclosure', () => {
+  it('states the active threshold and exact suppressed count', () => {
+    expect(formatQualitySuppression(0.5, 827)).toContain(
+      '`min_quality` ≥ 0.5 suppressed 827 otherwise-matching examples'
+    );
   });
 });
 
