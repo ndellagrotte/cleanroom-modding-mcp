@@ -2,6 +2,10 @@
 
 ### Bug Fixes
 
+- **examples:** synchronize shared category metadata in place during ingest, data-side upgrades,
+  server startup, docs indexing, and release preparation. Add `lint:corpus --fix-categories`
+  to repair carried-forward databases without rebuilding docs or re-running paid analyses,
+  preserving category/example IDs and keeping corpus lint strict.
 - **examples:** reject empty, budget-truncated, and coverage-rejected builds before replacing
   the database or manifest. Retain completed analyses in the enabled cache for resumption,
   and validate corpus contents before accepting an up-to-date database.

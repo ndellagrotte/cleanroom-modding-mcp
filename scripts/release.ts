@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import { DBS, DB_IDS, type DbId } from '../src/dbs.js';
 import { readDbSchemaVersion } from '../src/mappings/schema.js';
 import { lintCorpus, reportLint } from './lint-corpus.js';
+import { migrateExampleCategories } from '../src/examples/migrate.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as {
@@ -149,6 +150,8 @@ if (missing.length > 0) {
 // mode is a *carried-forward* database that no longer matches the code shipping
 // beside it.
 {
+  // Repair carried-forward category metadata before linting or hashing assets.
+  migrateExampleCategories(dbFile('examples'));
   const docsDb = dbFile('docs');
   if (fs.existsSync(docsDb)) {
     const report = lintCorpus(docsDb);

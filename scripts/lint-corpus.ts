@@ -13,7 +13,7 @@
  * replacement is the only delivery mechanism, so a rebuild that ships a
  * known-zero metric unchanged burns the entire budget for the next one.
  *
- * Deliberately standalone and read-only, so it can gate three different places:
+ * Deliberately standalone and read-only (unless the CLI uses --fix-categories):
  *  - `scripts/index-docs.ts`, right after a build
  *  - `scripts/release.ts`, which is the one that catches a *carried-forward*
  *    database this run never rebuilt — the actual V8 failure
@@ -28,6 +28,7 @@ import path from 'path';
 import { DOC_CATEGORIES, DOC_FALLBACK_CATEGORY, EXAMPLE_CATEGORIES } from '../src/categories.js';
 import { MC_VERSION_PATTERN, UNKNOWN_MINECRAFT_VERSION } from '../src/loaders.js';
 import { DBS } from '../src/dbs.js';
+import { migrateExampleCategories } from '../src/examples/migrate.js';
 
 /**
  * Ceiling on the share of the corpus allowed to sit in the fallback category.
@@ -235,7 +236,7 @@ export function lintCorpus(
           JSON.stringify(dbCategories) === JSON.stringify(examplesEnum),
           dbCategories.join(', '),
           examplesEnum.join(', '),
-          'Rebuild or migrate examples.db whenever the shared category vocabulary changes.'
+          `Synchronize category metadata without rebuilding analyses: pnpm run lint:corpus --fix-categories ${JSON.stringify(dbPath)}. Unknown slugs require a reviewed remap.`
         );
       } finally {
         examplesDb.close();
@@ -350,7 +351,8 @@ export function reportLint(dbPath: string, report: LintReport, log = console.err
 }
 
 function main(): void {
-  const arg = process.argv.slice(2).find((a) => !a.startsWith('-'));
+  const args = process.argv.slice(2);
+  const arg = args.find((a) => !a.startsWith('-'));
   const dbPath = arg ?? path.join('data', DBS.docs.fileName);
 
   if (!fs.existsSync(dbPath)) {
@@ -359,6 +361,9 @@ function main(): void {
   }
 
   try {
+    if (args.includes('--fix-categories')) {
+      migrateExampleCategories(path.join(path.dirname(dbPath), DBS.examples.fileName));
+    }
     const report = lintCorpus(dbPath);
     process.exit(reportLint(dbPath, report) ? 0 : 1);
   } catch (error) {

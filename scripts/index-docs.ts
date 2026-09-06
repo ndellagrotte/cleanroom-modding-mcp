@@ -19,6 +19,7 @@ import { DocumentChunker } from '../src/indexer/chunker.js';
 import { DocumentStore } from '../src/indexer/store.js';
 import { DBS } from '../src/dbs.js';
 import { lintCorpus, reportLint } from './lint-corpus.js';
+import { migrateExampleCategories } from '../src/examples/migrate.js';
 import { LOADERS, LOADER_IDS, isLoader, scopeToLoaders, type Loader } from '../src/loaders.js';
 import {
   getFabricUrlsFromSitemap,
@@ -191,6 +192,10 @@ async function main(options: IndexOptions = {}) {
   const store = new DocumentStore(dbPath);
 
   try {
+    // A docs rebuild must not require paid re-analysis of a carried-forward
+    // examples corpus just to seed newly shared category metadata.
+    migrateExampleCategories(join(dataDir, DBS.examples.fileName));
+
     // Compile the equivalence corpus into its dedicated table (Phase 4).
     // Independent of the crawl; runs unless explicitly disabled with --no-equivalence.
     if (options.equivalence !== false) {

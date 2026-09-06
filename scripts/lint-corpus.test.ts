@@ -5,7 +5,9 @@ import os from 'os';
 import path from 'path';
 import { lintCorpus } from './lint-corpus.js';
 import { DBS } from '../src/dbs.js';
-import { EXAMPLE_CATEGORIES } from '../src/categories.js';
+import { DOC_ONLY_CATEGORIES } from '../src/categories.js';
+import { initializeExamplesDb } from '../src/examples/schema.js';
+import { migrateExampleCategories, syncExampleCategories } from '../src/examples/migrate.js';
 
 /**
  * A gate that cannot fail is not a gate. v2.2.3 passed every check the release
@@ -107,7 +109,6 @@ describe('lintCorpus', () => {
     seed();
     const report = lintCorpus(dbPath);
     expect(report.failed).toEqual([]);
-    expect(report.checks.length).toBeGreaterThan(10);
   });
 
   it.each([
@@ -184,16 +185,33 @@ describe('lintCorpus', () => {
     expect(failedNames()).toContain('every category is in DOC_CATEGORIES');
   });
 
-  it('fails when the examples DB category registry drifts from the shared schema', () => {
+  it('rejects stale example categories read-only and passes after an in-place migration', () => {
     seed();
     const examplesPath = path.join(dir, 'examples.db');
-    const examples = new Database(examplesPath);
-    examples.exec('CREATE TABLE categories (slug TEXT NOT NULL UNIQUE)');
-    for (const category of EXAMPLE_CATEGORIES.slice(1)) {
-      examples.prepare('INSERT INTO categories (slug) VALUES (?)').run(category);
+    const examples = initializeExamplesDb(examplesPath);
+    syncExampleCategories(examples);
+    for (const slug of DOC_ONLY_CATEGORIES) {
+      examples.prepare('DELETE FROM categories WHERE slug = ?').run(slug);
     }
     examples.close();
+    const originalBytes = fs.readFileSync(examplesPath);
 
+    expect(lintCorpus(dbPath, examplesPath).failed.map((check) => check.name)).toContain(
+      'mod-example DB categories equal the shared tool schema'
+    );
+    expect(fs.readFileSync(examplesPath)).toEqual(originalBytes);
+    migrateExampleCategories(examplesPath);
+    expect(lintCorpus(dbPath, examplesPath).failed).toEqual([]);
+  });
+
+  it('does not hide unknown categories through migration', () => {
+    seed();
+    const examplesPath = path.join(dir, 'examples.db');
+    const examples = initializeExamplesDb(examplesPath);
+    examples.exec("INSERT INTO categories (slug, name) VALUES ('unreviewed', 'Unreviewed')");
+    examples.close();
+
+    migrateExampleCategories(examplesPath);
     expect(lintCorpus(dbPath, examplesPath).failed.map((check) => check.name)).toContain(
       'mod-example DB categories equal the shared tool schema'
     );

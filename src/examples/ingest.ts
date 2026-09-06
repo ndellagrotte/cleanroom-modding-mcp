@@ -11,10 +11,10 @@
  */
 
 import fs from 'fs';
-import { EXAMPLE_CATEGORIES, EXAMPLE_CATEGORY_INFO } from '../categories.js';
 import Database from 'better-sqlite3';
 import { EXAMPLES_SCHEMA, EXAMPLES_SCHEMA_VERSION, initializeExamplesDb } from './schema.js';
 import { canonicalizePatternType } from './patterns.js';
+import { syncExampleCategories } from './migrate.js';
 import type { ExampleRecord, IngestCounts, IngestMeta } from './model.js';
 
 const INSERT_RELATIONS_SQL = `
@@ -129,9 +129,6 @@ export function ingest(
 ): IngestCounts {
   const db = initializeExamplesDb(dbPath);
   try {
-    const insertCategory = db.prepare(
-      `INSERT INTO categories (slug, name, description, icon, sort_order) VALUES (?, ?, ?, ?, ?)`
-    );
     const insertMod = db.prepare(
       `INSERT INTO mods (name, repo, loader, license, description, readme_summary,
         architecture_notes, star_count, minecraft_versions, priority)
@@ -179,14 +176,13 @@ export function ingest(
     };
 
     const run = db.transaction(() => {
-      // Categories from the single-source EXAMPLE_CATEGORIES registry.
-      const categoryId = new Map<string, number>();
-      EXAMPLE_CATEGORIES.forEach((slug, i) => {
-        const info = EXAMPLE_CATEGORY_INFO[slug];
-        const res = insertCategory.run(slug, info.name, info.description, info.icon, i);
-        categoryId.set(slug, res.lastInsertRowid as number);
-        counts.categories++;
-      });
+      syncExampleCategories(db);
+      const categories = db.prepare('SELECT id, slug FROM categories').all() as Array<{
+        id: number;
+        slug: string;
+      }>;
+      const categoryId = new Map(categories.map((row) => [row.slug, row.id]));
+      counts.categories = categoryId.size;
 
       // Mods (deduped by repo; priority written from roster order).
       const modId = new Map<string, number>();
@@ -336,6 +332,7 @@ export function upgradeExamplesDataSide(dbPath: string): DataSideUpgradeCounts {
 
   try {
     return db.transaction(() => {
+      syncExampleCategories(db);
       const rawPatterns = db
         .prepare(
           `SELECT pattern_type AS patternType, COUNT(*) AS exampleCount

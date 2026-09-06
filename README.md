@@ -85,6 +85,21 @@ Databases live in a shared platform-standard data directory:
 - macOS: `~/Library/Application Support/cleanroom-modding-mcp`
 - Windows: `%APPDATA%/cleanroom-modding-mcp`
 
+Example category metadata is synchronized in place at server startup, unless
+`CLEANROOM_MCP_SKIP_MIGRATION` is set. Documentation indexing and releases also synchronize
+the sibling `examples.db` before corpus validation and manifest generation. This preserves
+example IDs, assignments, and reviewed analyses; it makes no LLM calls.
+
+To repair a carried-forward maintainer database without repeating a docs or examples build:
+
+```bash
+pnpm run lint:corpus --fix-categories data/docs.db
+```
+
+Without `--fix-categories`, corpus lint remains read-only. The flag updates only category
+metadata in the sibling `examples.db`, not `docs.db`. Unknown category slugs are left intact
+and still fail lint rather than silently discarding their assignments.
+
 ## Tools
 
 Four base tools are always available; the mappings, mod-examples, and Cleanroom API tool groups register automatically once their databases are on disk — which, since all four install themselves, is the normal case (the table below groups them by database, not by registration order).

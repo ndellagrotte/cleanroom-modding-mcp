@@ -18,6 +18,7 @@ import { handleSearchDocs } from './tools/searchDocs.js';
 import { handleExplainConcept } from './tools/explainConcept.js';
 import { autoUpdateAll } from './db-versioning.js';
 import { migrateCorpusWithLogging } from './indexer/migrate.js';
+import { migrateExampleCategories } from './examples/migrate.js';
 import { getDefaultDbPath } from './data-dir.js';
 import { DBS, PACKAGE_NAME } from './dbs.js';
 import { LOADER_IDS } from './loaders.js';
@@ -534,6 +535,16 @@ async function main() {
     } catch (error) {
       console.error('[DbVersioning] Error checking for updates:', error);
       // Continue startup even if update fails
+    }
+  }
+
+  // Run after downloads too: release assets can predate the current category
+  // registry even while their schema version still matches.
+  if (!process.env.CLEANROOM_MCP_SKIP_MIGRATION) {
+    try {
+      migrateExampleCategories(getDefaultDbPath(DBS.examples.fileName));
+    } catch (error) {
+      console.error('[Migrate] Example category migration failed; continuing startup:', error);
     }
   }
 

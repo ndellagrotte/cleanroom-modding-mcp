@@ -11,6 +11,7 @@ import {
   type SkipState,
 } from './ingest.js';
 import type { ExampleRecord, IngestMeta } from './model.js';
+import { DOC_ONLY_CATEGORIES, EXAMPLE_CATEGORIES } from '../categories.js';
 
 const META: IngestMeta = {
   analysisVersion: 'av1-test',
@@ -161,6 +162,9 @@ describe('runIngest', () => {
       DELETE FROM example_relations;
       UPDATE metadata SET value = '2' WHERE key = 'schema_version';
     `);
+    for (const slug of DOC_ONLY_CATEGORIES) {
+      before.prepare('DELETE FROM categories WHERE slug = ?').run(slug);
+    }
     before.close();
 
     const counts = upgradeExamplesDataSide(dbPath);
@@ -178,6 +182,9 @@ describe('runIngest', () => {
     expect(after.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()).toEqual({
       value: '3',
     });
+    expect(after.prepare('SELECT slug FROM categories ORDER BY sort_order').all()).toEqual(
+      EXAMPLE_CATEGORIES.map((slug) => ({ slug }))
+    );
     after.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
