@@ -158,6 +158,29 @@ describe('ModExamplesService against the golden DB', () => {
     }
   });
 
+  it('renders Minecraft concepts as concrete cross-tool calls', () => {
+    const svc = new ModExamplesService(goldenDb);
+    try {
+      const example = svc
+        .searchExamples({ minQualityScore: 0 })
+        .find((candidate) => candidate.minecraftConcepts.includes('IBlockState'));
+      expect(example).toBeDefined();
+      if (!example) {
+        throw new Error('golden fixture has no IBlockState example');
+      }
+
+      const out = svc.formatExampleForAI(example);
+      expect(out).toContain('### Minecraft Concepts Used');
+      expect(out).toContain('`resolve_symbol(symbol: "IBlockState", minecraft_version: "1.12.2")`');
+      expect(out).toContain(
+        '`get_class_details(class_name: "BlockPos", minecraft_version: "1.12.2")`'
+      );
+      expect(out).not.toContain('IBlockState, BlockPos');
+    } finally {
+      svc.close();
+    }
+  });
+
   it('degrades gracefully with no sibling mappings DB at runtime', () => {
     const svc = new ModExamplesService(goldenDb, { mappingsDb: null });
     try {

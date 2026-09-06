@@ -8,7 +8,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { LOADERS, LOADER_IDS, TARGET_VERSION, type Scope } from '../loaders.js';
 import type { DocCoverage } from '../services/corpus-coverage.js';
-import { DBS, DB_IDS, dbPath, isInstalled } from '../dbs.js';
+import { DBS, DB_IDS, dbPath, isInstalled, type DbId } from '../dbs.js';
 import { readDbSchemaVersion } from '../mappings/schema.js';
 import { CleanroomApiService } from '../services/cleanroom-api-service.js';
 import { ExampleService } from '../services/example-service.js';
@@ -18,6 +18,16 @@ import { EquivalenceService } from '../services/equivalence-service.js';
 import { TEMPLATE_COMPONENTS } from '../templates/index.js';
 import { GUIDE_NAMES } from '../guides/index.js';
 import { PROMPT_DEFS } from '../prompts.js';
+import { MAPPINGS_TOOLS } from './mappings.js';
+import { CLEANROOM_API_TOOLS } from './cleanroomApi.js';
+import { MOD_EXAMPLES_TOOLS } from './modExamples.js';
+
+const TOOLS_BY_DATABASE: Record<DbId, readonly string[]> = {
+  docs: ['search_docs', 'get_doc_snippet', 'explain_concept', 'find_equivalent'],
+  mappings: MAPPINGS_TOOLS.map((tool) => tool.name),
+  examples: MOD_EXAMPLES_TOOLS.map((tool) => tool.name),
+  'cleanroom-api': CLEANROOM_API_TOOLS.map((tool) => tool.name),
+};
 
 export function handleListTargets(): CallToolResult {
   try {
@@ -138,7 +148,8 @@ export function handleListTargets(): CallToolResult {
       } else {
         status = '⬜ not installed (downloads automatically on startup)';
       }
-      output += `- ${spec.icon} **${spec.name}** — ${status}\n`;
+      const tools = TOOLS_BY_DATABASE[id].map((name) => `\`${name}\``).join(', ');
+      output += `- ${spec.icon} **${spec.name}** — ${status} · tools: ${tools}\n`;
     }
 
     // Phase 4 porting/scaffolding surfaces (prompts, resources, templates, equivalence).

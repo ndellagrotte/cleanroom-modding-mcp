@@ -368,6 +368,18 @@ describe('handleListTargets', () => {
     const text = (result.content[0] as { type: string; text: string }).text;
     expect(text).toContain('Installed Databases');
   });
+
+  it('names the tools unlocked by each database', () => {
+    const result = handleListTargets();
+    const first = result.content[0];
+    expect(first?.type).toBe('text');
+    if (!first || first.type !== 'text') {
+      throw new Error('list_targets did not return text content');
+    }
+    expect(first.text).toMatch(/Mappings Database.*`resolve_symbol`/);
+    expect(first.text).toMatch(/Mod Examples Database.*`get_mod_example`/);
+    expect(first.text).toMatch(/Cleanroom API Database.*`search_cleanroom_api`/);
+  });
 });
 
 // ============================================================================

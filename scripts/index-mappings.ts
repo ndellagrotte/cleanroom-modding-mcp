@@ -33,6 +33,8 @@ import {
   isSnapshot,
 } from '../src/mappings/mc-version-order.js';
 import {
+  javaMethodToJvmDescriptor,
+  mergeModernFields,
   parseMojangMappings,
   type MojangMappings,
   type MojangClassMapping,
@@ -529,46 +531,6 @@ function initializeDatabase(dbPath: string): Database.Database {
   return initializeMappingsDb(dbPath);
 }
 
-/**
- * Convert a Mojang ProGuard Java-type signature to a JVM descriptor so
- * overloaded methods can be matched on (name, descriptor) against Parchment.
- * e.g. args "net.minecraft.world.level.Level,int[]" + return "boolean"
- *   -> "(Lnet/minecraft/world/level/Level;[I)Z"
- */
-const JAVA_PRIMITIVES: Record<string, string> = {
-  byte: 'B',
-  char: 'C',
-  double: 'D',
-  float: 'F',
-  int: 'I',
-  long: 'J',
-  short: 'S',
-  boolean: 'Z',
-  void: 'V',
-};
-
-function javaTypeToJvmType(javaType: string): string {
-  let type = javaType.trim();
-  let arrayDims = 0;
-  while (type.endsWith('[]')) {
-    arrayDims++;
-    type = type.slice(0, -2).trim();
-  }
-  const base = JAVA_PRIMITIVES[type] ?? `L${type.replace(/\./g, '/')};`;
-  return '['.repeat(arrayDims) + base;
-}
-
-function javaSignatureToJvmDescriptor(args: string, returnType: string): string {
-  const params =
-    args.trim() === ''
-      ? ''
-      : args
-          .split(',')
-          .map((a) => javaTypeToJvmType(a))
-          .join('');
-  return `(${params})${javaTypeToJvmType(returnType)}`;
-}
-
 function indexParchmentData(
   db: Database.Database,
   data: ParchmentData,
@@ -661,7 +623,7 @@ function indexParchmentData(
               obfuscatedMethodName = first.obfuscated;
             } else if (candidates.length > 1) {
               const byDescriptor = candidates.find(
-                (c) => javaSignatureToJvmDescriptor(c.args, c.returnType) === method.descriptor
+                (c) => javaMethodToJvmDescriptor(c.args, c.returnType) === method.descriptor
               );
               obfuscatedMethodName = (byDescriptor ?? first)?.obfuscated ?? null;
             }
@@ -689,25 +651,14 @@ function indexParchmentData(
         }
       }
 
-      // Process fields
-      if (cls.fields) {
-        for (const field of cls.fields) {
-          const fieldJavadoc = field.javadoc ? field.javadoc.join('\n') : null;
+      // Parchment only carries fields with contributed documentation. Merge
+      // that subset with Mojang's complete class field list so undocumented
+      // modern fields remain queryable.
+      for (const field of mergeModernFields(cls.fields, mojangClass)) {
+        insertField.run(classId, field.name, field.notchName, field.descriptor, field.javadoc);
+        stats.fields++;
 
-          // Try to find obfuscated field name from Mojang mappings
-          let obfuscatedFieldName: string | null = null;
-          if (mojangClass) {
-            const mojangField = mojangClass.fields.get(field.name);
-            if (mojangField) {
-              obfuscatedFieldName = mojangField.obfuscated;
-            }
-          }
-
-          insertField.run(classId, field.name, obfuscatedFieldName, field.descriptor, fieldJavadoc);
-          stats.fields++;
-
-          if (fieldJavadoc) stats.documentedFields++;
-        }
+        if (field.javadoc) stats.documentedFields++;
       }
     }
   });

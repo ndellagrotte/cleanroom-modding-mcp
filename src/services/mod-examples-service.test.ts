@@ -1,85 +1,100 @@
-/**
- * Tests for ModExamplesService.searchExamples ranking.
- *
- * Regression guard: a text query must rank by FTS relevance (bm25), not by
- * quality_score alone. Ordering by quality alone let a passing mention inside a
- * high-scoring example outrank an exact match in a lower-scoring one — e.g.
- * "desync" returned MinecraftByExample tile-entity snippets while every
- * UniversalTweaks desync mixin was pushed off the result set.
- */
-
-import { describe, it, expect } from 'vitest';
-import * as path from 'path';
-import { fileURLToPath } from 'url';
-import { getDefaultDbPath } from '../data-dir.js';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { DBS } from '../dbs.js';
+import { exampleRecord, writeExampleFixture } from '../examples/test-fixture.js';
+import type { ExampleRecord } from '../examples/model.js';
 import { ModExamplesService } from './mod-examples-service.js';
 
-// Collect-time gate: these are integration tests against the built examples DB.
-// The shared data dir (getDefaultDbPath) is where an installed server reads from,
-// but a dev checkout keeps its DB in the repo's data/ — CLEANROOM_MCP_DATA_DIR is
-// only set when the server is launched, not under vitest. Try both, then skip
-// cleanly when neither is present or the schema version differs.
-const REPO_DB_PATH = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../data',
-  DBS.examples.fileName
-);
-const DB_PATH = [getDefaultDbPath(DBS.examples.fileName), REPO_DB_PATH].find((p) =>
-  ModExamplesService.isAvailable(p)
-);
-const describeDb = DB_PATH ? describe : describe.skip;
+let dir: string;
+let service: ModExamplesService | undefined;
 
-describeDb('ModExamplesService.searchExamples ranking', () => {
-  it('ranks exact topic matches above merely-high-quality unrelated examples', () => {
-    const service = new ModExamplesService(DB_PATH);
-    // min_quality 0 so ranking alone decides the order, not the quality filter.
-    const results = service.searchExamples({ query: 'desync', minQualityScore: 0, limit: 5 });
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'example-search-'));
+});
 
-    expect(results.length).toBeGreaterThan(0);
+afterEach(() => {
+  service?.close();
+  service = undefined;
+  fs.rmSync(dir, { recursive: true, force: true });
+});
 
-    // Titles and mod attribution both shift when the corpus is rebuilt — the
-    // snippets are re-analyzed and re-titled by an LLM, so "desync" may come
-    // back as "...sync block break state" under a different mod. Assert the
-    // ordering property itself, which is what actually regressed: with a text
-    // query the result set must NOT be in quality-score order (the mirror of
-    // the no-query branch asserted below).
-    const scores = results.map((r) => r.qualityScore);
-    expect(scores).not.toEqual([...scores].sort((a, b) => b - a));
+function openFixture(records: ExampleRecord[]): ModExamplesService {
+  const dbPath = path.join(dir, DBS.examples.fileName);
+  writeExampleFixture(dbPath, records);
+  service = new ModExamplesService(dbPath);
+  return service;
+}
 
-    // Concretely: the top hit is outranked on quality by something below it.
-    expect(results.some((r) => r.qualityScore > results[0].qualityScore)).toBe(true);
+describe('ModExamplesService.searchExamples', () => {
+  it('ranks a relevant lower-quality match above a passing high-quality mention', () => {
+    const db = openFixture([
+      exampleRecord('Desync correction', {
+        caption: 'Desync prevention and desync recovery',
+        qualityScore: 0.6,
+      }),
+      exampleRecord('Inventory tutorial', {
+        explanation: `${'Inventory slots store items. '.repeat(100)}Avoid desync.`,
+        qualityScore: 0.99,
+      }),
+      // Keep the query distinctive: BM25 assigns near-zero IDF when most rows match.
+      ...Array.from({ length: 10 }, (_, i) => exampleRecord(`Unrelated recipe ${i}`)),
+    ]);
+
+    expect(
+      db.searchExamples({ query: 'desync', minQualityScore: 0, limit: 2 }).map((row) => row.title)
+    ).toEqual(['Desync correction', 'Inventory tutorial']);
   });
 
-  it('still finds a distinctive single-token query', () => {
-    const service = new ModExamplesService(DB_PATH);
-    const results = service.searchExamples({ query: 'LivingHurtEvent', limit: 5 });
+  it('matches identifiers in code or keywords, not incidental prose mentions', () => {
+    const db = openFixture([
+      exampleRecord('Damage listener', { code: 'void onHurt(LivingHurtEvent event) {}' }),
+      exampleRecord('Damage keywords', { keywords: ['LivingHurtEvent'], qualityScore: 0.7 }),
+      exampleRecord('LivingHurtEvent overview', { qualityScore: 0.99 }),
+    ]);
 
-    expect(results.length).toBeGreaterThan(0);
-    expect(results[0].title).toContain('LivingHurtEvent');
+    expect(db.searchExamples({ query: 'LivingHurtEvent' }).map((row) => row.title)).toEqual([
+      'Damage listener',
+      'Damage keywords',
+    ]);
   });
 
-  it('orders by quality when no text query is given (no-MATCH branch)', () => {
-    const service = new ModExamplesService(DB_PATH);
-    // bm25() is only legal alongside a MATCH — this guards the branch that must
-    // NOT reference it, and would throw "unable to use function bm25" if it did.
-    const results = service.searchExamples({ minQualityScore: 0.7, limit: 5 });
+  it('orders by quality without a text query and applies the quality threshold', () => {
+    const db = openFixture([
+      exampleRecord('Lower', { qualityScore: 0.3 }),
+      exampleRecord('Middle', { qualityScore: 0.7 }),
+      exampleRecord('Higher', { qualityScore: 0.95 }),
+    ]);
 
-    expect(results.length).toBeGreaterThan(0);
-    const scores = results.map((r) => r.qualityScore);
-    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    expect(db.searchExamples({ minQualityScore: 0.5 }).map((row) => row.title)).toEqual([
+      'Higher',
+      'Middle',
+    ]);
   });
 
-  it('applies filters alongside a text query', () => {
-    const service = new ModExamplesService(DB_PATH);
-    const results = service.searchExamples({
-      query: 'mixin redirect',
-      modName: 'UniversalTweaks',
-      minQualityScore: 0,
-      limit: 5,
-    });
+  it('combines text, mod, loader, category and quality filters without admitting distractors', () => {
+    const db = openFixture([
+      exampleRecord('Redirect target', { patternType: 'mixin-redirect', qualityScore: 0.8 }),
+      exampleRecord('Redirect other mod', {
+        modName: 'Fixture Cleanroom',
+        modRepo: 'fixture/cleanroom',
+        loader: 'cleanroom',
+      }),
+      exampleRecord('Redirect other category', { categorySlug: 'items' }),
+      exampleRecord('Redirect low quality', { qualityScore: 0.2 }),
+      exampleRecord('Unrelated recipe'),
+    ]);
 
-    expect(results.length).toBeGreaterThan(0);
-    expect(results.every((r) => r.modName === 'UniversalTweaks')).toBe(true);
+    const options = {
+      query: 'redirect',
+      modName: 'fixture forge',
+      loader: 'forge',
+      category: 'blocks',
+      minQualityScore: 0.5,
+    };
+    expect(db.searchExamples(options).map((row) => row.title)).toEqual(['Redirect target']);
+    // A contradictory loader must reject the otherwise matching mod.
+    expect(db.searchExamples({ ...options, loader: 'cleanroom' })).toEqual([]);
   });
 });

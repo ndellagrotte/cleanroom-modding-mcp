@@ -174,6 +174,21 @@ function rankWithinRelevanceBands(rows: RawExampleRow[], limit: number): RawExam
     .slice(0, limit);
 }
 
+function formatMinecraftConceptReference(concept: string): string {
+  const argument = JSON.stringify(concept);
+  const isClassName = /^(?:[A-Z][a-z]|I[A-Z])[A-Za-z0-9_$]*$/.test(concept);
+
+  if (isClassName) {
+    return (
+      `- **\`${concept}\`** — ` +
+      `\`resolve_symbol(symbol: ${argument}, minecraft_version: "1.12.2")\`; ` +
+      `\`get_class_details(class_name: ${argument}, minecraft_version: "1.12.2")\`\n`
+    );
+  }
+
+  return `- **${concept}** — ` + `\`search_docs(query: ${argument}, scope: "target")\`\n`;
+}
+
 const EXAMPLE_COLUMNS = `
   e.id,
   m.name as modName,
@@ -630,8 +645,8 @@ export class ModExamplesService {
       .prepare(
         `${countsCte}
          SELECT COUNT(*) as totalTypes,
-                SUM(CASE WHEN count >= ? THEN 1 ELSE 0 END) as eligibleTypes,
-                SUM(CASE WHEN count = 1 THEN 1 ELSE 0 END) as singletonTypes
+                COALESCE(SUM(CASE WHEN count >= ? THEN 1 ELSE 0 END), 0) as eligibleTypes,
+                COALESCE(SUM(CASE WHEN count = 1 THEN 1 ELSE 0 END), 0) as singletonTypes
          FROM pattern_counts`
       )
       .get(minCount) as {
@@ -810,7 +825,9 @@ export class ModExamplesService {
     }
     if (example.minecraftConcepts.length > 0) {
       output += `\n### Minecraft Concepts Used\n`;
-      output += example.minecraftConcepts.join(', ') + '\n';
+      for (const concept of example.minecraftConcepts) {
+        output += formatMinecraftConceptReference(concept);
+      }
     }
 
     // SRG cross-links: render the readable name and point at resolve_symbol. The

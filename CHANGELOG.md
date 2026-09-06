@@ -1,3 +1,20 @@
+## Unreleased
+
+### Bug Fixes
+
+- **examples:** reject empty, budget-truncated, and coverage-rejected builds before replacing
+  the database or manifest. Retain completed analyses in the enabled cache for resumption,
+  and validate corpus contents before accepting an up-to-date database.
+- **examples:** return zero pattern counts instead of an error for empty or entirely
+  unlabeled corpora.
+- **tests:** use deterministic example fixtures for ranking, cross-tool references, related
+  examples, and bounded pattern output instead of depending on generated release-corpus IDs.
+- Reject empty, budget-truncated, and coverage-rejected builds before replacing the database or manifest.
+- Preserve cached analyses for resumption and validate corpus contents before accepting an up-to-date database.
+- Return zero pattern counts for empty or entirely unlabeled corpora.
+- Replace release-corpus-dependent assertions with deterministic SQLite fixtures.
+- Add regressions for artifact preservation, cache-based recovery, and empty-corpus handling.
+- Update build-contract documentation and changelog.
 ## [2.2.0](https://github.com/ndellagrotte/cleanroom-modding-mcp/compare/v2.1.6...v2.2.0) (2026-08-04)
 
 ### Features

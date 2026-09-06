@@ -86,13 +86,13 @@ as listed there.
 - **`index-mod-examples.ts`:** loads `data/examples-llm.json`; new flags `--estimate`,
   `--llm-max-cost-usd`, `--llm-max-retries`, `--llm-concurrency`, `--llm-est-output-tokens`,
   `--analysis-cache`, `--no-cache`; run ledger (tokens/calls/cache/tokens-saved); estimate mode
-  (real prompt bodies, zero calls/writes); budget cap (actual-usage gate, partial ingest, exit
-  2); ordered-slot worker pool (order-deterministic at any concurrency); cost-ledger summary.
+  (real prompt bodies, zero calls/writes); budget cap (actual-usage gate, exit 2 before
+  publication); ordered-slot worker pool (order-deterministic at any concurrency); cost-ledger summary.
 - **Tests:** `analyze.test.ts` (outcome shape, config precedence, retry classification, usage
   parsing/backoff), new `cache.test.ts` (hit/miss, version invalidation, readonly mode), new
   `indexer.orchestrator.test.ts` (spawned end-to-end against a fake endpoint: startup gates,
-  estimate purity, cache re-run/version-invalidation/`--no-cache`, cap exit 2 + partial ingest,
-  no-double-pay 400/429/unparsable, concurrency determinism); `golden.test.ts` locks the
+  estimate purity, cache re-run/version-invalidation/`--no-cache`, rejected builds preserving
+  installed artifacts and resuming cached work, no-double-pay 400/429/unparsable, concurrency determinism); `golden.test.ts` locks the
   Revision 1 keys absent in golden.
 - Explicitly untouched, as specified: `schema.ts`, `srg-link.ts`, `select.ts`, `acquire.ts`, all
   runtime services/tools, all workflows (CI stays LLM-free; `release.yml` carry-forward only).
@@ -127,3 +127,14 @@ defaulting to `none`, so no `extraBody` is needed; `"temperature": null` is kept
 rejects non-default temperature). Pricing 0.20/1.25 USD per 1M in/out per the OpenAI pricing
 page (2026-07-25); the ledger conservatively ignores the cheaper cached-input rate. New
 `analysis_version` — Moonshot-era cache rows are dead weight under their old version keys.
+
+### Publication safety and deterministic example regressions
+
+Empty, budget-truncated, and coverage-rejected builds leave the installed database and
+manifest untouched. Matching provenance is insufficient for the up-to-date skip: actual
+rows and requested category coverage are checked. Successful analyses remain cached for
+resumption, and `--allow-empty-categories` never permits an empty corpus.
+
+`get_mod_patterns` normalizes empty SQL aggregates to zero, including when examples exist
+but none has a pattern label. Service and handler regressions use controlled temporary
+SQLite fixtures rather than generated example IDs, LLM titles, or release-corpus ordering.

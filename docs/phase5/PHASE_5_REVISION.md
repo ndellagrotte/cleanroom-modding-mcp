@@ -51,11 +51,12 @@ changed since). Verified anchors are cited as `file:line`.
 - Schema v2 stays frozen. New provenance (§4.7) is additive `metadata` key/value rows
   (`INSERT OR REPLACE`, `src/examples/ingest.ts:215-221`) — no DDL, no `schema_version` bump,
   no manifest-version implication.
-- Up-to-date skip (`isUpToDate`, `src/examples/ingest.ts:56`) stays conjunctive over
-  roster_pins ∧ analysis_version ∧ schema_version. The cache sits *under* this: an up-to-date
-  DB still no-ops; an out-of-date DB rebuilds but only pays for cache misses.
-- Atomic ingest (tmp + rename + cleanup), per-repo and per-snippet error isolation, partial-DB
-  degradation, golden path (`build:golden-db` runs with the cache disabled and a fake client).
+- Up-to-date skip stays conjunctive over roster_pins ∧ analysis_version ∧ schema_version,
+  and the stored corpus must be nonempty and satisfy the requested coverage policy.
+  The cache sits *under* this: an accepted up-to-date DB no-ops; a rejected or out-of-date
+  DB rebuilds but only pays for cache misses.
+- Atomic ingest (tmp + rename + cleanup), per-repo and per-snippet error isolation, and
+  the golden path (`build:golden-db` runs with the cache disabled and a fake client).
 - Runtime: no LLM, no network, no sibling-DB opens, no `ATTACH`. None of this revision is
   reachable from shipped code.
 
@@ -153,13 +154,16 @@ flagged as such in the table.
   (their usage hasn't landed in the ledger yet), so spend may overshoot the cap by at most
   n−1 per-snippet costs — cents at corpus scale; pin `--llm-concurrency 1` if an exact ceiling
   ever matters.
-- Already-completed records are kept and ingested — the pipeline's existing, validated
-  partial-corpus semantics — but the run ends with a loud cost-ledger summary and **exit code
-  2** (distinct from success 0 and hard failure 1) so release automation can detect a
-  budget-truncated corpus and refuse to ship it.
+- Completed analyses remain in the enabled analysis cache, but a budget-truncated run
+  **publishes no database or manifest**. It prints the cost-ledger summary and exits **2**,
+  leaving any installed corpus and manifest untouched. Resuming reuses cached analyses
+  without paying again; `--no-cache` deliberately gives up that recovery.
 - A cap without resolvable pricing (neither flags nor config file) → startup error before any
   call. Estimated tokens are never used for enforcement once real usage exists; enforcement
   uses actual usage only.
+- Publication also rejects zero examples or missing required implementation-category
+  coverage with **exit 3**, before ingestion and manifest writing. `--allow-empty-categories`
+  permits a nonempty corpus with coverage gaps; it never permits an empty corpus.
 
 ### 4.5 Analysis cache
 
@@ -226,7 +230,7 @@ Additive `metadata` rows written at ingest (alongside the frozen eight):
 | `data/examples-roster.json` | Now committed (`.gitignore` negation). Content unchanged. |
 | `.gitignore` | Negations for the two curated JSON files. |
 | `src/examples/golden-fixture.ts` | Fake client returns fixed `usage`; cache disabled explicitly. |
-| Tests | Update `analyze.test.ts` (return shape, config precedence, retry classification), `golden.test.ts`; new `cache.test.ts` (hit/miss, `analysis_version` invalidation, `--no-cache`), plus orchestrator-level tests: estimate mode performs zero calls/writes; budget cap truncates with exit 2 and ingests the partial; concurrency preserves record order. |
+| Tests | Update `analyze.test.ts` (return shape, config precedence, retry classification), `golden.test.ts`; new `cache.test.ts` (hit/miss, `analysis_version` invalidation, `--no-cache`), plus orchestrator-level tests: estimate mode performs zero calls/writes; rejected budget/coverage/empty builds preserve the installed DB and manifest; resumption reuses cached analyses; concurrency preserves record order. |
 | `docs/phase5/IMPL_DOC.md` | Append a "Revision 1" note linking here once implemented. |
 
 Explicitly **not** touched: `schema.ts` (DDL frozen), `ingest.ts` except two additive
@@ -296,8 +300,10 @@ assertions stand unchanged.
   still finds nothing.
 - **[MUST]** Estimate mode: performs zero LLM calls and writes nothing (no DB, no manifest, no
   cache mutation); its input-token projection uses the real prompt bodies.
-- **[MUST]** Budget cap: a run capped below the estimate stops before exceeding the cap,
-  ingests the partial corpus, exits 2; an uncapped run never exits 2.
+- **[MUST]** Budget cap: analysis stops at the actual-usage gate (§4.4), exits 2, and
+  neither creates nor replaces the database or manifest; an uncapped run never exits 2.
+- **[MUST]** Publication: zero examples or rejected category coverage exits 3 without
+  changing installed artifacts. The explicit category override cannot publish zero examples.
 - **[MUST]** Cache: identical re-run of a populated cache performs zero LLM calls; a
   prompt/model change (bumped `analysis_version`) misses every entry; `--no-cache` neither
   reads nor writes; golden builds never touch the cache.

@@ -456,7 +456,8 @@ because its analysis was unrecoverable). The design pins:
 - **Up-to-date skip** (mirroring [index-java-api.ts](../../scripts/index-java-api.ts)'s
   metadata skip): the indexer no-ops when the existing DB's `roster_pins` (SHAs) **and**
   `analysis_version` **and** `schema_version` all match the target — the change-detection
-  key (RESEARCH OQ18). `--force` overrides.
+  key (RESEARCH OQ18). The stored corpus must also be nonempty and satisfy the requested
+  category-coverage policy; metadata alone cannot validate an empty build. `--force` overrides.
 
 ### 6.5 Ingest
 
@@ -466,6 +467,16 @@ cleanup on error — the exact durability pattern from
 runtime path). Provenance metadata (§5) is written in the same transaction. Flags mirror the
 cleanroom-api indexer: `--db-path`, `--force`, plus a `--roster <path>` override and an
 offline `--repo-zip <path>` for testing without network.
+
+Production builds validate before ingestion: budget truncation exits 2; zero examples or
+missing required implementation-category coverage exits 3. Neither rejection creates or
+replaces the database or its manifest. Completed analyses remain in the enabled analysis
+cache for resumption. `--allow-empty-categories` permits coverage gaps only in a nonempty
+corpus. Fixture ingestion remains independent of production coverage requirements.
+
+The schema-v2→v3 data-side upgrade (`--force` with a populated v2 database) preserves the
+existing analyses and example IDs without calling the LLM. An empty upgrade source is
+rejected without modifying the database or manifest.
 
 ---
 

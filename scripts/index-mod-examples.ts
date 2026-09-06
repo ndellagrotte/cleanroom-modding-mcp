@@ -22,7 +22,9 @@
  * Coverage gate: a corpus that leaves an EXAMPLE_CATEGORIES slug at zero exits 3.
  * The taxonomy is also the `search_mod_examples` filter enum, so an empty
  * category is a filter value the shipped server offers and can never satisfy
- * (beta report N2). --allow-empty-categories is the deliberate override.
+ * (beta report N2). --allow-empty-categories is the deliberate nonempty override.
+ * Rejected builds leave the installed DB and manifest untouched; paid analyses
+ * remain in the cache for resumption.
  *
  * Usage:
  *   npx tsx scripts/index-mod-examples.ts [options]
@@ -44,16 +46,16 @@
  *   --estimate                  Dry run: project snippets/cache/tokens/cost, then exit 0.
  *                               Zero LLM calls, zero writes (no DB, no manifest, no cache mutation).
  *   --llm-max-cost-usd <n>      Hard budget cap (or CLEANROOM_MCP_LLM_MAX_COST_USD). Stops analysis
- *                               before any call that would start at/over the cap, ingests the
- *                               partial corpus, exits 2. Requires pricing in data/examples-llm.json.
+ *                               before any call that would start at/over the cap, keeps completed
+ *                               analyses cached, exits 2 without publishing. Requires configured pricing.
  *   --llm-max-retries <n>       429/503 retries inside the client (default: 5)
  *   --llm-concurrency <n>       Concurrent analyses within a repo (default: 4; 1 = serial).
  *                               Example ids/DB content stay order-deterministic at any n.
  *   --llm-est-output-tokens <n> Fixed output-token allowance per snippet for --estimate (default: 350)
  *   --analysis-cache <path>     Analysis cache DB (default: data/examples-analysis-cache.db)
  *   --no-cache                  Bypass cache reads AND writes (a deliberate full re-spend)
- *   --allow-empty-categories    Ship a corpus that leaves an EXAMPLE_CATEGORIES slug at zero
- *                               examples. Without it such a build exits 3 (see below).
+ *   --allow-empty-categories    Ship a nonempty corpus with missing category coverage.
+ *                               Zero examples always exits 3, even with this override.
  *
  * Endpoint/pricing precedence (highest first): CLI flag → env var → committed
  * config file data/examples-llm.json (non-secret; the API key is never in it).
@@ -67,6 +69,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import Database from 'better-sqlite3';
 import { DBS } from '../src/dbs.js';
 import { LOCAL_BUILD_SOURCE } from '../src/db-versioning.js';
 import { getDefaultDbPath } from '../src/data-dir.js';
@@ -610,6 +613,15 @@ async function main(): Promise<number> {
     fs.existsSync(opts.dbPath) &&
     readDbSchemaVersion(opts.dbPath) === EXAMPLES_SCHEMA_VERSION - 1
   ) {
+    const db = new Database(opts.dbPath, { readonly: true });
+    try {
+      if (!db.prepare('SELECT 1 FROM examples LIMIT 1').get()) {
+        log('error', 'No examples to upgrade — database and manifest left untouched.');
+        return 3;
+      }
+    } finally {
+      db.close();
+    }
     banner('Data-side schema upgrade');
     const counts = upgradeExamplesDataSide(opts.dbPath);
     const stat = fs.statSync(opts.dbPath);
@@ -657,9 +669,37 @@ async function main(): Promise<number> {
       schema_version: EXAMPLES_SCHEMA_VERSION,
     };
     if (isUpToDate(existing, target)) {
-      log('success', `Database already up to date (analysis ${analysisVersion}) — nothing to do.`);
-      log('info', 'Use --force to rebuild anyway.');
-      return 0;
+      const db = new Database(opts.dbPath, { readonly: true });
+      let validCorpus: boolean;
+      try {
+        const rows = db
+          .prepare(
+            `SELECT c.slug, COUNT(*) AS count FROM examples e
+           LEFT JOIN categories c ON c.id = e.category_id GROUP BY c.slug`
+          )
+          .all() as Array<{ slug: string | null; count: number }>;
+        const byCategory: Record<string, number> = {};
+        for (const row of rows) {
+          if (row.slug !== null) byCategory[row.slug] = row.count;
+        }
+        validCorpus =
+          rows.length > 0 &&
+          (opts.allowEmptyCategories ||
+            auditCategoryCoverage(byCategory).empty.every((category) =>
+              DOC_ONLY_CATEGORIES.includes(category as never)
+            ));
+      } finally {
+        db.close();
+      }
+      if (validCorpus) {
+        log(
+          'success',
+          `Database already up to date (analysis ${analysisVersion}) — nothing to do.`
+        );
+        log('info', 'Use --force to rebuild anyway.');
+        return 0;
+      }
+      log('warn', 'Existing database fails corpus validation — rebuilding from cached analyses.');
     }
   }
 
@@ -866,8 +906,73 @@ async function main(): Promise<number> {
     cache?.close();
   }
 
-  // ── Ingest (atomic tmp + rename). Already-completed records are kept even
-  // when the budget cap truncated the run — the validated partial-corpus path.
+  banner('Analysis summary');
+  log('info', `Prepared ${records.length} examples from ${mods.length} mods.`);
+  // ── Cost ledger summary (Revision 1 §4.4) — always printed; loud on truncation.
+  log('info', `  LLM calls:        ${ledger.calls}`);
+  log(
+    'info',
+    `  Cache:            ${ledger.cacheHits} hits, ${ledger.cacheWrites} writes, ${ledger.tokensSaved} tokens saved`
+  );
+  log(
+    'info',
+    `  Tokens billed:    ${ledger.promptTokens} prompt + ${ledger.completionTokens} completion`
+  );
+  if (pricing) {
+    log(
+      'info',
+      `  Estimated cost:   $${ledgerCostUsd(ledger, pricing).toFixed(4)} ${pricing.currency} (declared list price)`
+    );
+  } else {
+    log('info', '  Estimated cost:   n/a — no pricing configured');
+  }
+
+  if (budgetTripped) {
+    log(
+      'error',
+      `BUDGET CAP REACHED (--llm-max-cost-usd ${opts.llmMaxCostUsd}) — ` +
+        `${records.length} examples prepared, none published. Database and manifest left untouched.`
+    );
+    return 2;
+  }
+
+  if (records.length === 0) {
+    log('error', 'No examples prepared — database and manifest left untouched.');
+    return 3;
+  }
+
+  const byCategory: Record<string, number> = {};
+  for (const record of records) {
+    if (record.categorySlug !== null) {
+      byCategory[record.categorySlug] = (byCategory[record.categorySlug] ?? 0) + 1;
+    }
+  }
+  const coverage = auditCategoryCoverage(byCategory);
+  // Documentation-primary bridge categories intentionally remain in the
+  // shared tool vocabulary even when this 1.12.2 code corpus has no examples
+  // for them. Implementation categories must still be populated.
+  const implementationEmpty = coverage.empty.filter(
+    (category) => !DOC_ONLY_CATEGORIES.includes(category as never)
+  );
+  if (implementationEmpty.length > 0 && !opts.allowEmptyCategories) {
+    log(
+      'error',
+      `EMPTY IMPLEMENTATION CATEGORIES (${implementationEmpty.length}): ${implementationEmpty.join(', ')} — ` +
+        'database and manifest left untouched.'
+    );
+    log(
+      'error',
+      '  Where to look: each capped repo logs a `cap coverage:` line above (debug) reporting how ' +
+        'many files/directories its kept set spans out of the candidates. A repo whose kept ' +
+        'directories are far below its candidate directories is cap-bound — raise its ' +
+        'maxSnippetsPerRepo. A category with no candidates at all is a roster problem — widen ' +
+        "that repo's include globs, or add a repo that demonstrates the pattern."
+    );
+    log('error', '  Pass --allow-empty-categories to ship a knowingly-incomplete corpus anyway.');
+    return 3;
+  }
+
+  // ── Ingest only an accepted corpus (atomic tmp + rename). ──────────────────
   banner('Ingest');
   let llmBaseHost = '';
   try {
@@ -926,7 +1031,6 @@ async function main(): Promise<number> {
       `  Over the ${UNCATEGORIZED_WARN_PCT}% threshold — check the prompt's category guidance before shipping this corpus.`
     );
   }
-  const coverage = auditCategoryCoverage(counts.byCategory);
   if (coverage.empty.length > 0) {
     log('warn', `  Categories with no examples: ${coverage.empty.join(', ')}`);
   }
@@ -961,58 +1065,6 @@ async function main(): Promise<number> {
   const sizeMb = fs.statSync(opts.dbPath).size / 1024 / 1024;
   log('info', `  Database size:    ${sizeMb.toFixed(1)} MB`);
 
-  // ── Cost ledger summary (Revision 1 §4.4) — always printed; loud on truncation.
-  log('info', `  LLM calls:        ${ledger.calls}`);
-  log(
-    'info',
-    `  Cache:            ${ledger.cacheHits} hits, ${ledger.cacheWrites} writes, ${ledger.tokensSaved} tokens saved`
-  );
-  log(
-    'info',
-    `  Tokens billed:    ${ledger.promptTokens} prompt + ${ledger.completionTokens} completion`
-  );
-  if (pricing) {
-    log(
-      'info',
-      `  Estimated cost:   $${ledgerCostUsd(ledger, pricing).toFixed(4)} ${pricing.currency} (declared list price)`
-    );
-  } else {
-    log('info', '  Estimated cost:   n/a — no pricing configured');
-  }
-
-  if (budgetTripped) {
-    log(
-      'error',
-      `BUDGET CAP REACHED (--llm-max-cost-usd ${opts.llmMaxCostUsd}) — the corpus above is ` +
-        `TRUNCATED (${counts.examples} examples ingested). Release automation must refuse to ship it.`
-    );
-    return 2;
-  }
-
-  // Documentation-primary bridge categories intentionally remain in the
-  // shared tool vocabulary even when this 1.12.2 code corpus has no examples
-  // for them. Implementation categories must still be populated.
-  const implementationEmpty = coverage.empty.filter(
-    (category) => !DOC_ONLY_CATEGORIES.includes(category as never)
-  );
-  if (implementationEmpty.length > 0 && !opts.allowEmptyCategories) {
-    log(
-      'error',
-      `EMPTY IMPLEMENTATION CATEGORIES (${implementationEmpty.length}): ${implementationEmpty.join(', ')} — ` +
-        'the corpus offers these as implementation filters with nothing behind them. Release ' +
-        'automation must refuse to ship it.'
-    );
-    log(
-      'error',
-      '  Where to look: each capped repo logs a `cap coverage:` line above (debug) reporting how ' +
-        'many files/directories its kept set spans out of the candidates. A repo whose kept ' +
-        'directories are far below its candidate directories is cap-bound — raise its ' +
-        'maxSnippetsPerRepo. A category with no candidates at all is a roster problem — widen ' +
-        "that repo's include globs, or add a repo that demonstrates the pattern."
-    );
-    log('error', '  Pass --allow-empty-categories to ship a knowingly-incomplete corpus anyway.');
-    return 3;
-  }
   return 0;
 }
 

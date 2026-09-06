@@ -252,7 +252,7 @@ export class CleanroomApiService {
     if (kind === 'all' && query) {
       // Split the budget so type hits can't crowd member hits out of the
       // limit entirely; unused budget flows to the other side.
-      const typeQuota = Math.ceil(limit / 2);
+      const typeQuota = Math.ceil((limit * 2) / 3);
       const memberQuota = limit - typeQuota;
       const types = typeHits.slice(0, typeQuota + Math.max(0, memberQuota - memberHits.length));
       const members = memberHits.slice(0, memberQuota + Math.max(0, typeQuota - typeHits.length));
@@ -310,14 +310,17 @@ export class CleanroomApiService {
   ): ApiTypeResult[] {
     const filter = this.typeFilterSql(kind, packageFilter);
 
-    // Browse mode: no query, list by filter alone.
+    // Event browsing is an orientation surface: show Forge's public event
+    // catalog before Cleanroom implementation internals, then alphabetize.
     if (!query || query === '*') {
+      const browseOrder =
+        kind === 'event' ? `CASE WHEN t.loader = 'forge' THEN 0 ELSE 1 END, t.fqn` : 't.fqn';
       const rows = this.db
         .prepare(
           `SELECT t.*, u.usage_count FROM types t
            LEFT JOIN annotation_usage u ON u.annotation_fqn = t.fqn
            WHERE 1=1${filter.sql}
-           ORDER BY t.fqn LIMIT ?`
+           ORDER BY ${browseOrder} LIMIT ?`
         )
         .all(...filter.params, limit) as Array<TypeRow & { usage_count: number | null }>;
       return rows.map((row) => this.rowToTypeResult(row));
@@ -325,8 +328,9 @@ export class CleanroomApiService {
 
     const rank = `CASE
         WHEN t.simple_name = ? COLLATE NOCASE THEN 0
-        WHEN t.simple_name LIKE ? || '%' THEN 1
-        ELSE 2 END`;
+        WHEN t.fqn LIKE '%.' || ? || '.%' COLLATE NOCASE THEN 1
+        WHEN t.simple_name LIKE ? || '%' THEN 2
+        ELSE 3 END`;
     const ftsQuery = this.buildFtsQuery(query);
     if (ftsQuery) {
       try {
@@ -337,10 +341,13 @@ export class CleanroomApiService {
              JOIN types t ON t.id = f.rowid
              LEFT JOIN annotation_usage u ON u.annotation_fqn = t.fqn
              WHERE types_fts MATCH ?${filter.sql}
-             ORDER BY name_rank, COALESCE(u.usage_count, 0) DESC, bm25(types_fts)
+             ORDER BY name_rank,
+                      (length(t.fqn) - length(replace(t.fqn, '.', ''))) ASC,
+                      COALESCE(u.usage_count, 0) DESC,
+                      bm25(types_fts)
              LIMIT ?`
           )
-          .all(query, query, ftsQuery, ...filter.params, limit) as Array<
+          .all(query, query, query, ftsQuery, ...filter.params, limit) as Array<
           TypeRow & { usage_count: number | null }
         >;
         return rows.map((row) => this.rowToTypeResult(row));
@@ -359,10 +366,13 @@ export class CleanroomApiService {
          FROM types t
          LEFT JOIN annotation_usage u ON u.annotation_fqn = t.fqn
          WHERE (t.fqn LIKE ? OR t.search_text LIKE ?)${filter.sql}
-         ORDER BY name_rank, COALESCE(u.usage_count, 0) DESC, length(t.fqn)
+         ORDER BY name_rank,
+                  (length(t.fqn) - length(replace(t.fqn, '.', ''))) ASC,
+                  COALESCE(u.usage_count, 0) DESC,
+                  length(t.fqn)
          LIMIT ?`
       )
-      .all(query, query, like, like.toLowerCase(), ...filter.params, limit) as Array<
+      .all(query, query, query, like, like.toLowerCase(), ...filter.params, limit) as Array<
       TypeRow & { usage_count: number | null }
     >;
     return rows.map((row) => this.rowToTypeResult(row));

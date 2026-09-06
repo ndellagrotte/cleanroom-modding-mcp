@@ -220,9 +220,13 @@ export function handleSearchCleanroomApi(params: SearchCleanroomApiParams): Call
       let output = `Found ${results.length} framework API symbol${results.length > 1 ? 's' : ''}`;
       output += query ? ` for "${query}":\n\n` : ' (browse):\n\n';
       if (results.length === limit) {
-        output += query
-          ? `_Showing the first ${limit} by relevance — refine the query or raise \`limit\` for more._\n\n`
-          : `_Showing the first ${limit} alphabetically — add a query to rank by relevance, or raise \`limit\` for more._\n\n`;
+        if (query) {
+          output += `_Showing the first ${limit} by relevance — refine the query or raise \`limit\` for more._\n\n`;
+        } else if (kind === 'event') {
+          output += `_Showing the first ${limit} with Forge's public event catalog before Cleanroom internals, then alphabetically — add a query to rank by relevance, or raise \`limit\` for more._\n\n`;
+        } else {
+          output += `_Showing the first ${limit} alphabetically — add a query to rank by relevance, or raise \`limit\` for more._\n\n`;
+        }
       }
 
       for (const result of results) {

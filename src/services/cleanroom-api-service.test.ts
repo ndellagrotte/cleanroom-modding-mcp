@@ -528,6 +528,24 @@ describe.runIf(DB_OK)('CleanroomApiService (installed cleanroom-api.db)', () => 
     expect(hit && hit.resultKind === 'type' && hit.isCancelable).toBe(true);
   });
 
+  it('keeps RegistryEvent.Register in the top five RegistryEvent results', () => {
+    const results = service.search({ query: 'RegistryEvent', limit: 5 });
+    expect(
+      results.some(
+        (result) =>
+          result.resultKind === 'type' &&
+          result.fqn === 'net.minecraftforge.event.RegistryEvent.Register'
+      )
+    ).toBe(true);
+  });
+
+  it('browses Forge events before Cleanroom implementation events', () => {
+    const results = service.search({ query: '', kind: 'event', limit: 5 });
+    const first = results[0];
+    expect(first?.resultKind).toBe('type');
+    expect(first?.resultKind === 'type' && first.loader).toBe('forge');
+  });
+
   it('browses a package', () => {
     const results = service.search({
       query: '',

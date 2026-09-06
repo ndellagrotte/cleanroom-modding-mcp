@@ -5,7 +5,7 @@
  * the committed data/examples-llm.json never leaks into these runs).
  *
  * Covered: endpoint/pricing startup gates, --estimate (zero calls/writes),
- * budget cap (exit 2 + partial ingest), analysis cache (hits, version
+ * budget cap (exit 2 without publication), analysis cache (hits, version
  * invalidation, --no-cache), no-double-pay retry classification, and
  * concurrency order-determinism.
  */
@@ -19,6 +19,7 @@ import os from 'os';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import Database from 'better-sqlite3';
+import { DBS } from '../dbs.js';
 
 const execFileP = promisify(execFile);
 
@@ -385,11 +386,57 @@ describe('analysis cache', () => {
 
     expect((await runIndexer(ws.dir, ws.baseArgs)).code).toBe(0);
     expect(llm.total()).toBe(SNIPPET_COUNT);
-
+    const dbBefore = fs.readFileSync(ws.dbPath);
+    const manifestBefore = fs.readFileSync(ws.manifestPath);
     const second = await runIndexer(ws.dir, ws.baseArgs); // no --force
     expect(second.code).toBe(0);
-    expect(second.out).toContain('already up to date');
+    expect(fs.readFileSync(ws.dbPath)).toEqual(dbBefore);
+    expect(fs.readFileSync(ws.manifestPath)).toEqual(manifestBefore);
     expect(llm.total()).toBe(SNIPPET_COUNT); // no new calls, no rebuild
+  });
+
+  it('rebuilds an empty current-schema DB from cache instead of accepting its metadata', async () => {
+    const llm = await startFakeLlm();
+    const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
+    expect((await runIndexer(ws.dir, ws.baseArgs)).code).toBe(0);
+    const expected = readExamples(ws.dbPath);
+    const db = new Database(ws.dbPath);
+    try {
+      db.prepare('DELETE FROM examples').run();
+    } finally {
+      db.close();
+    }
+
+    const resumed = await runIndexer(ws.dir, [...ws.baseArgs, '--llm-max-cost-usd', '0']);
+    expect(resumed.code).toBe(0);
+    expect(llm.total()).toBe(SNIPPET_COUNT);
+    expect(readExamples(ws.dbPath)).toEqual(expected);
+    const cost = JSON.parse(readMetadata(ws.dbPath, 'llm_cost')!) as Record<string, unknown>;
+    expect(cost.calls).toBe(0);
+    expect(cost.cache_hits).toBe(SNIPPET_COUNT);
+  });
+
+  it('refuses to upgrade an empty legacy corpus without changing its database or manifest', async () => {
+    const llm = await startFakeLlm();
+    const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
+    expect((await runIndexer(ws.dir, ws.baseArgs)).code).toBe(0);
+    const db = new Database(ws.dbPath);
+    try {
+      db.prepare('DELETE FROM examples').run();
+      db.prepare("UPDATE metadata SET value = ? WHERE key = 'schema_version'").run(
+        String(DBS.examples.schemaVersion - 1)
+      );
+    } finally {
+      db.close();
+    }
+    const dbBefore = fs.readFileSync(ws.dbPath);
+    const manifestBefore = fs.readFileSync(ws.manifestPath);
+
+    const result = await runIndexer(ws.dir, [...ws.baseArgs, '--force']);
+    expect(result.code).toBe(3);
+    expect(llm.total()).toBe(SNIPPET_COUNT);
+    expect(fs.readFileSync(ws.dbPath)).toEqual(dbBefore);
+    expect(fs.readFileSync(ws.manifestPath)).toEqual(manifestBefore);
   });
 
   it('misses every entry after a model change (analysis_version invalidation)', async () => {
@@ -459,27 +506,42 @@ describe('temperature configuration', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('budget cap', () => {
-  it('truncates the corpus, ingests the partial, and exits 2', async () => {
-    const llm = await startFakeLlm();
-    const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
-    // Each call bills 100 in + 50 out = $0.000045; cap $0.0001 → 3 calls pass
-    // the gate, the 4th would start at $0.000135 ≥ cap. Serial is pinned: the
-    // exact call count is a serial-gate assertion — under concurrency, lanes
-    // may legally start while sibling calls are in flight (bounded overshoot).
-    const res = await runIndexer(ws.dir, [
-      ...ws.baseArgs,
-      '--llm-max-cost-usd',
-      '0.0001',
-      '--llm-concurrency',
-      '1',
-    ]);
-    expect(res.code).toBe(2);
-    expect(res.out).toContain('BUDGET CAP REACHED');
-    expect(llm.total()).toBe(3);
-    // Already-completed records are kept (partial-corpus semantics).
-    expect(fs.existsSync(ws.dbPath)).toBe(true);
-    expect(readExamples(ws.dbPath)).toHaveLength(3);
-  });
+  it.each([false, true])(
+    'rejects truncation and resumes cached work (installed=%s)',
+    async (installed) => {
+      const llm = await startFakeLlm();
+      const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
+      if (installed) expect((await runIndexer(ws.dir, ws.baseArgs)).code).toBe(0);
+      const dbBefore = installed ? fs.readFileSync(ws.dbPath) : null;
+      const manifestBefore = installed ? fs.readFileSync(ws.manifestPath) : null;
+      const callsBefore = llm.total();
+      const args = [...ws.baseArgs, '--llm-model', 'budget-model'];
+      // Each call costs $0.000045; serial cap $0.0001 permits three calls.
+      const res = await runIndexer(ws.dir, [
+        ...args,
+        '--llm-max-cost-usd',
+        '0.0001',
+        '--llm-concurrency',
+        '1',
+      ]);
+      expect(res.code).toBe(2);
+      expect(llm.total() - callsBefore).toBe(3);
+      expect(fs.existsSync(ws.dbPath)).toBe(installed);
+      expect(fs.existsSync(ws.manifestPath)).toBe(installed);
+      if (installed) {
+        expect(fs.readFileSync(ws.dbPath)).toEqual(dbBefore);
+        expect(fs.readFileSync(ws.manifestPath)).toEqual(manifestBefore);
+      }
+
+      expect((await runIndexer(ws.dir, args)).code).toBe(0);
+      expect(llm.total() - callsBefore).toBe(SNIPPET_COUNT);
+      expect(readExamples(ws.dbPath)).toHaveLength(SNIPPET_COUNT);
+      const cost = JSON.parse(readMetadata(ws.dbPath, 'llm_cost')!) as Record<string, unknown>;
+      expect(cost.calls).toBe(3);
+      expect(cost.cache_hits).toBe(3);
+      expect(cost.tokens_saved).toBe(450);
+    }
+  );
 
   it('an uncapped run never exits 2', async () => {
     const llm = await startFakeLlm();
@@ -509,19 +571,43 @@ describe('category coverage gate', () => {
   const withoutOverride = (args: string[]): string[] =>
     args.filter((a) => a !== '--allow-empty-categories');
 
-  it('exits 3 when a category slug ends up with no examples', async () => {
-    const llm = await startFakeLlm(); // every analysis comes back category 'blocks'
-    const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
-    const res = await runIndexer(ws.dir, withoutOverride(ws.baseArgs));
+  it.each([false, true])(
+    'rejects missing coverage without publishing (installed=%s)',
+    async (installed) => {
+      const llm = await startFakeLlm(); // every analysis comes back category 'blocks'
+      const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
+      if (installed) expect((await runIndexer(ws.dir, ws.baseArgs)).code).toBe(0);
+      const dbBefore = installed ? fs.readFileSync(ws.dbPath) : null;
+      const manifestBefore = installed ? fs.readFileSync(ws.manifestPath) : null;
+      // No --force: matching metadata must not bypass the stricter coverage gate.
+      const res = await runIndexer(ws.dir, withoutOverride(ws.baseArgs));
+      expect(res.code).toBe(3);
+      expect(llm.total()).toBe(SNIPPET_COUNT);
+      expect(fs.existsSync(ws.dbPath)).toBe(installed);
+      expect(fs.existsSync(ws.manifestPath)).toBe(installed);
+      if (installed) {
+        expect(fs.readFileSync(ws.dbPath)).toEqual(dbBefore);
+        expect(fs.readFileSync(ws.manifestPath)).toEqual(manifestBefore);
+      }
 
-    expect(res.code).toBe(3);
-    expect(res.out).toContain('EMPTY IMPLEMENTATION CATEGORIES');
-    expect(res.out).toContain('capabilities');
-    expect(res.out).toContain('--allow-empty-categories');
-    // The DB is still written — same partial-corpus semantics as the budget cap;
-    // it is the non-zero exit that release automation refuses to ship on.
-    expect(readExamples(ws.dbPath)).toHaveLength(SNIPPET_COUNT);
-  });
+      // Explicit override publishes the cached analyses without any new spend.
+      const resumed = await runIndexer(ws.dir, [
+        ...ws.baseArgs,
+        '--force',
+        '--llm-max-cost-usd',
+        '0',
+      ]);
+      expect(resumed.code).toBe(0);
+      expect(llm.total()).toBe(SNIPPET_COUNT);
+      expect(readExamples(ws.dbPath)).toHaveLength(SNIPPET_COUNT);
+      const cost = JSON.parse(readMetadata(ws.dbPath, 'llm_cost')!) as Record<string, unknown>;
+      expect(cost.calls).toBe(0);
+      expect(cost.cache_hits).toBe(SNIPPET_COUNT);
+      expect(cost.estimated_usd).toBe(0);
+      const manifest = JSON.parse(fs.readFileSync(ws.manifestPath, 'utf-8')) as { source: string };
+      expect(manifest.source).toBe('local-build');
+    }
+  );
 
   it('--allow-empty-categories ships the same corpus with exit 0', async () => {
     const llm = await startFakeLlm();
@@ -529,9 +615,34 @@ describe('category coverage gate', () => {
     const res = await runIndexer(ws.dir, ws.baseArgs);
 
     expect(res.code).toBe(0);
-    expect(res.out).toContain('Categories with no examples');
+    const manifest = JSON.parse(fs.readFileSync(ws.manifestPath, 'utf-8')) as { source: string };
+    expect(manifest.source).toBe('local-build');
     expect(readExamples(ws.dbPath)).toHaveLength(SNIPPET_COUNT);
   });
+
+  it.each([false, true])(
+    'rejects all failed analyses even with the override (installed=%s)',
+    async (installed) => {
+      let fail = false;
+      const llm = await startFakeLlm(() => ({ status: fail ? 400 : 200 }));
+      const ws = makeWorkspace({ serverUrl: llm.url, pricing: true });
+      if (installed) expect((await runIndexer(ws.dir, ws.baseArgs)).code).toBe(0);
+      const dbBefore = installed ? fs.readFileSync(ws.dbPath) : null;
+      const manifestBefore = installed ? fs.readFileSync(ws.manifestPath) : null;
+      const callsBefore = llm.total();
+      fail = true;
+
+      const res = await runIndexer(ws.dir, [...ws.baseArgs, '--force', '--no-cache']);
+      expect(res.code).toBe(3);
+      expect(llm.total() - callsBefore).toBe(SNIPPET_COUNT);
+      expect(fs.existsSync(ws.dbPath)).toBe(installed);
+      expect(fs.existsSync(ws.manifestPath)).toBe(installed);
+      if (installed) {
+        expect(fs.readFileSync(ws.dbPath)).toEqual(dbBefore);
+        expect(fs.readFileSync(ws.manifestPath)).toEqual(manifestBefore);
+      }
+    }
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

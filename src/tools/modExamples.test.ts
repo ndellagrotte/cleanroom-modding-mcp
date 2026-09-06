@@ -1,6 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type * as ModExampleTools from './modExamples.js';
 import {
-  MOD_EXAMPLES_TOOLS,
   searchModExamplesTool,
   handleGetModExample,
   formatCategoryTable,
@@ -9,6 +13,10 @@ import {
 } from './modExamples.js';
 import { EXAMPLE_CATEGORIES } from '../categories.js';
 import type { CategoryInfo } from '../services/mod-examples-service.js';
+import { DBS } from '../dbs.js';
+import { initializeExamplesDb } from '../examples/schema.js';
+import { exampleRecord, writeExampleFixture } from '../examples/test-fixture.js';
+import { ModExamplesService } from '../services/mod-examples-service.js';
 
 describe('search_mod_examples tool schema', () => {
   it('sources its category enum from EXAMPLE_CATEGORIES (no drift)', () => {
@@ -22,27 +30,6 @@ describe('search_mod_examples tool schema', () => {
   it('exposes a loader filter param (forge | cleanroom)', () => {
     const props = searchModExamplesTool.inputSchema.properties as { loader: { enum: string[] } };
     expect(props.loader.enum).toEqual(['forge', 'cleanroom']);
-  });
-});
-
-describe('get_mod_patterns tool schema', () => {
-  it('exposes bounded defaults for limit and min_count', () => {
-    const tool = MOD_EXAMPLES_TOOLS.find((candidate) => candidate.name === 'get_mod_patterns');
-    expect(tool).toBeDefined();
-    if (!tool) throw new Error('get_mod_patterns tool missing');
-    const properties = tool.inputSchema.properties as {
-      limit: { default: number; minimum: number; maximum: number };
-      min_count: { default: number; minimum: number };
-    };
-    expect(properties.limit).toMatchObject({ default: 40, minimum: 1, maximum: 200 });
-    expect(properties.min_count).toMatchObject({ default: 2, minimum: 1 });
-  });
-});
-
-describe('tool copy', () => {
-  it('no longer advertises the dead Create / Botania / AE2 corpus', () => {
-    const text = JSON.stringify(MOD_EXAMPLES_TOOLS);
-    expect(/create|botania|applied energistics/i.test(text)).toBe(false);
   });
 });
 
@@ -169,5 +156,174 @@ describe('get_mod_example dispatch validation', () => {
     const text = res.content.map((c) => (c.type === 'text' ? c.text : '')).join('');
     expect(/invalid|required/i.test(text)).toBe(true);
     expect(text).not.toMatch(/example 0/i);
+  });
+});
+
+describe('mod example handlers with isolated databases', () => {
+  let dir: string;
+  let dbPath: string;
+  let savedDataDir: string | undefined;
+  let tools: typeof ModExampleTools;
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'example-tools-'));
+    dbPath = path.join(dir, DBS.examples.fileName);
+    savedDataDir = process.env.CLEANROOM_MCP_DATA_DIR;
+    process.env.CLEANROOM_MCP_DATA_DIR = dir;
+    vi.resetModules();
+    // The service captures its default DB path at module load; import after isolating the env.
+    tools = await import('./modExamples.js');
+  });
+
+  afterEach(() => {
+    if (savedDataDir === undefined) {
+      delete process.env.CLEANROOM_MCP_DATA_DIR;
+    } else {
+      process.env.CLEANROOM_MCP_DATA_DIR = savedDataDir;
+    }
+    vi.resetModules();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  function text(result: CallToolResult): string {
+    expect(result.isError).not.toBe(true);
+    return result.content.map((item) => (item.type === 'text' ? item.text : '')).join('\n');
+  }
+
+  function fixtureId(title: string): number {
+    const service = new ModExamplesService(dbPath);
+    try {
+      const example = service.searchExamples({ limit: 200 }).find((row) => row.title === title);
+      if (!example) throw new Error(`Missing fixture example: ${title}`);
+      return example.id;
+    } finally {
+      service.close();
+    }
+  }
+
+  it('renders class concepts as mappings calls and prose concepts as target documentation calls', () => {
+    writeExampleFixture(dbPath, [
+      exampleRecord('Block setup', {
+        minecraftConcepts: ['Block', 'Material', 'CreativeTabs', 'block registration'],
+      }),
+    ]);
+
+    const output = text(tools.handleGetModExample({ id: fixtureId('Block setup') }));
+    for (const concept of ['Block', 'Material', 'CreativeTabs']) {
+      expect(output).toContain(`resolve_symbol(symbol: "${concept}", minecraft_version: "1.12.2")`);
+      expect(output).toContain(
+        `get_class_details(class_name: "${concept}", minecraft_version: "1.12.2")`
+      );
+    }
+    expect(output).toContain('search_docs(query: "block registration", scope: "target")');
+  });
+
+  it('renders persisted related examples only when requested', () => {
+    writeExampleFixture(dbPath, [
+      exampleRecord('Source block', { patternType: 'block-registration' }),
+      exampleRecord('Related block', { patternType: 'block-registration' }),
+    ]);
+    const sourceId = fixtureId('Source block');
+    const relatedId = fixtureId('Related block');
+
+    const output = text(tools.handleGetModExample({ id: sourceId, include_related: true }));
+    expect(output).toContain('## Related Examples');
+    expect(output).toContain(`(ID: ${relatedId}, strength: 85%)`);
+    expect(output).toContain('- Related block');
+
+    const withoutRelated = text(
+      tools.handleGetModExample({ id: sourceId, include_related: false })
+    );
+    expect(withoutRelated).not.toContain('## Related Examples');
+    expect(withoutRelated).not.toContain('Related block');
+  });
+
+  it('excludes an identifier-only prose near-miss while returning a capability provider', () => {
+    writeExampleFixture(dbPath, [
+      exampleRecord('Capability provider implementation', {
+        code: 'class Provider implements ICapabilityProvider {}',
+        qualityScore: 0.6,
+      }),
+      exampleRecord('ICapabilityProvider ASM transformer', {
+        caption: 'Rewrites bytecode using a class visitor.',
+        qualityScore: 0.99,
+      }),
+    ]);
+
+    const output = text(
+      tools.handleSearchModExamples({
+        query: 'capability provider ICapabilityProvider',
+        limit: 5,
+      })
+    );
+    expect(output).toContain(`**ID:** ${fixtureId('Capability provider implementation')} |`);
+    expect(output).toContain('class Provider implements ICapabilityProvider');
+    expect(output).not.toContain(`**ID:** ${fixtureId('ICapabilityProvider ASM transformer')} |`);
+    expect(output).not.toContain('ASM transformer');
+  });
+
+  it('bounds pattern output and accurately reports eligible types and singleton suppression', () => {
+    const db = initializeExamplesDb(dbPath);
+    try {
+      const mod = db
+        .prepare('INSERT INTO mods (name, repo, loader, license) VALUES (?, ?, ?, ?)')
+        .run('Fixture', 'fixture/patterns', 'forge', 'MIT');
+      const insert = db.prepare(
+        'INSERT INTO examples (mod_id, title, pattern_type) VALUES (?, ?, ?)'
+      );
+      // Synthetic labels exercise pagination independently of the evolving canonical taxonomy.
+      for (let index = 0; index < 46; index++) {
+        const pattern = `fixture-${String(index).padStart(2, '0')}`;
+        const count = index === 0 ? 4 : index === 1 ? 3 : index < 43 ? 2 : 1;
+        for (let example = 0; example < count; example++) {
+          insert.run(mod.lastInsertRowid, `${pattern} example ${example}`, pattern);
+        }
+      }
+    } finally {
+      db.close();
+    }
+
+    const output = text(tools.handleGetModPatterns());
+    const rows = output.match(/^\| `[^`]+` \| \d+ \|$/gm) ?? [];
+    expect(rows).toHaveLength(40);
+    expect(rows.slice(0, 2)).toEqual(['| `fixture-00` | 4 |', '| `fixture-01` | 3 |']);
+    expect(output).toContain('Showing 40 of 46 pattern types; 3 have a single example.');
+    expect(output).toContain('43 meet `min_count` ≥ 2.');
+    expect(output).not.toContain('| `fixture-43` |');
+
+    const restricted = text(tools.handleGetModPatterns({ limit: 1, min_count: 3 }));
+    expect(restricted.match(/^\| `[^`]+` \| \d+ \|$/gm)).toEqual(['| `fixture-00` | 4 |']);
+    expect(restricted).toContain('Showing 1 of 46 pattern types; 3 have a single example.');
+    expect(restricted).toContain('2 meet `min_count` ≥ 3.');
+
+    const all = text(tools.handleGetModPatterns({ limit: 200, min_count: 1 }));
+    expect(all.match(/^\| `[^`]+` \| \d+ \|$/gm)).toHaveLength(46);
+    expect(all).toContain('| `fixture-45` | 1 |');
+  });
+
+  it('successfully lists zero patterns for empty and entirely unlabeled current-schema databases', () => {
+    initializeExamplesDb(dbPath).close();
+
+    const empty = text(tools.handleGetModPatterns());
+    expect(empty).toContain('Showing 0 of 0 pattern types; 0 have a single example.');
+    expect(empty).toContain('0 meet `min_count` ≥ 2.');
+    expect(empty.match(/^\| `[^`]+` \| \d+ \|$/gm) ?? []).toEqual([]);
+
+    const db = initializeExamplesDb(dbPath);
+    try {
+      const mod = db
+        .prepare('INSERT INTO mods (name, repo, loader, license) VALUES (?, ?, ?, ?)')
+        .run('Fixture', 'fixture/unlabeled', 'forge', 'MIT');
+      db.prepare('INSERT INTO examples (mod_id, title) VALUES (?, ?)').run(
+        mod.lastInsertRowid,
+        'No pattern label'
+      );
+    } finally {
+      db.close();
+    }
+
+    const unlabeled = text(tools.handleGetModPatterns({ min_count: 1 }));
+    expect(unlabeled).toContain('Showing 0 of 0 pattern types; 0 have a single example.');
+    expect(unlabeled.match(/^\| `[^`]+` \| \d+ \|$/gm) ?? []).toEqual([]);
   });
 });

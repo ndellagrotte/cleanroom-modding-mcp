@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parseMojangMappings } from './mojang-mappings.js';
+import {
+  javaMethodToJvmDescriptor,
+  javaTypeToJvmDescriptor,
+  mergeModernFields,
+  parseMojangMappings,
+} from './mojang-mappings.js';
 
 const SAMPLE = [
   '# compiled from: Player.java',
@@ -115,5 +120,58 @@ describe('parseMojangMappings', () => {
   it('returns an empty map for input with no mappings', () => {
     expect(parseMojangMappings('').classes.size).toBe(0);
     expect(parseMojangMappings('# header only\n').classes.size).toBe(0);
+  });
+});
+
+describe('modern field ingestion', () => {
+  it('converts Mojang Java types and method signatures to JVM descriptors', () => {
+    expect(javaTypeToJvmDescriptor('int')).toBe('I');
+    expect(javaTypeToJvmDescriptor('net.minecraft.world.level.Level[][]')).toBe(
+      '[[Lnet/minecraft/world/level/Level;'
+    );
+    expect(javaMethodToJvmDescriptor('net.minecraft.world.level.Level,int[]', 'boolean')).toBe(
+      '(Lnet/minecraft/world/level/Level;[I)Z'
+    );
+  });
+
+  it('unions documented Parchment fields with Mojang-only fields', () => {
+    const player = parseMojangMappings(SAMPLE).classes.get(
+      'net.minecraft.world.entity.player.Player'
+    );
+    const fields = mergeModernFields(
+      [
+        {
+          name: 'attackStrengthTicker',
+          descriptor: 'I',
+          javadoc: ['Ticks since the last attack.'],
+        },
+        {
+          name: 'parchmentOnly',
+          descriptor: 'Ljava/lang/String;',
+        },
+      ],
+      player
+    );
+
+    expect(fields).toEqual([
+      {
+        name: 'attackStrengthTicker',
+        notchName: 'bC',
+        descriptor: 'I',
+        javadoc: 'Ticks since the last attack.',
+      },
+      {
+        name: 'parchmentOnly',
+        notchName: null,
+        descriptor: 'Ljava/lang/String;',
+        javadoc: null,
+      },
+      {
+        name: 'foodData',
+        notchName: 'bD',
+        descriptor: 'Lnet/minecraft/world/food/FoodData;',
+        javadoc: null,
+      },
+    ]);
   });
 });
